@@ -1,2 +1,4 @@
-﻿// See https://aka.ms/new-console-template for more information
-Console.WriteLine("Hello, World!");
+﻿using CFITS;
+
+string filePath = "Samples/sample_1D.fits";
+FitsHeaderReader.ReadFitsHeader(filePath);
