@@ -475,26 +475,17 @@ public sealed class BinaryTableBuilder
         return this;
     }
 
-    private sealed class BinaryColumn
+    private sealed class BinaryColumn(string name, string format, int width, int rows, byte[] cells)
     {
-        public BinaryColumn(string name, string format, int width, int rows, byte[] cells)
-        {
-            Name = name;
-            Format = format;
-            Width = width;
-            Rows = rows;
-            Cells = cells;
-        }
+        public string Name { get; } = name;
 
-        public string Name { get; }
+        public string Format { get; } = format;
 
-        public string Format { get; }
+        public int Width { get; } = width;
 
-        public int Width { get; }
+        public int Rows { get; } = rows;
 
-        public int Rows { get; }
-
-        public byte[] Cells { get; }
+        public byte[] Cells { get; } = cells;
 
         public bool Variable { get; init; }
 

@@ -1,9 +1,7 @@
 namespace CFITS;
 
 [AttributeUsage(AttributeTargets.Class, AllowMultiple = true)]
-public sealed class FitsSerializableAttribute : Attribute
+public sealed class FitsSerializableAttribute(Type type) : Attribute
 {
-    public FitsSerializableAttribute(Type type) => Type = type;
-
-    public Type Type { get; }
+    public Type Type { get; } = type;
 }

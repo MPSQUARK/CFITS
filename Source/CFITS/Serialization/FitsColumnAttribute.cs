@@ -1,9 +1,7 @@
 namespace CFITS;
 
 [AttributeUsage(AttributeTargets.Property)]
-public sealed class FitsColumnAttribute : Attribute
+public sealed class FitsColumnAttribute(string name) : Attribute
 {
-    public FitsColumnAttribute(string name) => Name = name;
-
-    public string Name { get; }
+    public string Name { get; } = name;
 }

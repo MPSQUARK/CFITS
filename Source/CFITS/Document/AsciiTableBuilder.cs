@@ -109,25 +109,16 @@ public sealed class AsciiTableBuilder
 
     private static string Pad(string text, int width) => text.Length > width ? text[..width] : text.PadRight(width);
 
-    private sealed class AsciiColumn
+    private sealed class AsciiColumn(string name, string format, int width, int rows, string[] cells)
     {
-        public AsciiColumn(string name, string format, int width, int rows, string[] cells)
-        {
-            Name = name;
-            Format = format;
-            Width = width;
-            Rows = rows;
-            Cells = cells;
-        }
+        public string Name { get; } = name;
 
-        public string Name { get; }
+        public string Format { get; } = format;
 
-        public string Format { get; }
+        public int Width { get; } = width;
 
-        public int Width { get; }
+        public int Rows { get; } = rows;
 
-        public int Rows { get; }
-
-        public string[] Cells { get; }
+        public string[] Cells { get; } = cells;
     }
 }

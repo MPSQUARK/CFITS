@@ -1,13 +1,7 @@
 namespace CFITS;
 
 [AttributeUsage(AttributeTargets.Class)]
-public sealed class FitsTableAttribute : Attribute
+public sealed class FitsTableAttribute(string? name = null) : Attribute
 {
-    public FitsTableAttribute()
-    {
-    }
-
-    public FitsTableAttribute(string name) => Name = name;
-
-    public string? Name { get; }
+    public string? Name { get; } = name;
 }

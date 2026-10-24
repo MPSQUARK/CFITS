@@ -1,9 +1,7 @@
 namespace CFITS;
 
 [AttributeUsage(AttributeTargets.Property)]
-public sealed class FitsKeywordAttribute : Attribute
+public sealed class FitsKeywordAttribute(string name) : Attribute
 {
-    public FitsKeywordAttribute(string name) => Name = name;
-
-    public string Name { get; }
+    public string Name { get; } = name;
 }

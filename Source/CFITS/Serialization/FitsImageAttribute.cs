@@ -1,13 +1,7 @@
 namespace CFITS;
 
 [AttributeUsage(AttributeTargets.Class)]
-public sealed class FitsImageAttribute : Attribute
+public sealed class FitsImageAttribute(string? name = null) : Attribute
 {
-    public FitsImageAttribute()
-    {
-    }
-
-    public FitsImageAttribute(string name) => Name = name;
-
-    public string? Name { get; }
+    public string? Name { get; } = name;
 }
