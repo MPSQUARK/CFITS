@@ -20,15 +20,15 @@ public ref struct FitsReader
 
     public FitsToken TokenType { get; private set; }
 
-    public int HduIndex => _hduIndex;
+    public readonly int HduIndex => _hduIndex;
 
-    public int HeaderOffset => _hduStart;
+    public readonly int HeaderOffset => _hduStart;
 
-    public FitsCardView Card => _card;
+    public readonly FitsCardView Card => _card;
 
-    public long DataOffset => _dataOffset;
+    public readonly long DataOffset => _dataOffset;
 
-    public long DataLength => _dataLength;
+    public readonly long DataLength => _dataLength;
 
     public long SpecialOffset { get; private set; }
 
