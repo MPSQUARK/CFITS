@@ -1,9 +1,3 @@
-using System.Buffers.Binary;
-using System.Buffers.Text;
-using System.Globalization;
-using System.Numerics;
-using System.Text;
-
 namespace CFITS;
 
 /// <summary>An ASCII or binary table. Cells are addressed by row and element.</summary>

@@ -1,4 +1,3 @@
-using System.Globalization;
 using BenchmarkDotNet.Attributes;
 
 namespace CFITS.Benchmarks;

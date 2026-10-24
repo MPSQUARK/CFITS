@@ -1,7 +1,5 @@
 using System.Buffers.Binary;
-using System.Globalization;
 using System.IO.Compression;
-using System.Text;
 
 namespace CFITS;
 
@@ -144,7 +142,7 @@ public sealed class FitsDocumentBuilder
             var cards = FitsHeader.Builder();
             if (extension)
             {
-            cards.Text("XTENSION", "IMAGE   ");
+                cards.Text("XTENSION", "IMAGE   ");
             }
             else
             {
