@@ -73,7 +73,11 @@ def heap_sum(path):
 def image_sum_checked(path):
     with fits.open(path, checksum=True) as hdul:
         hdul.verify("exception")
-        return float(np.nansum(hdul[0].data))
+
+
+def open_image(path):
+    with fits.open(path):
+        return None
 
 
 def write_image():
@@ -85,8 +89,9 @@ def write_image():
 
 def main():
     directory = Path(sys.argv[1])
-    sdss = Path(sys.argv[2])
-    destination = Path(sys.argv[3])
+    sdss_files = [Path(value) for value in sys.argv[2:-1]]
+    sdss = sdss_files[0]
+    destination = Path(sys.argv[-1])
     world = WCS(naxis=2)
     world.wcs.crpix = [128, 128]
     world.wcs.crval = [83.633, -5.391]
@@ -96,8 +101,33 @@ def main():
         [np.arange(100_000) % 400 + 1, np.arange(100_000) // 400 + 1]
     ).astype(float)
 
+    def scalar_wcs(pixel):
+        world_pixel = world.wcs_pix2world(float(pixel[0]), float(pixel[1]), 1)
+        return float(world_pixel[0]) + float(world_pixel[1])
+
+    def read_sdss_files():
+        total = 0
+        for path in sdss_files:
+            with fits.open(path, memmap=False) as hdul:
+                for hdu in hdul:
+                    if hdu.data is not None:
+                        # Copy the decoded payload so this measures a real whole-file
+                        # read rather than header parsing or lazy memory-map setup.
+                        payload = np.asarray(hdu.data).copy()
+                        total += int(payload.nbytes)
+        return total
+
+    def write_sdss_files():
+        total = 0
+        for path in sdss_files:
+            with fits.open(path, memmap=False) as hdul:
+                buffer = BytesIO()
+                hdul.writeto(buffer)
+                total += buffer.tell()
+        return total
+
     scenarios = [
-        ("open_tiny", lambda: image_sum(directory / "tiny.fits")),
+        ("open_tiny", lambda: open_image(directory / "tiny.fits")),
         ("read_image256", lambda: image_sum(directory / "image256.fits")),
         ("read_image1024", lambda: image_sum(directory / "image1024.fits")),
         ("scan_binary", lambda: column_sum(directory / "bintable.fits", "flux")),
@@ -109,10 +139,17 @@ def main():
         ("decompress_rice", lambda: image_sum(directory / "rice.fits", 1)),
         ("decompress_hcomp", lambda: image_sum(directory / "hcomp.fits", 1)),
         ("open_checksum", lambda: image_sum_checked(directory / "checksum.fits")),
-        ("tan_wcs", lambda: float(np.nansum(world.wcs_pix2world(pixels, 1)))),
+        (
+            "tan_wcs",
+            lambda: sum(scalar_wcs(pixel) for pixel in pixels),
+        ),
     ]
     if sdss.exists():
         scenarios.append(("read_sdss", lambda: column_sum(sdss, "flux")))
+    scenarios.extend([
+        ("sdss_read_all", read_sdss_files),
+        ("sdss_write_all", write_sdss_files),
+    ])
 
     # tracemalloc reports Python-managed peak growth; NumPy/Astropy native buffers
     # are not included and are intentionally labeled as such in the output.

@@ -1,0 +1,45 @@
+name: Release NuGet packages
+
+on:
+  push:
+    tags:
+      - '[0-9]+.[0-9]+.[0-9]+'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Repository tag to build and publish
+        required: true
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && format('refs/tags/{0}', inputs.tag) || github.ref }}
+
+      - name: Set version from tag
+        run: echo "VERSION=${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}" >> "$GITHUB_ENV"
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Pack runtime package
+        run: dotnet pack Source/CFITS/CFITS.csproj -c Release -p:Version="${{ env.VERSION }}" --output ./artifacts
+
+      - name: Pack source generator package
+        run: dotnet pack Source/CFITS.Generator/CFITS.Generator.csproj -c Release -p:Version="${{ env.VERSION }}" --output ./artifacts
+
+      - name: NuGet login (Trusted Publishing)
+        id: login
+        uses: NuGet/login@v1
+        with:
+          user: MPSQUARK
+
+      - name: Push packages
+        run: dotnet nuget push ./artifacts/*nupkg --api-key "${{ steps.login.outputs.NUGET_API_KEY }}" --source https://api.nuget.org/v3/index.json --skip-duplicate
