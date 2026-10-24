@@ -1,7 +1,7 @@
-namespace CFITS;
+namespace CFITS.Core;
 
 /// <summary>FITS block geometry from chapters 3 and 4.</summary>
-public static class FitsBlock
+internal static class FitsBlock
 {
     public const int Size = 2880;
     public const int CardSize = 80;

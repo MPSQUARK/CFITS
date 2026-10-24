@@ -1,6 +1,6 @@
 namespace CFITS.Tests;
 
-public class ValidationRegressionTests
+public sealed class ValidationRegressionTests
 {
     [Fact]
     public void BinaryTextColumnsRejectInvalidWidthsAndRowShapes()

@@ -1,4 +1,4 @@
-namespace CFITS;
+namespace CFITS.Layout;
 
 internal readonly struct HduShape
 {

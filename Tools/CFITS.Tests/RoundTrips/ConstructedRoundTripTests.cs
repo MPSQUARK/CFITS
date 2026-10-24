@@ -5,7 +5,7 @@ using System.Numerics;
 
 namespace CFITS.Tests;
 
-public class ConstructedRoundTripTests
+public sealed class ConstructedRoundTripTests
 {
     [Fact]
     public void BuiltTablesAndGroupsMatchAstropy()

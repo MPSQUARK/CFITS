@@ -3,7 +3,7 @@ using System.Numerics;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 
-namespace CFITS;
+namespace CFITS.Data;
 
 internal static class Pixels
 {

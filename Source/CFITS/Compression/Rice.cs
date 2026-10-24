@@ -1,6 +1,6 @@
 using System.Numerics;
 
-namespace CFITS;
+namespace CFITS.Compression;
 
 internal static class Rice
 {

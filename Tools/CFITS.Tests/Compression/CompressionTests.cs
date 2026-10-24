@@ -1,6 +1,6 @@
 namespace CFITS.Tests;
 
-public class CompressionTests
+public sealed class CompressionTests
 {
     [Fact]
     public void DecompressesZeroAxisCompressedImage()

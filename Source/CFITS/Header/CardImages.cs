@@ -1,7 +1,7 @@
 using System.Globalization;
 using System.Text;
 
-namespace CFITS;
+namespace CFITS.Header;
 
 internal static class CardImages
 {

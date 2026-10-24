@@ -1,4 +1,4 @@
-namespace CFITS;
+namespace CFITS.Compression;
 
 /// <summary>
 /// HCOMPRESS_1 tile decoder. The bitstream, quadtree, and inverse H-transform

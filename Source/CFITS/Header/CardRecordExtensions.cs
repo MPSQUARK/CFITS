@@ -1,4 +1,4 @@
-namespace CFITS;
+namespace CFITS.Header;
 
 internal static class CardRecordExtensions
 {

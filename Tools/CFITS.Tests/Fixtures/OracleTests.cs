@@ -3,7 +3,7 @@ using System.Text;
 
 namespace CFITS.Tests;
 
-public class OracleTests
+public sealed class OracleTests
 {
     private static readonly string Root = FindRoot();
     private static readonly string Python = PythonRuntime.Find(Root);

@@ -1,6 +1,6 @@
 using System.IO.Compression;
 
-namespace CFITS;
+namespace CFITS.Compression;
 
 internal static class TileCompression
 {

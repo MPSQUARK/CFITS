@@ -1,6 +1,6 @@
 namespace CFITS.Tests;
 
-public class TableCompressionTests
+public sealed class TableCompressionTests
 {
     [Fact]
     public void DecompressesFixedAndVariableColumns()

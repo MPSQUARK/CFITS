@@ -1,6 +1,6 @@
 namespace CFITS.Tests;
 
-public class CoordinateTests
+public sealed class CoordinateTests
 {
     [Fact]
     public void PixelToWorldSupportsAliasedSpans()

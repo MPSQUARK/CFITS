@@ -1,6 +1,6 @@
 using System.Globalization;
 
-namespace CFITS;
+namespace CFITS.Data;
 
 internal static class ColumnFormats
 {

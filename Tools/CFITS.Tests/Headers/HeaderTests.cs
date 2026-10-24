@@ -2,7 +2,7 @@ using System.Text;
 
 namespace CFITS.Tests;
 
-public class HeaderTests
+public sealed class HeaderTests
 {
     [Fact]
     public void ParsesTheStandardValueForms()

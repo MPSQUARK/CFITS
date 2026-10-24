@@ -2,7 +2,7 @@ using System.Buffers;
 
 namespace CFITS.Tests;
 
-public class ImageTests
+public sealed class ImageTests
 {
     [Fact]
     public void CopyingAMillionPixelsDoesNotAllocatePerPixel()

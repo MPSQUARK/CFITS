@@ -1,4 +1,4 @@
-namespace CFITS;
+namespace CFITS.Compression;
 
 internal static class Plio
 {

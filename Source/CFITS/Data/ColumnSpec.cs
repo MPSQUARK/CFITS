@@ -1,4 +1,4 @@
-namespace CFITS;
+namespace CFITS.Data;
 
 internal readonly struct ColumnSpec
 {
