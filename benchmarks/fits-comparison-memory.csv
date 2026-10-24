@@ -1,0 +1,15 @@
+scenario,cfits_managed_allocated_bytes,cfits_managed_allocated_stddev_bytes,astropy_python_peak_bytes,astropy_python_peak_stddev_bytes,csharpfits_managed_allocated_bytes,csharpfits_managed_allocated_stddev_bytes
+Open a 4×4 image,15888,0,154387.66666666666,13.063945294843617,52960,0
+Read 1,000 variable-length rows,74240,0,308148,0,495776,0
+Open a checksummed image,80488,0,227972,0,,
+Decompress a Rice image,362800,0,302952,19.595917942265423,,
+Decompress an H-compress image,437992,0,295839,0,,
+Scan 20,000 binary-table rows,507709.33333333331,169.37847167413767,422256,19.595917942265423,3029960,0
+Read an SDSS spectrum column,688384,0,331883.66666666669,13.063945294843617,2546928,0
+Read a 4,000-row ASCII table,762152,0,354476.66666666669,80.144037000058006,356472,0
+Read a 256² int16 image,799384,0,215759,0,3497848,0
+Decompress a GZIP_2 image,1775104,0,1323243,19.595917942265423,,
+TAN coordinates, 100,000 pixels,4000040,0,5202182,0,,
+Decompress a GZIP_1 image,4109272,0,2880077.6666666665,23.55136231020759,,
+Write a 512² int16 image,5827424,0,1596017,0,,
+Read a 1024² float32 image,16791064,0,5425686.666666667,13.063945294843617,58920824,0
