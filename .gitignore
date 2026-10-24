@@ -1,2 +1,10 @@
 bin
 obj
+.venv/
+Samples/generated/
+Samples/compressed/
+Samples/real/
+Samples/_probe*
+Samples/_c*
+benchmarks/__pycache__/
+**/BenchmarkDotNet.Artifacts/
