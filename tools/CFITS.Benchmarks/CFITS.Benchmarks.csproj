@@ -13,6 +13,6 @@
     <PackageReference Include="ScottPlot" Version="5.1.59" />
   </ItemGroup>
   <ItemGroup>
-    <ProjectReference Include="..\..\src\CFITS\CFITS.csproj" />
+    <ProjectReference Include="..\..\Source\CFITS\CFITS.csproj" />
   </ItemGroup>
 </Project>

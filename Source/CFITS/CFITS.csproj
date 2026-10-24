@@ -1,0 +1,24 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <RootNamespace>CFITS</RootNamespace>
+    <PackageId>CFITS</PackageId>
+    <Version>0.1.0</Version>
+    <Authors>MPSQUARK</Authors>
+    <Title>CFITS</Title>
+    <Description>A .NET library for reading and writing FITS files, including headers, images, ASCII tables, binary tables, heaps, and random groups.</Description>
+    <PackageProjectUrl>https://github.com/MPSQUARK/CFITS</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/MPSQUARK/CFITS</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PackageTags>fits;astronomy;astrophysics;science;data</PackageTags>
+    <PackageRequireLicenseAcceptance>false</PackageRequireLicenseAcceptance>
+    <IsAotCompatible>true</IsAotCompatible>
+    <IsTrimmable>true</IsTrimmable>
+    <EnableTrimAnalyzer>true</EnableTrimAnalyzer>
+    <EnableAotAnalyzer>true</EnableAotAnalyzer>
+  </PropertyGroup>
+  <ItemGroup>
+    <None Include="..\..\README.md" Pack="true" PackagePath="README.md" />
+  </ItemGroup>
+</Project>

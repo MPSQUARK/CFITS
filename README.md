@@ -17,15 +17,16 @@ var image = FitsSerializer.Read("exposure.fits", AppFitsContext.Default.Exposure
 
 Projects:
 
-- `src/CFITS` — the library, Native AOT compatible
-- `src/CFITS.Generator` — the serializer source generator
-- `tests/CFITS.Tests` — xUnit tests, including an Astropy oracle
-- `tools/CFITS.Console` — `CFITS.Console file.fits` prints the HDUs
-- `SampleGenerator` — Astropy fixture generator used by the tests
+- `Source/CFITS` — the library, Native AOT compatible
+- `Source/CFITS.Generator` — the serializer source generator
+- `Tools/CFITS.Tests` — xUnit tests, including an Astropy oracle
+- `Tools/CFITS.Console` — `CFITS.Console file.fits` prints the HDUs
+- `Tools/SampleGenerator` — Astropy fixture generator used by the tests
 
-The tests expect the virtual environment at `.venv`, created with `py -3 -m venv .venv` and `pip install astropy numpy`.
+The tests use Python 3 with Astropy and NumPy. They discover `.venv` on Windows or POSIX systems, or an executable configured through `CFITS_PYTHON`.
+For example: `python3 -m venv .venv` followed by `python -m pip install astropy numpy`.
 
 ```powershell
 dotnet test
-dotnet run --project tools/CFITS.Console -- path\to\file.fits
+dotnet run --project Tools/CFITS.Console -- path\to\file.fits
 ```

@@ -1,0 +1,18 @@
+[tool.poetry]
+name = "samplegenerator"
+version = "0.1.0"
+description = "Generates sample FITS files."
+authors = ["Marcel Pawelczyk <marcelpawelczyk7@gmail.com>"]
+readme = "../../README.md"
+package-mode = false
+
+[tool.poetry.dependencies]
+python = "^3.12"
+astropy = "^6.1.1"
+numpy = "<2.0.0"
+pathlib = "^1.0.1"
+
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"

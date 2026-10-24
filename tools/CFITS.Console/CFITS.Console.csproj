@@ -7,7 +7,7 @@
     <PublishAot>true</PublishAot>
   </PropertyGroup>
   <ItemGroup>
-    <ProjectReference Include="..\..\src\CFITS\CFITS.csproj" />
-    <ProjectReference Include="..\..\src\CFITS.Generator\CFITS.Generator.csproj" OutputItemType="Analyzer" ReferenceOutputAssembly="false" />
+    <ProjectReference Include="..\..\Source\CFITS\CFITS.csproj" />
+    <ProjectReference Include="..\..\Source\CFITS.Generator\CFITS.Generator.csproj" OutputItemType="Analyzer" ReferenceOutputAssembly="false" />
   </ItemGroup>
 </Project>

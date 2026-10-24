@@ -1,0 +1,158 @@
+namespace CFITS;
+
+/// <summary>An image array in FITS axis order: the first axis varies fastest.</summary>
+public sealed class FitsImage
+{
+    private readonly ReadOnlyMemory<byte> _raw;
+    private readonly FitsScaleMode _mode;
+    private readonly bool _integer;
+
+    private FitsImage(ReadOnlyMemory<byte> raw, int bitpix, int[] axes, double scale, double zero, long? blank, FitsScaleMode mode)
+    {
+        _raw = raw;
+        _mode = mode;
+        Bitpix = bitpix;
+        Axes = axes;
+        Scale = scale;
+        Zero = zero;
+        Blank = blank;
+        _integer = bitpix > 0;
+        long count = 1;
+        foreach (int axis in axes)
+        {
+            count = checked(count * axis);
+        }
+
+        if (axes.Length == 0 || axes.Any(static axis => axis == 0))
+        {
+            count = 0;
+        }
+
+        if (count > int.MaxValue)
+        {
+            throw new FitsException("The image has more elements than a single array can hold.", new FitsLocation());
+        }
+
+        Length = (int)count;
+    }
+
+    public int Bitpix { get; }
+
+    public IReadOnlyList<int> Axes { get; }
+
+    public double Scale { get; }
+
+    public double Zero { get; }
+
+    public long? Blank { get; }
+
+    public int Length { get; }
+
+    internal ReadOnlyMemory<byte> Stored => _raw;
+
+    public void CopyStoredInt32(Span<int> destination)
+    {
+        if (Bitpix != 32)
+        {
+            throw new FitsException("CopyStoredInt32 requires BITPIX 32.", new FitsLocation(Keyword: "BITPIX"));
+        }
+
+        if (destination.Length < Length)
+        {
+            throw new FitsException("The destination is shorter than the image.", new FitsLocation());
+        }
+
+        var raw = _raw.Span;
+        for (int index = 0; index < Length; index++)
+        {
+            destination[index] = System.Buffers.Binary.BinaryPrimitives.ReadInt32BigEndian(raw.Slice(index * 4, 4));
+        }
+    }
+
+    public void CopyPhysical(Span<double> destination)
+    {
+        if (destination.Length < Length)
+        {
+            throw new FitsException("The destination is shorter than the image.", new FitsLocation());
+        }
+
+        bool physical = _mode == FitsScaleMode.Physical;
+        Pixels.Copy(
+            _raw.Span,
+            Bitpix,
+            Length,
+            physical ? Scale : 1,
+            physical ? Zero : 0,
+            physical ? Blank : null,
+            destination);
+    }
+
+    public double SumPhysical()
+    {
+        bool physical = _mode == FitsScaleMode.Physical;
+        return Pixels.Sum(
+            _raw.Span,
+            Bitpix,
+            Length,
+            physical ? Scale : 1,
+            physical ? Zero : 0,
+            physical ? Blank : null);
+    }
+
+    public double[] ReadPhysical()
+    {
+        var values = new double[Length];
+        CopyPhysical(values);
+        return values;
+    }
+
+    public long ReadStoredInteger(int index) => Pixels.ReadInteger(_raw.Span, Bitpix, index);
+
+    public Int128 ReadInteger(int index)
+    {
+        if (!_integer)
+        {
+            throw new FitsException("This image does not store integers.", new FitsLocation(Keyword: "BITPIX"));
+        }
+
+        long stored = ReadStoredInteger(index);
+        if (Blank is long marker && stored == marker)
+        {
+            throw new FitsException("The pixel is blank.", new FitsLocation());
+        }
+
+        if (_mode == FitsScaleMode.Stored)
+        {
+            return stored;
+        }
+
+        if (Scale != 1 || !Pixels.IsExactInteger(Zero))
+        {
+            throw new FitsException("The physical pixel is not an integer translation of the stored value.", new FitsLocation(Keyword: "BZERO"));
+        }
+
+        return stored + Pixels.ToInt128(Zero);
+    }
+
+    public double ReadPhysical(int index)
+    {
+        double stored = Pixels.Read(_raw.Span, Bitpix, index);
+        if (_mode == FitsScaleMode.Stored)
+        {
+            return stored;
+        }
+
+        long storedInteger = _integer ? Pixels.ReadInteger(_raw.Span, Bitpix, index) : 0;
+        return Pixels.Physical(stored, storedInteger, _integer, Blank, Scale, Zero);
+    }
+
+    internal static FitsImage Create(FitsHeader header, ReadOnlyMemory<byte> raw, HduShape shape, FitsScaleMode mode)
+    {
+        double scale = header.TryGetCard("BSCALE", out var scaleCard) ? scaleCard.GetDouble() : 1;
+        double zero = header.TryGetCard("BZERO", out var zeroCard) ? zeroCard.GetDouble() : 0;
+        long? blank = header.TryGetCard("BLANK", out var blankCard) && blankCard.Kind == FitsValueKind.Integer
+            ? blankCard.Integer
+            : null;
+        return new FitsImage(raw, shape.Bitpix, shape.Axes, scale, zero, blank, mode);
+    }
+}
