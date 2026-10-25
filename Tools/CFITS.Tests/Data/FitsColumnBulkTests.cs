@@ -38,15 +38,11 @@ public sealed class FitsColumnBulkTests
     }
 
     [Fact]
-    public void DoesNotApplyIntegerNullMarkersToRealColumns()
+    public void RejectsIntegerNullMarkersOnRealColumns()
     {
-        using var document = Open(
+        Assert.Throws<FitsException>(() => Open(
             new BinaryTableBuilder().Add("VALUE", new[] { 7f, 8f }),
-            header => header.Integer("TNULL1", 7));
-
-        var values = new double[2];
-        Assert.True(document.Hdus[1].Table!.Column("VALUE").TryCopyReal(values));
-        Assert.Equal(new[] { 7d, 8d }, values);
+            header => header.Integer("TNULL1", 7)));
     }
 
     [Fact]

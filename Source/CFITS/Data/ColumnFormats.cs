@@ -27,7 +27,12 @@ internal static class ColumnFormats
 
         if (code is 'P' or 'Q')
         {
-            char element = index < trimmed.Length ? trimmed[index++] : 'B';
+            if (index >= trimmed.Length)
+            {
+                throw new FitsException($"TFORM '{format}' is missing a variable-array element type.", new FitsLocation());
+            }
+
+            char element = trimmed[index++];
             if (element is not ('L' or 'X' or 'B' or 'I' or 'J' or 'K' or 'A' or 'E' or 'D' or 'C' or 'M'))
             {
                 throw new FitsException($"TFORM '{format}' has an unknown variable-array element type.", new FitsLocation());
@@ -98,6 +103,11 @@ internal static class ColumnFormats
     public static int[] ParseDimensions(string text)
     {
         var body = text.Trim();
+        if (!body.StartsWith('(') || !body.EndsWith(')'))
+        {
+            throw new FitsException("TDIM must be enclosed in parentheses.", new FitsLocation());
+        }
+
         if (body.StartsWith('(') && body.EndsWith(')'))
         {
             body = body[1..^1];
@@ -128,7 +138,14 @@ internal static class ColumnFormats
         long product = 1;
         foreach (int dimension in dimensions)
         {
-            product = checked(product * dimension);
+            try
+            {
+                product = checked(product * dimension);
+            }
+            catch (OverflowException exception)
+            {
+                throw new FitsException("TDIM dimensions are too large.", new FitsLocation(), exception);
+            }
         }
 
         if (!spec.Variable && product != spec.Repeat)
@@ -157,7 +174,17 @@ internal static class ColumnFormats
             throw new FitsException($"ASCII TFORM '{format}' has an invalid width.", new FitsLocation());
         }
 
-        if (dot > 0 && (!int.TryParse(format[(dot + 1)..], NumberStyles.None, CultureInfo.InvariantCulture, out _) || dot == format.Length - 1))
+        if (code is 'A' or 'I' && dot >= 0)
+        {
+            throw new FitsException($"ASCII TFORM '{format}' has an invalid precision.", new FitsLocation());
+        }
+
+        if (code is 'F' or 'E' or 'D' && dot < 0)
+        {
+            throw new FitsException($"ASCII TFORM '{format}' is missing a precision.", new FitsLocation());
+        }
+
+        if (dot > 0 && (!int.TryParse(format[(dot + 1)..], NumberStyles.None, CultureInfo.InvariantCulture, out int precision) || precision < 0))
         {
             throw new FitsException($"ASCII TFORM '{format}' has an invalid precision.", new FitsLocation());
         }
@@ -172,7 +199,14 @@ internal static class ColumnFormats
         while (index < format.Length && char.IsDigit(format[index]))
         {
             any = true;
-            repeat = checked((repeat * 10) + (format[index] - '0'));
+            try
+            {
+                repeat = checked((repeat * 10) + (format[index] - '0'));
+            }
+            catch (OverflowException exception)
+            {
+                throw new FitsException($"TFORM '{format}' has an oversized repeat count.", new FitsLocation(), exception);
+            }
             index++;
         }
 

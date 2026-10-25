@@ -2,7 +2,7 @@ namespace CFITS.Layout;
 
 internal static class DataLayout
 {
-    public static HduShape Measure(ReadOnlySpan<byte> header, int hduIndex)
+    public static HduShape Measure(ReadOnlySpan<byte> header, int hduIndex, int headerOffset)
     {
         int? bitpix = null;
         int? naxis = null;
@@ -19,11 +19,20 @@ internal static class DataLayout
         bool seenPcount = false;
         bool seenGcount = false;
         bool seenGroups = false;
-
+        bool seenBscale = false;
+        bool seenBzero = false;
+        bool seenBlank = false;
+        int phase = 0;
+        int nextAxis = 1;
+        long? blank = null;
+        double? bscale = null;
+        bool hasPcount = false;
+        bool hasGcount = false;
         int offset = 0;
         while (offset + FitsBlock.CardSize <= header.Length)
         {
-            var view = FitsCardView.Parse(header.Slice(offset, FitsBlock.CardSize), offset);
+            int cardOffset = offset;
+            var view = FitsCardView.Parse(header.Slice(offset, FitsBlock.CardSize), headerOffset + offset);
             offset += FitsBlock.CardSize;
             if (view.IsEnd)
             {
@@ -35,8 +44,13 @@ internal static class DataLayout
             {
                 continue;
             }
+            if (view.IsContinue)
+            {
+                continue;
+            }
 
             HeaderKeyword kind = ClassifyKeyword(keyword, out int axis);
+            string keywordText = view.KeywordText();
             bool duplicate = kind switch
             {
                 HeaderKeyword.Simple => seenSimple,
@@ -46,6 +60,10 @@ internal static class DataLayout
                 HeaderKeyword.Pcount => seenPcount,
                 HeaderKeyword.Gcount => seenGcount,
                 HeaderKeyword.Groups => seenGroups,
+                HeaderKeyword.Bscale => seenBscale,
+                HeaderKeyword.Bzero => seenBzero,
+                HeaderKeyword.Blank => seenBlank,
+                HeaderKeyword.Axis => axes.ContainsKey(axis),
                 _ => false,
             };
             switch (kind)
@@ -57,60 +75,116 @@ internal static class DataLayout
                 case HeaderKeyword.Pcount: seenPcount = true; break;
                 case HeaderKeyword.Gcount: seenGcount = true; break;
                 case HeaderKeyword.Groups: seenGroups = true; break;
+                case HeaderKeyword.Bscale: seenBscale = true; break;
+                case HeaderKeyword.Bzero: seenBzero = true; break;
+                case HeaderKeyword.Blank: seenBlank = true; break;
             }
 
             if (duplicate)
             {
                 string duplicateKeyword = view.KeywordText().ToUpperInvariant();
-                throw new FitsException($"Keyword {duplicateKeyword} is repeated.", new FitsLocation(hduIndex, duplicateKeyword));
+                throw new FitsException($"Keyword {duplicateKeyword} is repeated.", At(hduIndex, duplicateKeyword, headerOffset + cardOffset));
             }
 
             switch (kind)
             {
                 case HeaderKeyword.Simple:
+                    RequireOrder(phase, 0, view, hduIndex, headerOffset + cardOffset);
+                    phase = 0;
+                    RequireKind(view, FitsValueKind.Logical, "SIMPLE", hduIndex, headerOffset + cardOffset);
                     simple = view.Kind == FitsValueKind.Logical && view.Logical;
                     if (!simple)
                     {
-                        throw new FitsException("SIMPLE must be the logical value T.", new FitsLocation(hduIndex, "SIMPLE"));
+                        throw new FitsException("SIMPLE must be the logical value T.", At(hduIndex, "SIMPLE", headerOffset + cardOffset));
                     }
                     break;
                 case HeaderKeyword.Extension:
+                    RequireOrder(phase, 0, view, hduIndex, headerOffset + cardOffset);
+                    phase = 0;
+                    RequireKind(view, FitsValueKind.String, "XTENSION", hduIndex, headerOffset + cardOffset);
                     extension = (view.TextValue() ?? "").Trim();
                     break;
                 case HeaderKeyword.Bitpix:
+                    RequireOrder(phase, 1, view, hduIndex, headerOffset + cardOffset);
+                    phase = 1;
+                    RequireKind(view, FitsValueKind.Integer, "BITPIX", hduIndex, headerOffset + cardOffset);
                     bitpix = checked((int)view.Integer);
                     break;
                 case HeaderKeyword.Naxis:
+                    RequireOrder(phase, 2, view, hduIndex, headerOffset + cardOffset);
+                    phase = 2;
+                    RequireKind(view, FitsValueKind.Integer, "NAXIS", hduIndex, headerOffset + cardOffset);
                     naxis = checked((int)view.Integer);
                     break;
                 case HeaderKeyword.Pcount:
+                    RequireOrder(phase, 5, view, hduIndex, headerOffset + cardOffset);
+                    phase = 5;
+                    RequireKind(view, FitsValueKind.Integer, "PCOUNT", hduIndex, headerOffset + cardOffset);
                     pcount = view.Integer;
+                    hasPcount = true;
                     break;
                 case HeaderKeyword.Gcount:
+                    RequireOrder(phase, 6, view, hduIndex, headerOffset + cardOffset);
+                    phase = 6;
+                    RequireKind(view, FitsValueKind.Integer, "GCOUNT", hduIndex, headerOffset + cardOffset);
                     gcount = view.Integer;
+                    hasGcount = true;
                     break;
                 case HeaderKeyword.Groups:
+                    RequireOrder(phase, 4, view, hduIndex, headerOffset + cardOffset);
+                    phase = 4;
+                    RequireKind(view, FitsValueKind.Logical, "GROUPS", hduIndex, headerOffset + cardOffset);
                     groups = view.Kind == FitsValueKind.Logical && view.Logical;
                     break;
                 case HeaderKeyword.Axis:
+                    RequireOrder(phase, 3, view, hduIndex, headerOffset + cardOffset);
+                    if (axis != nextAxis)
+                    {
+                        throw new FitsException($"NAXIS{axis} is out of order.", At(hduIndex, $"NAXIS{axis}", headerOffset + cardOffset));
+                    }
+
+                    RequireKind(view, FitsValueKind.Integer, $"NAXIS{axis}", hduIndex, headerOffset + cardOffset);
+                    nextAxis++;
                     axes[axis] = checked((int)view.Integer);
+                    break;
+                case HeaderKeyword.Bscale:
+                    RequireKind(view, FitsValueKind.Integer, "BSCALE", hduIndex, headerOffset + cardOffset, FitsValueKind.Real);
+                    bscale = view.Kind == FitsValueKind.Integer ? view.Integer : view.Real;
+                    break;
+                case HeaderKeyword.Bzero:
+                    RequireKind(view, FitsValueKind.Integer, "BZERO", hduIndex, headerOffset + cardOffset, FitsValueKind.Real);
+                    break;
+                case HeaderKeyword.Blank:
+                    RequireKind(view, FitsValueKind.Integer, "BLANK", hduIndex, headerOffset + cardOffset);
+                    blank = view.Integer;
                     break;
             }
         }
 
         if (bitpix is null || naxis is null)
         {
-            throw new FitsException("The header is missing BITPIX or NAXIS.", new FitsLocation(hduIndex));
+            string missing = bitpix is null ? "BITPIX" : "NAXIS";
+            throw new FitsException($"The header is missing {missing}.", At(hduIndex, missing, headerOffset + offset));
+        }
+
+        if (extension is not null && extension.Length == 0)
+        {
+            throw new FitsException("XTENSION must not be empty.", At(hduIndex, "XTENSION", headerOffset));
+        }
+
+        if (hduIndex == 0 && extension is null && !seenSimple)
+        {
+            throw new FitsException("The primary header is missing SIMPLE.", At(hduIndex, "SIMPLE", headerOffset + offset));
         }
 
         if (bitpix.Value is not (8 or 16 or 32 or 64 or -32 or -64))
         {
-            throw new FitsException($"BITPIX {bitpix.Value} is not a legal FITS value.", new FitsLocation(hduIndex, "BITPIX"));
+            throw new FitsException($"BITPIX {bitpix.Value} is not a legal FITS value.", At(hduIndex, "BITPIX", headerOffset + offset));
         }
 
         if (naxis is < 0 or > 999)
         {
-            throw new FitsException("NAXIS must be from 0 through 999.", new FitsLocation(hduIndex, "NAXIS"));
+            throw new FitsException("NAXIS must be from 0 through 999.", At(hduIndex, "NAXIS", headerOffset + offset));
         }
 
         var ordered = new int[naxis.Value];
@@ -118,38 +192,92 @@ internal static class DataLayout
         {
             if (!axes.TryGetValue(axis, out int length))
             {
-                throw new FitsException($"NAXIS{axis} is missing.", new FitsLocation(hduIndex, $"NAXIS{axis}"));
+                throw new FitsException($"NAXIS{axis} is missing.", At(hduIndex, $"NAXIS{axis}", headerOffset + offset));
             }
 
             if (length < 0)
             {
-                throw new FitsException($"NAXIS{axis} must not be negative.", new FitsLocation(hduIndex, $"NAXIS{axis}"));
+                throw new FitsException($"NAXIS{axis} must not be negative.", At(hduIndex, $"NAXIS{axis}", headerOffset + offset));
             }
 
             ordered[axis - 1] = length;
         }
 
+        if (naxis.Value == 0 && axes.Count > 0)
+        {
+            throw new FitsException("NAXIS1 and other axis keywords are not allowed when NAXIS is zero.", At(hduIndex, "NAXIS1", headerOffset + offset));
+        }
+
         bool primary = extension is null;
         if (primary && !simple && hduIndex == 0)
         {
-            throw new FitsException("The primary header is missing SIMPLE.", new FitsLocation(hduIndex, "SIMPLE"));
+            throw new FitsException("The primary header is missing SIMPLE.", At(hduIndex, "SIMPLE", headerOffset + offset));
         }
 
         if (!primary && (pcount is null || gcount is null))
         {
-            throw new FitsException("An extension header requires PCOUNT and GCOUNT.", new FitsLocation(hduIndex));
+            throw new FitsException("An extension header requires PCOUNT and GCOUNT.", At(hduIndex, pcount is null ? "PCOUNT" : "GCOUNT", headerOffset + offset));
+        }
+
+        if (primary && !groups && (hasPcount || hasGcount))
+        {
+            throw new FitsException("PCOUNT and GCOUNT require GROUPS=T in the primary HDU.", At(hduIndex, "GROUPS", headerOffset + offset));
+        }
+
+        if (groups)
+        {
+            if (!primary || naxis.Value < 2 || ordered[0] != 0)
+            {
+                throw new FitsException("Random groups require a primary HDU with NAXIS1=0.", At(hduIndex, "NAXIS1", headerOffset + offset));
+            }
+            if (!hasPcount || !hasGcount)
+            {
+                throw new FitsException(
+                    "Random groups require PCOUNT and GCOUNT.",
+                    At(hduIndex, hasPcount ? "GCOUNT" : "PCOUNT", headerOffset + offset));
+            }
+        }
+
+        if (bscale is 0)
+        {
+            throw new FitsException("BSCALE must not be zero.", At(hduIndex, "BSCALE", headerOffset + offset));
+        }
+
+        if (blank is not null)
+        {
+            if (bitpix.Value < 0)
+            {
+                throw new FitsException("BLANK is only valid for integer images.", At(hduIndex, "BLANK", headerOffset + offset));
+            }
+
+            long minimum = bitpix.Value switch
+            {
+                8 => 0,
+                64 => long.MinValue,
+                _ => -(1L << (bitpix.Value - 1)),
+            };
+            long maximum = bitpix.Value switch
+            {
+                8 => byte.MaxValue,
+                64 => long.MaxValue,
+                _ => (1L << (bitpix.Value - 1)) - 1,
+            };
+            if (blank.Value < minimum || blank.Value > maximum)
+            {
+                throw new FitsException("BLANK is outside the stored integer domain.", At(hduIndex, "BLANK", headerOffset + offset));
+            }
         }
 
         long parameters = pcount ?? 0;
         long groupsCount = gcount ?? 1;
         if (parameters < 0)
         {
-            throw new FitsException("PCOUNT must not be negative.", new FitsLocation(hduIndex, "PCOUNT"));
+            throw new FitsException("PCOUNT must not be negative.", At(hduIndex, "PCOUNT", headerOffset + offset));
         }
 
         if (groupsCount <= 0)
         {
-            throw new FitsException("GCOUNT must be positive.", new FitsLocation(hduIndex, "GCOUNT"));
+            throw new FitsException("GCOUNT must be positive.", At(hduIndex, "GCOUNT", headerOffset + offset));
         }
 
         long elements = ElementProduct(ordered, groups ? 1 : 0);
@@ -208,6 +336,31 @@ internal static class DataLayout
         return true;
     }
 
+    private static void RequireOrder(int phase, int required, FitsCardView view, int hduIndex, long position)
+    {
+        if (phase > required)
+        {
+            throw new FitsException($"Keyword {view.KeywordText()} is out of order.", At(hduIndex, view.KeywordText(), position));
+        }
+    }
+
+    private static void RequireKind(
+        FitsCardView view,
+        FitsValueKind expected,
+        string keyword,
+        int hduIndex,
+        long position,
+        FitsValueKind? alternate = null)
+    {
+        if (view.Kind != expected && view.Kind != alternate)
+        {
+            throw new FitsException($"Keyword {keyword} has an undefined or invalid value.", At(hduIndex, keyword, position));
+        }
+    }
+
+    private static FitsLocation At(int hduIndex, string? keyword, long position) =>
+        new(hduIndex, keyword, Position: position);
+
     private enum HeaderKeyword
     {
         Other,
@@ -219,6 +372,9 @@ internal static class DataLayout
         Gcount,
         Groups,
         Axis,
+        Bscale,
+        Bzero,
+        Blank,
     }
 
     private static HeaderKeyword ClassifyKeyword(ReadOnlySpan<byte> keyword, out int axis)
@@ -231,6 +387,9 @@ internal static class DataLayout
         if (EqualsKeyword(keyword, "PCOUNT"u8)) return HeaderKeyword.Pcount;
         if (EqualsKeyword(keyword, "GCOUNT"u8)) return HeaderKeyword.Gcount;
         if (EqualsKeyword(keyword, "GROUPS"u8)) return HeaderKeyword.Groups;
+        if (EqualsKeyword(keyword, "BSCALE"u8)) return HeaderKeyword.Bscale;
+        if (EqualsKeyword(keyword, "BZERO"u8)) return HeaderKeyword.Bzero;
+        if (EqualsKeyword(keyword, "BLANK"u8)) return HeaderKeyword.Blank;
         if (keyword.Length <= 5 || !EqualsKeyword(keyword[..5], "NAXIS"u8))
         {
             return HeaderKeyword.Other;

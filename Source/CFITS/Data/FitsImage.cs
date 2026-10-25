@@ -34,6 +34,11 @@ public sealed class FitsImage
         }
 
         Length = (int)count;
+        long expectedBytes = checked(count * (long)Pixels.Width(bitpix));
+        if (raw.Length != expectedBytes)
+        {
+            throw new FitsException("The image data length does not match the declared axes.", new FitsLocation());
+        }
     }
 
     public int Bitpix { get; }
@@ -276,7 +281,11 @@ public sealed class FitsImage
         return values;
     }
 
-    public long ReadStoredInteger(int index) => Pixels.ReadInteger(_raw.Span, Bitpix, index);
+    public long ReadStoredInteger(int index)
+    {
+        ValidateIndex(index);
+        return Pixels.ReadInteger(_raw.Span, Bitpix, index);
+    }
 
     public Int128 ReadInteger(int index)
     {
@@ -285,6 +294,7 @@ public sealed class FitsImage
             throw new FitsException("This image does not store integers.", new FitsLocation(Keyword: "BITPIX"));
         }
 
+        ValidateIndex(index);
         long stored = ReadStoredInteger(index);
         if (Blank is long marker && stored == marker)
         {
@@ -306,6 +316,7 @@ public sealed class FitsImage
 
     public double ReadPhysical(int index)
     {
+        ValidateIndex(index);
         double stored = Pixels.Read(_raw.Span, Bitpix, index);
         if (_mode == FitsScaleMode.Stored)
         {
@@ -339,6 +350,14 @@ public sealed class FitsImage
         if (destinationLength < Length)
         {
             throw new FitsException("The destination is shorter than the image.", new FitsLocation());
+        }
+    }
+
+    private void ValidateIndex(int index)
+    {
+        if ((uint)index >= (uint)Length)
+        {
+            throw new FitsException("The pixel index is outside the image.", new FitsLocation());
         }
     }
 

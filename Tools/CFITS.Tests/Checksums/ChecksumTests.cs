@@ -51,13 +51,7 @@ public sealed class ChecksumTests
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
         document.Save(path);
         var python = PythonRuntime.Find(root);
-        var script = Path.Combine(root, "SampleData", "Compressed", "checksum.py");
-        string scriptText = "from astropy.io import fits\n" +
-            "with fits.open(r'" + path.Replace("\\", "/") + "', checksum=True) as hdul:\n" +
-            "    hdul.verify('exception')\n" +
-            "    print(hdul[0].header['DATASUM'])\n" +
-            "    print(hdul[0].header['CHECKSUM'])\n";
-        File.WriteAllText(script, scriptText);
+        var script = Path.Combine(root, "Tools", "CFITS.PyScripts", "Fixtures", "CheckChecksum.py");
         var start = new System.Diagnostics.ProcessStartInfo(python)
         {
             RedirectStandardError = true,
@@ -65,6 +59,7 @@ public sealed class ChecksumTests
             UseShellExecute = false,
         };
         start.ArgumentList.Add(script);
+        start.ArgumentList.Add(path);
         using var process = System.Diagnostics.Process.Start(start)!;
         string output = process.StandardOutput.ReadToEnd();
         string error = process.StandardError.ReadToEnd();

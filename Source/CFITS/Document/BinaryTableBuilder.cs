@@ -448,6 +448,26 @@ public sealed class BinaryTableBuilder
         return AddVariableColumn(name, "QD", true, rows.Count, heap, counts, lengths);
     }
 
+    public BinaryTableBuilder AddVariable(string name, IReadOnlyList<float[]> rows)
+    {
+        var counts = rows.Select(static row => row.Length).ToArray();
+        var lengths = GetVariableLengths(counts, 4);
+        var heap = new byte[GetHeapSize(lengths)];
+        int cursor = 0;
+        for (int row = 0; row < rows.Count; row++)
+        {
+            float[] source = rows[row];
+            for (int index = 0; index < source.Length; index++)
+            {
+                BinaryPrimitives.WriteSingleBigEndian(heap.AsSpan(cursor + (index * 4), 4), source[index]);
+            }
+
+            cursor += lengths[row];
+        }
+
+        return AddVariableColumn(name, "PE", false, rows.Count, heap, counts, lengths);
+    }
+
     public BinaryTableBuilder AddVariable(string name, IReadOnlyList<string> rows)
     {
         var counts = rows.Select(static row => row.Length).ToArray();

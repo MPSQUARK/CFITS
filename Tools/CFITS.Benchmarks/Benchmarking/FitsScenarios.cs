@@ -266,16 +266,7 @@ public class FitsScenarios
     {
         string python = PythonRuntime.Find(root);
 
-        string script = Path.Combine(Path.GetDirectoryName(rice)!, "compress_bench.py");
-        string ricePath = rice.Replace("\\", "/");
-        string hcompressPath = hcompress.Replace("\\", "/");
-        string scriptText =
-            "import numpy as np\n" +
-            "from astropy.io import fits\n" +
-            "data = (np.arange(128 * 128, dtype=np.int16).reshape(128, 128) % 500) - 100\n" +
-            "fits.CompImageHDU(data=data, compression_type='RICE_1').writeto(r'" + ricePath + "', overwrite=True)\n" +
-            "fits.CompImageHDU(data=data, compression_type='HCOMPRESS_1').writeto(r'" + hcompressPath + "', overwrite=True)\n";
-        File.WriteAllText(script, scriptText);
+        string script = Path.Combine(root, "Tools", "CFITS.PyScripts", "Benchmarks", "GenerateCompressedFixtures.py");
         var start = new System.Diagnostics.ProcessStartInfo(python)
         {
             WorkingDirectory = root,
@@ -283,6 +274,8 @@ public class FitsScenarios
             UseShellExecute = false,
         };
         start.ArgumentList.Add(script);
+        start.ArgumentList.Add(rice);
+        start.ArgumentList.Add(hcompress);
         using var process = System.Diagnostics.Process.Start(start)!;
         string error = process.StandardError.ReadToEnd();
         process.WaitForExit();

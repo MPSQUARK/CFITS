@@ -6,7 +6,8 @@ internal static class CardImages
 {
     public static byte[] Format(FitsCard card)
     {
-        if (card.Kind == FitsValueKind.String && EncodedLength(card.Text ?? "") > 68)
+        if (card.Kind == FitsValueKind.String &&
+            (EncodedLength(card.Text ?? "") > 68 || !CanFitComment(card)))
         {
             return FormatLongString(card);
         }
@@ -30,6 +31,11 @@ internal static class CardImages
         {
             WriteKeyword(image, "CONTINUE");
             WriteQuoted(image, 10, text, continueMarker);
+            if (!continueMarker && !string.IsNullOrEmpty(card.Comment))
+            {
+                WriteComment(image, IndexOfClosingQuote(image) + 1, card.Comment);
+            }
+
             return;
         }
 
@@ -64,7 +70,7 @@ internal static class CardImages
         {
             WriteComment(image, 30, card.Comment);
         }
-        else if (!string.IsNullOrEmpty(card.Comment) && card.Kind == FitsValueKind.String)
+        else if (!string.IsNullOrEmpty(card.Comment) && card.Kind == FitsValueKind.String && !continueMarker)
         {
             int close = IndexOfClosingQuote(image);
             if (close > 0 && close + 4 < FitsBlock.CardSize)
@@ -76,7 +82,7 @@ internal static class CardImages
 
     private static byte[] FormatLongString(FitsCard card)
     {
-        var parts = Split(card.Text ?? "");
+        var parts = Split(card.Text ?? "", card.Comment ?? "");
         var images = new byte[parts.Count * FitsBlock.CardSize];
         for (int i = 0; i < parts.Count; i++)
         {
@@ -87,39 +93,44 @@ internal static class CardImages
         return images;
     }
 
-    private static List<string> Split(string value)
+    private static List<string> Split(string value, string comment)
     {
+        if (comment.Length > 47)
+        {
+            throw new FitsException("A header comment is too long for a card.", new FitsLocation(Keyword: "CONTINUE"));
+        }
+
         var parts = new List<string>();
         int index = 0;
         while (index < value.Length)
         {
-            int encoded = 0;
+            int remaining = EncodedLength(value[index..]);
+            if (remaining <= 68 && FitsComment(value[index..], comment))
+            {
+                parts.Add(value[index..]);
+                break;
+            }
+
             int start = index;
-            int last = index;
+            int encoded = 0;
             while (index < value.Length)
             {
                 int cost = value[index] == '\'' ? 2 : 1;
-                int room = 67;
-                if (encoded + cost > room)
+                if (encoded + cost > 67)
                 {
                     break;
                 }
 
                 encoded += cost;
                 index++;
-                last = index;
             }
 
-            if (last == start)
+            if (index == start)
             {
                 throw new FitsException("A header string contains a quote that does not fit in one record.", new FitsLocation(Keyword: "CONTINUE"));
             }
 
-            parts.Add(value[start..last]);
-            if (index >= value.Length)
-            {
-                break;
-            }
+            parts.Add(value[start..index]);
         }
 
         return parts;
@@ -186,7 +197,7 @@ internal static class CardImages
         {
             if (cursor >= FitsBlock.CardSize - 1)
             {
-                break;
+                throw new FitsException("A quoted header value does not fit in one card.", new FitsLocation());
             }
 
             image[cursor++] = (byte)character;
@@ -194,29 +205,36 @@ internal static class CardImages
             {
                 image[cursor++] = (byte)'\'';
             }
+            else if (character == '\'' && cursor >= FitsBlock.CardSize - 1)
+            {
+                throw new FitsException("An escaped quote does not fit in one card.", new FitsLocation());
+            }
         }
 
-        if (continueMarker && cursor < FitsBlock.CardSize - 1)
+        if (continueMarker)
         {
+            if (cursor >= FitsBlock.CardSize - 1)
+            {
+                throw new FitsException("A continuation marker does not fit in one card.", new FitsLocation());
+            }
+
             image[cursor++] = (byte)'&';
         }
 
-        if (cursor < FitsBlock.CardSize)
+        if (cursor >= FitsBlock.CardSize)
         {
-            image[cursor] = (byte)'\'';
+            throw new FitsException("A quoted header value has no room for its closing quote.", new FitsLocation());
         }
+
+        image[cursor] = (byte)'\'';
     }
 
     private static void WriteComment(Span<byte> image, int start, string comment)
     {
-        while (start < FitsBlock.CardSize && image[start] == (byte)' ')
-        {
-            start++;
-        }
-
+        ValidateAscii(comment);
         if (start + 2 >= FitsBlock.CardSize)
         {
-            return;
+            throw new FitsException("A header comment does not fit in one card.", new FitsLocation());
         }
 
         if (image[start] != (byte)' ')
@@ -232,7 +250,7 @@ internal static class CardImages
 
         if (slash + 3 >= FitsBlock.CardSize)
         {
-            return;
+            throw new FitsException("A header comment does not fit in one card.", new FitsLocation());
         }
 
         image[slash] = (byte)' ';
@@ -281,8 +299,12 @@ internal static class CardImages
     private static void WriteBytes(Span<byte> image, int start, string text)
     {
         ValidateAscii(text);
-        int count = Math.Min(text.Length, image.Length - start);
-        for (int i = 0; i < count; i++)
+        if (start < 0 || text.Length > image.Length - start)
+        {
+            throw new FitsException("Header text does not fit in one card.", new FitsLocation());
+        }
+
+        for (int i = 0; i < text.Length; i++)
         {
             char value = text[i];
             image[start + i] = (byte)value;
@@ -298,6 +320,23 @@ internal static class CardImages
                 throw new FitsException("FITS card text must contain only ASCII characters.", new FitsLocation());
             }
         }
+    }
+
+    private static bool CanFitComment(FitsCard card)
+    {
+        if (string.IsNullOrEmpty(card.Comment))
+        {
+            return true;
+        }
+
+        ValidateAscii(card.Comment);
+        return FitsComment(card.Text ?? "", card.Comment);
+    }
+
+    private static bool FitsComment(string value, string comment)
+    {
+        int slash = Math.Max(30, 12 + EncodedLength(value));
+        return comment.Length <= 77 - slash;
     }
 
     private static string FormatReal(double value)

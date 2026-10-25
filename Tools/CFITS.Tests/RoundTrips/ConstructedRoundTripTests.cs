@@ -109,7 +109,7 @@ public sealed class ConstructedRoundTripTests
         document.Save(fits);
         File.WriteAllText(dump, OracleDump.Create(document));
         var python = PythonRuntime.Find(root);
-        var oracle = Path.Combine(root, "Tools", "SampleGenerator", "Source", "oracle.py");
+        var oracle = Path.Combine(root, "Tools", "CFITS.PyScripts", "Oracles", "Oracle.py");
         var start = new ProcessStartInfo(python)
         {
             WorkingDirectory = root,

@@ -34,6 +34,7 @@ internal static class TableCompression
             int number = field + 1;
             specs[field] = ColumnFormats.Parse(header.GetString($"ZFORM{number}"), ascii: false);
             algorithms[field] = header.GetString($"ZCTYP{number}");
+            ValidateAlgorithm(algorithms[field], number);
             names[field] = header.TryGetCard($"TTYPE{number}", out var name) ? name.GetString() ?? $"Column{number}" : $"Column{number}";
             cursor = checked(cursor + specs[field].Width);
         }
@@ -61,13 +62,18 @@ internal static class TableCompression
             offset += specs[field].Width;
         }
 
-        var logical = LogicalHeader(header, fields, names, bodyLength);
+        var logical = LogicalHeader(header, fields, names, bodyLength, declaredHeap);
         var shape = new HduShape { Bitpix = 8, Axes = [rowWidth, rows], Gcount = 1, Pcount = declaredHeap };
         return FitsTable.Create(logical, data, ascii: false, shape, mode);
     }
 
     private static void ExpandColumn(FitsColumn column, int tiles, ColumnSpec spec, string algorithm, int offset, int rows, int rowWidth, int tileLength, int blockSize, Span<byte> body, Span<byte> heap)
     {
+        if (!column.IsVariableLength)
+        {
+            throw new FitsException($"Compressed column '{column.Name}' must use a variable-length descriptor.", new FitsLocation(Column: column.Name));
+        }
+
         char element = spec.Variable ? spec.ElementCode : spec.Code;
         for (int tile = 0; tile < tiles; tile++)
         {
@@ -85,12 +91,21 @@ internal static class TableCompression
             }
             else
             {
-                byte[] plain = Expand(algorithm, stored, tileRows * spec.Width, ElementBytes(element), Numeric(element), blockSize);
+                byte[] plain = Expand(algorithm, stored, checked(tileRows * spec.Width), ElementBytes(element), element, blockSize);
                 for (int row = 0; row < tileRows; row++)
                 {
                     plain.AsSpan(row * spec.Width, spec.Width).CopyTo(body.Slice(((start + row) * rowWidth) + offset, spec.Width));
                 }
             }
+        }
+    }
+
+    private static void ValidateAlgorithm(string algorithm, int field)
+    {
+        string name = algorithm.Trim().Replace(' ', '_').ToUpperInvariant();
+        if (name is not ("NOCOMPRESS" or "GZIP_1" or "GZIP_2" or "RICE_1" or "RICE_ONE"))
+        {
+            throw new FitsException($"Table compression algorithm '{algorithm}' is not supported.", new FitsLocation(Keyword: $"ZCTYP{field}"));
         }
     }
 
@@ -104,14 +119,18 @@ internal static class TableCompression
             throw new FitsException("A compressed variable-length column is missing its descriptors.", new FitsLocation(Column: column.Name));
         }
 
-        int originalBase = checked(tileRows * descriptor);
+        bool interleaved = HasInterleavedDescriptors(bundle, descriptor, element, heap.Length);
         for (int row = 0; row < tileRows; row++)
         {
-            int compressedAt = row * descriptor;
+            int compressedAt = interleaved
+                ? checked(row * descriptor * 2)
+                : checked(row * descriptor);
             int valueWidth = descriptor >> 1;
             long compressedCount = ReadDescriptorValue(bundle.AsSpan(compressedAt, valueWidth), valueWidth);
             long compressedOffset = ReadDescriptorValue(bundle.AsSpan(compressedAt + valueWidth, valueWidth), valueWidth);
-            int originalAt = checked(originalBase + (row * descriptor));
+            int originalAt = interleaved
+                ? checked(compressedAt + descriptor)
+                : checked(tileRows * descriptor + (row * descriptor));
             bundle.AsSpan(originalAt, descriptor).CopyTo(body.Slice(((start + row) * rowWidth) + offset, descriptor));
             if (compressedCount < 0 || compressedOffset < 0 || compressedCount > int.MaxValue)
             {
@@ -137,9 +156,19 @@ internal static class TableCompression
 
             byte[] payload = column.ReadHeap(compressedOffset, checked((int)compressedCount));
             int width = ElementBytes(element);
-            byte[] plain = Expand(algorithm, payload, checked((int)elements * width), width, Numeric(element), blockSize);
+            byte[] plain = Expand(algorithm, payload, checked((int)elements * width), width, element, blockSize);
             Place(heap, heapOffset, plain);
         }
+    }
+
+    private static bool HasInterleavedDescriptors(byte[] bundle, int descriptor, char element, int heapLength)
+    {
+        int valueWidth = descriptor >> 1;
+        int originalAt = descriptor;
+        long elements = ReadDescriptorValue(bundle.AsSpan(originalAt, valueWidth), valueWidth);
+        long offset = ReadDescriptorValue(bundle.AsSpan(originalAt + valueWidth, valueWidth), valueWidth);
+        long bytes = elements < 0 ? long.MaxValue : elements * ElementBytes(element);
+        return elements >= 0 && offset >= 0 && bytes <= int.MaxValue && offset <= heapLength && bytes <= heapLength - offset;
     }
 
     private static long ReadDescriptorValue(ReadOnlySpan<byte> bytes, int width) => width switch
@@ -179,7 +208,7 @@ internal static class TableCompression
         plain.CopyTo(heap[(int)offset..]);
     }
 
-    private static byte[] Expand(string algorithm, byte[] compressed, int outputBytes, int elementBytes, bool numeric, int blockSize)
+    private static byte[] Expand(string algorithm, byte[] compressed, int outputBytes, int elementBytes, char element, int blockSize)
     {
         string name = algorithm.Trim().Replace(' ', '_').ToUpperInvariant();
         if (name is "NOCOMPRESS")
@@ -190,7 +219,7 @@ internal static class TableCompression
         if (name is "GZIP_1" or "GZIP_2")
         {
             byte[] plain = GunzipExact(compressed, outputBytes);
-            if (name == "GZIP_2" && numeric && elementBytes > 1)
+            if (name == "GZIP_2" && elementBytes > 1)
             {
                 plain = Unshuffle(plain, elementBytes);
             }
@@ -229,10 +258,11 @@ internal static class TableCompression
         return bytes;
     }
 
-    private static FitsHeader LogicalHeader(FitsHeader source, int fields, string[] names, int heapStart)
+    private static FitsHeader LogicalHeader(FitsHeader source, int fields, string[] names, int heapStart, int heapLength)
     {
         var builder = FitsHeader.Builder();
         builder.Integer("TFIELDS", fields);
+        builder.Integer("PCOUNT", heapLength);
         builder.Integer("THEAP", heapStart);
         for (int field = 0; field < fields; field++)
         {
@@ -290,61 +320,50 @@ internal static class TableCompression
 
     private static byte[] Gunzip(byte[] compressed)
     {
-        using var input = new MemoryStream(compressed);
-        using var gzip = new GZipStream(input, CompressionMode.Decompress);
-        using var output = new MemoryStream();
-        gzip.CopyTo(output);
-        return output.ToArray();
+        try
+        {
+            using var input = new MemoryStream(compressed);
+            using var gzip = new GZipStream(input, CompressionMode.Decompress);
+            using var output = new MemoryStream();
+            gzip.CopyTo(output);
+            return output.ToArray();
+        }
+        catch (InvalidDataException exception)
+        {
+            throw new FitsException("A compressed table column is not a valid GZIP stream.", new FitsLocation(), exception);
+        }
     }
 
     private static byte[] GunzipExact(byte[] compressed, int length)
     {
-        var output = new byte[length];
-        using var input = new MemoryStream(compressed, writable: false);
-        using var gzip = new GZipStream(input, CompressionMode.Decompress);
-        int read = 0;
-        while (read < output.Length)
+        try
         {
-            int count = gzip.Read(output.AsSpan(read));
-            if (count == 0)
+            var output = new byte[length];
+            using var input = new MemoryStream(compressed, writable: false);
+            using var gzip = new GZipStream(input, CompressionMode.Decompress);
+            int read = 0;
+            while (read < output.Length)
             {
-                throw new FitsException($"Decoded table column has {read} bytes; expected {length}.", new FitsLocation());
+                int count = gzip.Read(output.AsSpan(read));
+                if (count == 0)
+                {
+                    throw new FitsException($"Decoded table column has {read} bytes; expected {length}.", new FitsLocation());
+                }
+
+                read += count;
             }
 
-            read += count;
-        }
-
-        if (gzip.ReadByte() >= 0)
-        {
-            throw new FitsException($"Decoded table column is longer than the expected {length} bytes.", new FitsLocation());
-        }
-
-        return output;
-    }
-
-    private static byte[] Unshuffle(byte[] shuffled, int width)
-    {
-        if (width <= 0 || shuffled.Length % width != 0)
-        {
-            throw new FitsException("A shuffled table column has an invalid length.", new FitsLocation());
-        }
-
-        int count = shuffled.Length / width;
-        var bytes = new byte[shuffled.Length];
-        int sourceOffset = 0;
-        for (int item = 0; item < count; item++)
-        {
-            int destinationOffset = item * width;
-            for (int byteIndex = 0; byteIndex < width; byteIndex++)
+            if (gzip.ReadByte() >= 0)
             {
-                bytes[destinationOffset + byteIndex] = shuffled[sourceOffset];
-                sourceOffset += count;
+                throw new FitsException($"Decoded table column is longer than the expected {length} bytes.", new FitsLocation());
             }
 
-            sourceOffset = item + 1;
+            return output;
         }
-
-        return bytes;
+        catch (InvalidDataException exception)
+        {
+            throw new FitsException("A compressed table column is not a valid GZIP stream.", new FitsLocation(), exception);
+        }
     }
 
     private static int ElementBytes(char code) => code switch
@@ -357,7 +376,28 @@ internal static class TableCompression
         _ => throw new FitsException($"Column type '{code}' cannot be decompressed as a byte stream.", new FitsLocation()),
     };
 
-    private static bool Numeric(char code) => code is 'B' or 'I' or 'J' or 'K' or 'E' or 'D' or 'C' or 'M';
+    private static byte[] Unshuffle(byte[] shuffled, int width)
+    {
+        if (width <= 0 || shuffled.Length % width != 0)
+        {
+            throw new FitsException("A shuffled table column has an invalid length.", new FitsLocation());
+        }
+
+        int count = shuffled.Length / width;
+        var bytes = new byte[shuffled.Length];
+        for (int item = 0; item < count; item++)
+        {
+            int sourceOffset = item;
+            int destinationOffset = item * width;
+            for (int byteIndex = 0; byteIndex < width; byteIndex++)
+            {
+                bytes[destinationOffset + byteIndex] = shuffled[sourceOffset];
+                sourceOffset += count;
+            }
+        }
+
+        return bytes;
+    }
 
     private static void WriteInteger(Span<byte> destination, uint value)
     {

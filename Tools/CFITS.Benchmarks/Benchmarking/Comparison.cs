@@ -757,7 +757,7 @@ internal static class Comparison
         string csvPath)
     {
         string python = PythonRuntime.Find(root);
-        string script = Path.Combine(root, "Benchmarks", "Scripts", "compare_astropy.py");
+        string script = Path.Combine(root, "Tools", "CFITS.PyScripts", "Benchmarks", "CompareAstropy.py");
         var start = new ProcessStartInfo(python)
         {
             WorkingDirectory = root,

@@ -7,7 +7,7 @@ public sealed class OracleTests
 {
     private static readonly string Root = FindRoot();
     private static readonly string Python = PythonRuntime.Find(Root);
-    private static readonly string Oracle = Path.Combine(Root, "Tools", "SampleGenerator", "Source", "oracle.py");
+    private static readonly string Oracle = Path.Combine(Root, "Tools", "CFITS.PyScripts", "Oracles", "Oracle.py");
     private static readonly string Fixtures = Path.Combine(Root, "SampleData", "Generated");
 
     [Fact]

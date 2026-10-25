@@ -1,0 +1,15 @@
+[project]
+name = "cfits-pyscripts"
+version = "0.1.0"
+description = "CFITS Python fixtures, oracles, and benchmark tooling."
+authors = [{ name = "Marcel Pawelczyk", email = "marcelpawelczyk7@gmail.com" }]
+readme = "../../README.md"
+requires-python = ">=3.15,<3.16"
+dependencies = [
+    "astropy",
+    "numpy",
+    "pathlib",
+]
+
+[tool.uv]
+package = false

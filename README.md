@@ -21,10 +21,16 @@ Projects:
 - `Source/CFITS.Generator` — the serializer source generator
 - `Tools/CFITS.Tests` — xUnit tests, including an Astropy oracle
 - `Tools/CFITS.Console` — `CFITS.Console file.fits` prints the HDUs
-- `Tools/SampleGenerator` — Astropy fixture generator used by the tests
+- `Tools/CFITS.PyScripts` — Astropy fixtures, oracles, and benchmark tooling
 
 The tests use Python 3 with Astropy and NumPy. They discover `.venv` on Windows or POSIX systems, or an executable configured through `CFITS_PYTHON`.
-For example: `python3 -m venv .venv` followed by `python -m pip install astropy numpy`.
+Install [uv](https://docs.astral.sh/uv/), then sync the Python tooling environment:
+
+```powershell
+cd Tools/CFITS.PyScripts
+uv sync
+uv run python Oracles\CheckAstropy.py
+```
 
 ```powershell
 dotnet test

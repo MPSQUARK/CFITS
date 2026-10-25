@@ -34,7 +34,12 @@ public sealed class FitsGroups
         ParameterCount = parameters;
         DataLength = dataLength;
         Count = groups;
-        _stride = parameters + dataLength;
+        _stride = checked(parameters + dataLength);
+        long expectedBytes = checked((long)_stride * groups * _width);
+        if (raw.Length != expectedBytes)
+        {
+            throw new FitsException("The random-groups data length does not match the declared shape.", new FitsLocation());
+        }
         _scale = scale;
         _zero = zero;
         _blank = blank;
@@ -54,6 +59,12 @@ public sealed class FitsGroups
 
     public double ReadParameter(int group, int parameter)
     {
+        ValidateGroup(group);
+        if ((uint)parameter >= (uint)ParameterCount)
+        {
+            throw new FitsException("The group parameter index is outside the group.", new FitsLocation());
+        }
+
         double stored = ReadAt((group * _stride) + parameter);
         if (_mode == FitsScaleMode.Stored)
         {
@@ -65,6 +76,12 @@ public sealed class FitsGroups
 
     public double ReadData(int group, int index)
     {
+        ValidateGroup(group);
+        if ((uint)index >= (uint)DataLength)
+        {
+            throw new FitsException("The group data index is outside the group.", new FitsLocation());
+        }
+
         int at = (group * _stride) + ParameterCount + index;
         double stored = ReadAt(at);
         if (_mode == FitsScaleMode.Stored)
@@ -110,4 +127,12 @@ public sealed class FitsGroups
     }
 
     private double ReadAt(int index) => Pixels.Read(_raw.Span, _bitpix, index);
+
+    private void ValidateGroup(int group)
+    {
+        if ((uint)group >= (uint)Count)
+        {
+            throw new FitsException("The group index is outside the random-groups array.", new FitsLocation());
+        }
+    }
 }

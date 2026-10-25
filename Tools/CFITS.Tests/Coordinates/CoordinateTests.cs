@@ -75,35 +75,6 @@ public sealed class CoordinateTests
         var directory = Path.Combine(root, "SampleData", "Compressed");
         Directory.CreateDirectory(directory);
         var python = PythonRuntime.Find(root);
-        File.WriteAllText(Path.Combine(directory, "wcs.py"), """
-            import numpy as np
-            from astropy.io import fits
-            from astropy.wcs import WCS
-
-            def write(name, ctype, crval, cdelt, pc=None):
-                w = WCS(naxis=2)
-                w.wcs.crpix = [2, 3]
-                w.wcs.crval = crval
-                w.wcs.cdelt = cdelt
-                w.wcs.ctype = ctype
-                if pc is not None:
-                    w.wcs.pc = pc
-                pixels = np.array([[2.0, 3.0], [3.0, 3.0], [2.0, 4.0], [4.0, 6.0]])
-                world = w.wcs_pix2world(pixels, 1)
-                header = w.to_header()
-                fits.PrimaryHDU(header=header).writeto(name + '.fits', overwrite=True)
-                np.savetxt(name + '.txt', world, fmt='%.12g')
-                np.savetxt(name + '-pix.txt', w.wcs_world2pix(world, 1), fmt='%.12g')
-
-            write('linear', ['WAVE', 'PIXEL'], [1000.0, 0.0], [0.5, 1.0])
-            write('tan', ['RA---TAN', 'DEC--TAN'], [83.633, -5.391], [-0.01, 0.01])
-            write('sin', ['RA---SIN', 'DEC--SIN'], [83.633, -5.391], [-0.01, 0.01])
-            write('arc', ['RA---ARC', 'DEC--ARC'], [10.0, 20.0], [-0.2, 0.2])
-            write('zea', ['RA---ZEA', 'DEC--ZEA'], [10.0, 20.0], [-0.2, 0.2])
-            write('stg', ['RA---STG', 'DEC--STG'], [10.0, 20.0], [-0.2, 0.2])
-            write('car', ['RA---CAR', 'DEC--CAR'], [10.0, 20.0], [-0.2, 0.2])
-            write('pc', ['RA---TAN', 'DEC--TAN'], [83.633, -5.391], [-0.01, 0.01], pc=[[0.0, -1.0], [1.0, 0.0]])
-            """);
         var start = new System.Diagnostics.ProcessStartInfo(python)
         {
             WorkingDirectory = directory,
@@ -111,7 +82,8 @@ public sealed class CoordinateTests
             RedirectStandardOutput = true,
             UseShellExecute = false,
         };
-        start.ArgumentList.Add(Path.Combine(directory, "wcs.py"));
+        start.ArgumentList.Add(Path.Combine(root, "Tools", "CFITS.PyScripts", "Fixtures", "GenerateWcs.py"));
+        start.ArgumentList.Add(directory);
         using var process = System.Diagnostics.Process.Start(start)!;
         string error = process.StandardError.ReadToEnd();
         process.WaitForExit();
@@ -147,7 +119,7 @@ public sealed class CoordinateTests
         Assert.Equal(51544.5 - (2d / 24d), FitsClock.ModifiedJulianDate("2000-01-01T12:00:00+02:00"), 9);
         Assert.Equal(50000 + (32.184d / 86400d), FitsClock.ConvertModifiedJulianDate(50000, "TAI", "TT"), 12);
         Assert.Equal(50000, FitsClock.ConvertModifiedJulianDate(FitsClock.ConvertModifiedJulianDate(50000, "TT", "TCG"), "TCG", "TT"), 9);
-        Assert.Throws<FitsException>(() => FitsClock.ConvertModifiedJulianDate(50000, "UTC", "TAI"));
+        Assert.Equal(50000 + (29d / 86400d), FitsClock.ConvertModifiedJulianDate(50000, "UTC", "TAI"), 12);
         var header = FitsHeader.Builder()
             .Text("TIMESYS", "UTC")
             .Integer("MJDREFI", 50000)

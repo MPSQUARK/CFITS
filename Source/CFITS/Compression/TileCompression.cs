@@ -41,6 +41,11 @@ internal static class TileCompression
         }
 
         string algorithm = header.GetString("ZCMPTYPE").Trim().Replace(' ', '_').ToUpperInvariant();
+        if (algorithm is not ("GZIP_1" or "GZIP_2" or "RICE_1" or "RICE_ONE" or "HCOMPRESS_1" or "PLIO_1" or "NOCOMPRESS"))
+        {
+            throw new FitsException($"Compression algorithm '{algorithm}' is not supported.", new FitsLocation(Keyword: "ZCMPTYPE"));
+        }
+
         int pixels = axes.Length == 0 ? 0 : 1;
         foreach (int axis in axes)
         {
@@ -95,7 +100,7 @@ internal static class TileCompression
             }
 
             byte[] compressed = data.ReadVariableBytes(row);
-            bool losslessGzip = compressed.Length == 0 && gzip is not null;
+            bool losslessGzip = algorithm is "GZIP_1" or "GZIP_2" && gzip is not null;
             double rowScale = losslessGzip ? 1 : scale?.ReadReal(row) ?? 1;
             double rowZero = losslessGzip ? 0 : zero?.ReadReal(row) ?? 0;
             var decoded = losslessGzip
@@ -305,14 +310,21 @@ internal static class TileCompression
 
     private static byte[] Gunzip(byte[] compressed)
     {
-        using var output = new MemoryStream();
-        using (var input = new MemoryStream(compressed, writable: false))
-        using (var gzip = new GZipStream(input, CompressionMode.Decompress))
+        try
         {
-            gzip.CopyTo(output);
-        }
+            using var output = new MemoryStream();
+            using (var input = new MemoryStream(compressed, writable: false))
+            using (var gzip = new GZipStream(input, CompressionMode.Decompress))
+            {
+                gzip.CopyTo(output);
+            }
 
-        return output.ToArray();
+            return output.ToArray();
+        }
+        catch (InvalidDataException exception)
+        {
+            throw new FitsException("A compressed image tile is not a valid GZIP stream.", new FitsLocation(), exception);
+        }
     }
 
     private static bool TryContiguous(int[] axes, int[] origin, int[] span, out int start, out int count)
@@ -461,6 +473,8 @@ internal static class TileCompression
             value = (value << 8) | bytes[offset + index];
         }
 
+        int shift = (sizeof(long) - width) * 8;
+        value = (value << shift) >> shift;
         return value;
     }
 

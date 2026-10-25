@@ -14,16 +14,22 @@ public sealed class FitsWorld
     private const double SingularMatrixTolerance = 1e-12;
     private const double DegreesPerRadian = 180 / Math.PI;
     private const double RadiansPerDegree = Math.PI / 180;
+    private const double SqrtTwo = 1.4142135623730950488;
 
     private static readonly FrozenDictionary<string, Projection> ProjectionKinds =
         new Dictionary<string, Projection>(StringComparer.OrdinalIgnoreCase)
     {
         ["ARC"] = Projection.Arc,
+        ["AIT"] = Projection.Ait,
+        ["AZP"] = Projection.Azp,
         ["CAR"] = Projection.Car,
+        ["CEA"] = Projection.Cea,
+        ["HPX"] = Projection.Hpx,
         ["SIN"] = Projection.Sin,
         ["STG"] = Projection.Stg,
         ["TAN"] = Projection.Tan,
         ["ZEA"] = Projection.Zea,
+        ["ZPN"] = Projection.Zpn,
     }.ToFrozenDictionary(StringComparer.OrdinalIgnoreCase);
 
     private readonly double[] _referencePixel;
@@ -35,8 +41,10 @@ public sealed class FitsWorld
     private readonly int _latitude;
     private readonly Projection _projectionKind;
     private readonly double[] _euler;
+    private readonly double _pv1;
+    private readonly double _pv2;
 
-    private FitsWorld(double[] referencePixel, double[] referenceValue, double[] scale, double[] matrix, bool scaledMatrix, int longitude, int latitude, string? projection, double[] euler)
+    private FitsWorld(double[] referencePixel, double[] referenceValue, double[] scale, double[] matrix, bool scaledMatrix, int longitude, int latitude, string? projection, double[] euler, double pv1, double pv2)
     {
         _referencePixel = referencePixel;
         _referenceValue = referenceValue;
@@ -47,6 +55,8 @@ public sealed class FitsWorld
         _latitude = latitude;
         _projectionKind = ProjectionOf(projection);
         _euler = euler;
+        _pv1 = pv1;
+        _pv2 = pv2;
     }
 
     public int Axes => _referencePixel.Length;
@@ -64,6 +74,8 @@ public sealed class FitsWorld
         {
             referencePixel[axis - 1] = Read(header, $"CRPIX{axis}", version, 0);
             referenceValue[axis - 1] = Read(header, $"CRVAL{axis}", version, 0);
+            EnsureFinite(referencePixel[axis - 1], $"CRPIX{axis}");
+            EnsureFinite(referenceValue[axis - 1], $"CRVAL{axis}");
             scale[axis - 1] = Read(header, $"CDELT{axis}", version, 1);
             if (!double.IsFinite(scale[axis - 1]) || scale[axis - 1] == 0)
             {
@@ -97,6 +109,16 @@ public sealed class FitsWorld
                 string keyword = cd ? $"CD{axis + 1}_{other + 1}" : $"PC{axis + 1}_{other + 1}";
                 double fallback = !cd && axis == other ? 1 : 0;
                 matrix[(axis * count) + other] = Read(header, keyword, version, fallback);
+                EnsureFinite(matrix[(axis * count) + other], keyword);
+            }
+        }
+
+        foreach (var card in header.Cards)
+        {
+            if (card.Keyword.StartsWith("PV", StringComparison.OrdinalIgnoreCase)
+                && (card.Kind is FitsValueKind.Real or FitsValueKind.Integer))
+            {
+                EnsureFinite(card.GetDouble(), card.Keyword);
             }
         }
 
@@ -162,6 +184,11 @@ public sealed class FitsWorld
             }
         }
 
+        if ((longitude >= 0) != (latitude >= 0))
+        {
+            throw new FitsException("Celestial WCS requires a longitude and latitude axis pair.", new FitsLocation());
+        }
+
         double pole = header.TryGetCard(Name("LONPOLE", version), out _)
             ? Read(header, "LONPOLE", version, 0)
             : double.NaN;
@@ -172,7 +199,19 @@ public sealed class FitsWorld
         double[] euler = active is null
             ? []
             : Euler(active, referenceValue[longitude], referenceValue[latitude], pole, latitudePole);
-        return new FitsWorld(referencePixel, referenceValue, scale, matrix, cd, longitude, latitude, active, euler);
+        double pv1 = longitude >= 0 ? Read(header, $"PV{latitude + 1}_1", version, ProjectionDefault(active, 1)) : 0;
+        double pv2 = longitude >= 0 ? Read(header, $"PV{latitude + 1}_2", version, ProjectionDefault(active, 2)) : 0;
+        EnsureFinite(pv1, $"PV{latitude + 1}_1");
+        EnsureFinite(pv2, $"PV{latitude + 1}_2");
+        if (active?.Equals("ZPN", StringComparison.OrdinalIgnoreCase) == true && (pv1 != 0 || pv2 != 1))
+        {
+            throw new FitsException("ZPN higher-order polynomial coefficients require an external WCSLIB/Astropy oracle.", new FitsLocation());
+        }
+        if (active?.Equals("AZP", StringComparison.OrdinalIgnoreCase) == true && (pv1 != 0 || pv2 != 0))
+        {
+            throw new FitsException("AZP non-default PV parameters require an external WCSLIB/Astropy oracle.", new FitsLocation());
+        }
+        return new FitsWorld(referencePixel, referenceValue, scale, matrix, cd, longitude, latitude, active, euler, pv1, pv2);
     }
 
     public double[] PixelToWorld(ReadOnlySpan<double> pixel)
@@ -228,7 +267,7 @@ public sealed class FitsWorld
         }
         else
         {
-            var native = Native(_projectionKind, planeX, planeY);
+            var native = Native(_projectionKind, planeX, planeY, _pv1, _pv2);
             phi = native.Phi;
             theta = native.Theta;
         }
@@ -268,7 +307,7 @@ public sealed class FitsWorld
         else
         {
             var native = InverseSpherical(world[_longitude], world[_latitude], _euler);
-            var plane = Plane(_projectionKind, native.Phi, native.Theta);
+            var plane = Plane(_projectionKind, native.Phi, native.Theta, _pv1, _pv2);
             for (int axis = 0; axis < Axes; axis++)
             {
                 intermediate[axis] = axis == _longitude ? plane.X : axis == _latitude ? plane.Y : world[axis] - _referenceValue[axis];
@@ -290,7 +329,7 @@ public sealed class FitsWorld
         }
     }
 
-    private static (double Phi, double Theta) Native(Projection projection, double x, double y)
+    private static (double Phi, double Theta) Native(Projection projection, double x, double y, double pv1, double pv2)
     {
         double radius = Math.Sqrt((x * x) + (y * y));
         double phi = double.RadiansToDegrees(Math.Atan2(x, -y));
@@ -301,10 +340,27 @@ public sealed class FitsWorld
             Projection.Arc => 90 - radius,
             Projection.Stg => 90 - (2 * double.RadiansToDegrees(Math.Atan(RadiansPerDegree * radius / 2))),
             Projection.Zea => 90 - (2 * double.RadiansToDegrees(Math.Asin(RadiansPerDegree * radius / 2))),
+            Projection.Cea => double.RadiansToDegrees(Math.Asin(Math.Clamp(y * RadiansPerDegree * pv1, -1, 1))),
+            Projection.Ait => AitNative(x, y).Theta,
+            Projection.Azp => AzpNative(x, y, pv1, pv2).Theta,
+            Projection.Zpn => 90 - radius,
+            Projection.Hpx => double.RadiansToDegrees(Math.Asin(Math.Clamp(y / 67.5, -1, 1))),
             Projection.Car => y,
             _ => throw new FitsException("Projection is not implemented.", new FitsLocation()),
         };
         if (projection == Projection.Car)
+        {
+            phi = x;
+        }
+        else if (projection == Projection.Ait)
+        {
+            phi = AitNative(x, y).Phi;
+        }
+        else if (projection == Projection.Cea)
+        {
+            phi = x / pv1;
+        }
+        else if (projection == Projection.Hpx)
         {
             phi = x;
         }
@@ -352,7 +408,7 @@ public sealed class FitsWorld
         return (NormalizeSigned(euler[2] + deltaPhi), theta);
     }
 
-    private static (double X, double Y) Plane(Projection projection, double phi, double theta)
+    private static (double X, double Y) Plane(Projection projection, double phi, double theta, double pv1, double pv2)
     {
         if (projection == Projection.Car)
         {
@@ -361,6 +417,11 @@ public sealed class FitsWorld
 
         double phiRadians = phi * RadiansPerDegree;
         double thetaRadians = theta * RadiansPerDegree;
+        if (projection == Projection.Azp)
+        {
+            return AzpPlane(phi, theta, pv1, pv2);
+        }
+
         (double sinPhi, double cosPhi) = Math.SinCos(phiRadians);
         double radius = projection switch
         {
@@ -369,9 +430,70 @@ public sealed class FitsWorld
             Projection.Arc => 90 - theta,
             Projection.Stg => 2 * DegreesPerRadian * Math.Tan((Math.PI / 2 - thetaRadians) / 2),
             Projection.Zea => 2 * DegreesPerRadian * Math.Sin((Math.PI / 2 - thetaRadians) / 2),
+            Projection.Cea => Math.Sin(thetaRadians) / (RadiansPerDegree * pv1),
+            Projection.Ait => 0,
+            Projection.Zpn => 90 - theta,
+            Projection.Hpx => 67.5 * Math.Sin(thetaRadians),
             _ => throw new FitsException("Projection is not implemented.", new FitsLocation()),
         };
+        if (projection == Projection.Ait)
+        {
+            return AitPlane(phi, theta);
+        }
+        if (projection == Projection.Cea)
+        {
+            return (phi * pv1, Math.Sin(thetaRadians) / (RadiansPerDegree * pv1));
+        }
         return (radius * sinPhi, -radius * cosPhi);
+    }
+
+    private static (double Phi, double Theta) AitNative(double x, double y)
+    {
+        double radius = DegreesPerRadian;
+        double z = Math.Sqrt(Math.Max(0, 1 - ((x * x) / (16 * radius * radius)) - ((y * y) / (4 * radius * radius))));
+        double latitude = Math.Asin(Math.Clamp(z * y / radius, -1, 1));
+        double longitude = 2 * Math.Atan2(z * x, 2 * radius * ((2 * z * z) - 1));
+        return (double.RadiansToDegrees(longitude), double.RadiansToDegrees(latitude));
+    }
+
+    private static (double X, double Y) AitPlane(double phi, double theta)
+    {
+        double halfPhi = phi * RadiansPerDegree / 2;
+        double latitude = theta * RadiansPerDegree;
+        double denominator = Math.Sqrt(1 + Math.Cos(latitude) * Math.Cos(halfPhi));
+        return (DegreesPerRadian * SqrtTwo * Math.Cos(latitude) * Math.Sin(halfPhi) / denominator,
+            DegreesPerRadian * SqrtTwo * Math.Sin(latitude) / denominator);
+    }
+
+    private static (double Phi, double Theta) AzpNative(double x, double y, double gamma, double mu)
+    {
+        double phi = double.RadiansToDegrees(Math.Atan2(x, -y));
+        double radius = Math.Sqrt((x * x) + (y * y));
+        double normalizedRadius = radius / (DegreesPerRadian * (mu + 1));
+        double offset = Math.Atan(normalizedRadius)
+            + Math.Asin(Math.Clamp(
+                normalizedRadius * mu / Math.Sqrt(1 + (normalizedRadius * normalizedRadius)),
+                -1,
+                1));
+        double theta = 90 - double.RadiansToDegrees(offset);
+        return (phi, theta);
+    }
+
+    private static (double X, double Y) AzpPlane(double phi, double theta, double gamma, double mu)
+    {
+        double phiRadians = phi * RadiansPerDegree;
+        double thetaRadians = theta * RadiansPerDegree;
+        double sinTheta = Math.Sin(thetaRadians);
+        double cosTheta = Math.Cos(thetaRadians);
+        double sinPhi = Math.Sin(phiRadians);
+        double cosPhi = Math.Cos(phiRadians);
+        double denominator = mu + sinTheta;
+        double radius = DegreesPerRadian * (mu + 1) * cosTheta / denominator;
+        return
+        (
+            radius * sinPhi,
+            -radius * cosPhi
+        );
     }
 
     private static void Solve(ReadOnlySpan<double> matrix, ReadOnlySpan<double> value, Span<double> solution)
@@ -492,7 +614,12 @@ public sealed class FitsWorld
 
     private static double[] Euler(string projection, double longitude0, double latitude0, double longitudeOfPole, double latitudeOfPole)
     {
-        double theta0 = projection.Equals("CAR", StringComparison.OrdinalIgnoreCase) ? 0 : 90;
+        double theta0 = projection.Equals("CAR", StringComparison.OrdinalIgnoreCase)
+            || projection.Equals("CEA", StringComparison.OrdinalIgnoreCase)
+            || projection.Equals("HPX", StringComparison.OrdinalIgnoreCase)
+            || projection.Equals("AIT", StringComparison.OrdinalIgnoreCase)
+            ? 0
+            : 90;
         const double phi0 = 0;
         double phiP = double.IsNaN(longitudeOfPole) ? (latitude0 < theta0 ? 180 : 0) + phi0 : longitudeOfPole;
         double latitudeP;
@@ -615,6 +742,14 @@ public sealed class FitsWorld
         return card.Kind is FitsValueKind.Real or FitsValueKind.Integer ? card.GetDouble() : fallback;
     }
 
+    private static void EnsureFinite(double value, string keyword)
+    {
+        if (!double.IsFinite(value))
+        {
+            throw new FitsException($"{keyword} must be finite.", new FitsLocation(Keyword: keyword));
+        }
+    }
+
     private static string Name(string keyword, char version) => version == ' ' ? keyword : keyword + version;
 
     private static Projection ProjectionOf(string? projection) =>
@@ -622,14 +757,31 @@ public sealed class FitsWorld
             ? kind
             : Projection.None;
 
+    private static double ProjectionDefault(string? projection, int parameter) =>
+        projection?.ToUpperInvariant() switch
+        {
+            "CEA" when parameter == 1 => 1,
+            "AZP" when parameter == 1 => 0,
+            "AZP" when parameter == 2 => 0,
+            "HPX" when parameter == 1 => 4,
+            "HPX" when parameter == 2 => 3,
+            "ZPN" when parameter == 2 => 1,
+            _ => 0,
+        };
+
     private enum Projection
     {
         None,
         Arc,
+        Ait,
+        Azp,
         Car,
+        Cea,
+        Hpx,
         Sin,
         Stg,
         Tan,
         Zea,
+        Zpn,
     }
 }

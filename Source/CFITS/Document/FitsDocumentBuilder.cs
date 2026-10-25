@@ -123,10 +123,28 @@ public sealed class FitsDocumentBuilder
             throw new FitsException("Random groups occupy the primary HDU.", new FitsLocation());
         }
 
+        if (dataAxes.Length == 0)
+        {
+            throw new FitsException("Random groups require at least one positive data axis.", new FitsLocation());
+        }
+
+        foreach (int axis in dataAxes)
+        {
+            if (axis <= 0)
+            {
+                throw new FitsException("Random groups require positive data axes.", new FitsLocation());
+            }
+        }
+
         int dataPerGroup = Product(dataAxes);
         if (parameterCount < 0 || (parameterCount > 0 && parameters.Length % parameterCount != 0))
         {
             throw new FitsException("Group parameters do not fill a whole number of groups.", new FitsLocation());
+        }
+
+        if (parameterNames is not null && parameterNames.Count > parameterCount)
+        {
+            throw new FitsException("Random-group parameter names exceed the parameter count.", new FitsLocation());
         }
 
         int groups = parameterCount == 0 ? 0 : parameters.Length / parameterCount;
@@ -227,6 +245,11 @@ public sealed class FitsDocumentBuilder
             }
 
             capturedHeader?.Invoke(cards);
+            if (bitpix < 0)
+            {
+                cards.Remove("BLANK");
+            }
+
             WriteHdu(stream, cards.Build(), data, extra: null, extension);
         });
         _hasPrimary = true;

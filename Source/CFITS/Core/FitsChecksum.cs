@@ -149,13 +149,27 @@ public static class FitsChecksum
     {
         uint dataSum = Sum(data);
         uint total = Add(dataSum, Sum(header));
-        bool? checksum = cards.TryGetCard("CHECKSUM", out _)
-            ? total == 0 || total == 0xFFFFFFFF
-            : null;
+        bool? checksum = null;
+        if (TryGetUniqueCard(cards, "CHECKSUM", out var checksumCard))
+        {
+            checksum = checksumCard.GetString() is string encoded
+                && encoded.Length == 16
+                && IsChecksumText(encoded)
+                && total == 0xFFFFFFFF;
+        }
+        else if (HasDuplicate(cards, "CHECKSUM"))
+        {
+            checksum = false;
+        }
+
         bool? datasum = null;
-        if (cards.TryGetCard("DATASUM", out var stored) && TryUnsigned(stored, out uint expected))
+        if (TryGetUniqueCard(cards, "DATASUM", out var stored) && TryUnsigned(stored, out uint expected))
         {
             datasum = expected == dataSum;
+        }
+        else if (HasDuplicate(cards, "DATASUM"))
+        {
+            datasum = false;
         }
 
         bool? uncompressedSum = null;
@@ -165,6 +179,56 @@ public static class FitsChecksum
         }
 
         return new FitsIntegrity(checksum, datasum, uncompressedSum, dataSum);
+    }
+
+    private static bool TryGetUniqueCard(FitsHeader header, string keyword, out FitsCard card)
+    {
+        card = default;
+        bool found = false;
+        foreach (FitsCard candidate in header.Cards)
+        {
+            if (!candidate.Keyword.Equals(keyword, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            if (found)
+            {
+                return false;
+            }
+
+            card = candidate;
+            found = true;
+        }
+
+        return found;
+    }
+
+    private static bool HasDuplicate(FitsHeader header, string keyword)
+    {
+        int count = 0;
+        foreach (FitsCard card in header.Cards)
+        {
+            if (card.Keyword.Equals(keyword, StringComparison.OrdinalIgnoreCase) && ++count > 1)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static bool IsChecksumText(string value)
+    {
+        foreach (char character in value)
+        {
+            if (character is < '0' or > 'z' || ExcludedCharacters.Contains(character))
+            {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     private static byte[] InsertMissing(byte[] hdu, int end, int headerLength, int dataLength, bool datasum, bool checksum)

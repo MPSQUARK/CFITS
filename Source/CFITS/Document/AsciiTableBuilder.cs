@@ -9,18 +9,26 @@ public sealed class AsciiTableBuilder
 
     public AsciiTableBuilder AddText(string name, ReadOnlySpan<string> values, int width)
     {
+        EnsureWidth(name, width);
         var copy = values.ToArray();
         return Add(name, $"A{width}", width, copy.Length, row => Pad(copy[row] ?? "", width));
     }
 
     public AsciiTableBuilder AddInteger(string name, ReadOnlySpan<long> values, int width)
     {
+        EnsureWidth(name, width);
         var copy = values.ToArray();
         return Add(name, $"I{width}", width, copy.Length, row => FormatInteger(copy[row], width));
     }
 
     public AsciiTableBuilder AddReal(string name, ReadOnlySpan<double> values, int width, int decimals, char form)
     {
+        EnsureWidth(name, width);
+        if (decimals < 0 || form is not ('F' or 'E' or 'D'))
+        {
+            throw new FitsException("An ASCII real field needs a valid form and non-negative precision.", new FitsLocation(Column: name));
+        }
+
         var copy = values.ToArray();
         return Add(name, $"{form}{width}.{decimals}", width, copy.Length, row => FormatReal(copy[row], width, decimals, form));
     }
@@ -127,8 +135,31 @@ public sealed class AsciiTableBuilder
         return value.ToString(format, CultureInfo.InvariantCulture);
     }
 
-    private static string Fit(string text, int width) => text.Length > width ? text[^width..] : text.PadLeft(width);
+    private static string Fit(string text, int width)
+    {
+        if (text.Length > width)
+        {
+            throw new FitsException("An ASCII table value is wider than its declared field.", new FitsLocation());
+        }
 
-    private static string Pad(string text, int width) => text.Length > width ? text[..width] : text.PadRight(width);
+        return text.PadLeft(width);
+    }
 
+    private static string Pad(string text, int width)
+    {
+        if (text.Length > width)
+        {
+            throw new FitsException("An ASCII table value is wider than its declared field.", new FitsLocation());
+        }
+
+        return text.PadRight(width);
+    }
+
+    private static void EnsureWidth(string name, int width)
+    {
+        if (width <= 0)
+        {
+            throw new FitsException("An ASCII table field needs a positive width.", new FitsLocation(Column: name));
+        }
+    }
 }

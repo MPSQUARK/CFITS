@@ -12,6 +12,7 @@ public sealed class FitsColumn
     private readonly int _offset;
     private readonly int _stride;
     private readonly int _heap;
+    private readonly int _heapEnd;
     private readonly double _scale;
     private readonly double _zero;
     private readonly long? _null;
@@ -32,11 +33,14 @@ public sealed class FitsColumn
         int offset,
         int stride,
         int heap,
+        int heapEnd,
         double scale,
         double zero,
         long? nullValue,
         string? asciiNull,
         int[]? dimensions,
+        double? minimum,
+        double? maximum,
         ReadOnlyMemory<byte> data,
         FitsScaleMode mode,
         int rows,
@@ -48,11 +52,14 @@ public sealed class FitsColumn
         _offset = offset;
         _stride = stride;
         _heap = heap;
+        _heapEnd = heapEnd;
         _scale = scale;
         _zero = zero;
         _null = nullValue;
         _asciiNull = asciiNull;
         Dimensions = dimensions;
+        Minimum = minimum;
+        Maximum = maximum;
         _data = data;
         _mode = mode;
         _rows = rows;
@@ -74,6 +81,10 @@ public sealed class FitsColumn
     public bool IsVariableLength { get; }
 
     public int[]? Dimensions { get; }
+
+    public double? Minimum { get; }
+
+    public double? Maximum { get; }
 
     public bool CanCopyInteger => IsFixedScalarInteger();
 
@@ -149,7 +160,7 @@ public sealed class FitsColumn
 
         if (_spec.Ascii)
         {
-            return long.Parse(AsciiText(AsciiField(row)), CultureInfo.InvariantCulture);
+            return ParseAsciiInteger(AsciiField(row));
         }
 
         return ReadStoredInteger(row, element);
@@ -705,7 +716,7 @@ public sealed class FitsColumn
             throw new FitsException($"Column '{Name}' has an overflowing heap range.", new FitsLocation(_hduIndex, Column: Name), exception);
         }
 
-        if (start > _data.Length || end > _data.Length)
+        if (start > _heapEnd || end > _heapEnd || end > _data.Length)
         {
             throw new FitsException($"Column '{Name}' references data outside the heap.", new FitsLocation(_hduIndex, Column: Name));
         }
@@ -894,7 +905,23 @@ public sealed class FitsColumn
         }
 
         string text = Encoding.ASCII.GetString(token).Replace('D', 'E').Replace('d', 'e');
-        return double.Parse(text, NumberStyles.Float, CultureInfo.InvariantCulture);
+        if (double.TryParse(text, NumberStyles.Float, CultureInfo.InvariantCulture, out double value))
+        {
+            return value;
+        }
+
+        throw new FitsException($"ASCII real value '{text}' is invalid.", new FitsLocation());
+    }
+
+    private static long ParseAsciiInteger(ReadOnlySpan<byte> field)
+    {
+        string text = AsciiText(field);
+        if (long.TryParse(text, NumberStyles.Integer, CultureInfo.InvariantCulture, out long value))
+        {
+            return value;
+        }
+
+        throw new FitsException($"ASCII integer value '{text}' is invalid.", new FitsLocation());
     }
 
     private static string AsciiText(ReadOnlySpan<byte> field) => TrimString(field);

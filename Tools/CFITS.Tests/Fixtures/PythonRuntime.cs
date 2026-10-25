@@ -66,8 +66,7 @@ internal static class PythonRuntime
             RedirectStandardOutput = true,
             UseShellExecute = false,
         };
-        start.ArgumentList.Add("-c");
-        start.ArgumentList.Add("import importlib.resources as r; print(r.files('astropy').joinpath('io', 'fits', 'hdu', 'compressed', 'tests', 'data', __import__('sys').argv[1]))");
+        start.ArgumentList.Add(Path.Combine(root, "Tools", "CFITS.PyScripts", "Fixtures", "FindAstropyData.py"));
         start.ArgumentList.Add(fileName);
         using var process = Process.Start(start) ?? throw new InvalidOperationException($"Could not start {python}.");
         string output = process.StandardOutput.ReadToEnd().Trim();

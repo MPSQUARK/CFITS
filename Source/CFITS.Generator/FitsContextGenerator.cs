@@ -631,6 +631,9 @@ public sealed class FitsContextGenerator : IIncrementalGenerator
         bool hasDouble = members.Any(static member =>
             member.Symbol.Type is IArrayTypeSymbol array
             && array.ElementType.SpecialType == SpecialType.System_Double);
+        bool hasFloat = members.Any(static member =>
+            member.Symbol.Type is IArrayTypeSymbol array
+            && array.ElementType.SpecialType == SpecialType.System_Single);
         var helpers = new StringBuilder();
         if (hasInteger)
         {
@@ -657,6 +660,22 @@ public sealed class FitsContextGenerator : IIncrementalGenerator
                         for (int index = 0; index < values.Length; index++)
                         {
                             values[index] = column.ReadReal(row, index);
+                        }
+
+                        return values;
+                    }
+                """);
+        }
+
+        if (hasFloat)
+        {
+            helpers.AppendLine("""
+                    private static float[] ReadSingleArray(CFITS.FitsColumn column, int row)
+                    {
+                        var values = new float[column.Count(row)];
+                        for (int index = 0; index < values.Length; index++)
+                        {
+                            values[index] = (float)column.ReadReal(row, index);
                         }
 
                         return values;
@@ -767,6 +786,7 @@ public sealed class FitsContextGenerator : IIncrementalGenerator
             return array.ElementType.SpecialType switch
             {
                 SpecialType.System_Double => $"ReadDoubleArray({column}, row)",
+                SpecialType.System_Single => $"ReadSingleArray({column}, row)",
                 _ => $"ReadInt32Array({column}, row)",
             };
         }
@@ -924,7 +944,7 @@ public sealed class FitsContextGenerator : IIncrementalGenerator
     private static bool IsSupportedTableMember(ITypeSymbol type) =>
         type is IArrayTypeSymbol array
             && array.Rank == 1
-            && array.ElementType.SpecialType is (SpecialType.System_Int32 or SpecialType.System_Double)
+            && array.ElementType.SpecialType is (SpecialType.System_Int32 or SpecialType.System_Single or SpecialType.System_Double)
         || type.SpecialType is SpecialType.System_Boolean
             or SpecialType.System_Byte
             or SpecialType.System_Int16

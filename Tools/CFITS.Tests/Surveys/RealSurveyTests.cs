@@ -119,6 +119,19 @@ public sealed class RealSurveyTests
     }
 
     [Fact]
+    public void ReadsSdssCommentsWithoutWhitespaceAfterDelimiter()
+    {
+        string root = FindRoot();
+        string path = Path.Combine(root, "SampleData", "Real", "sdss-spec-0266.fits");
+
+        using var document = FitsDocument.Open(path);
+        var header = document.Hdus[0].Header;
+
+        Assert.Equal(4, header.GetInt64("CARTID"));
+        Assert.Equal(20.8580, header.GetDouble("SPEC1_G"));
+    }
+
+    [Fact]
     public void DustMapsReadAndWriteAsWholeFitsFiles()
     {
         string root = FindRoot();

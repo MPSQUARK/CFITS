@@ -150,7 +150,7 @@ public sealed class DocumentSpecTests
     {
         using var process = Process.Start(new ProcessStartInfo(python)
         {
-            ArgumentList = { "-c", "import astropy" },
+            ArgumentList = { Path.Combine(FindRoot(), "Tools", "CFITS.PyScripts", "Oracles", "CheckAstropy.py") },
             RedirectStandardError = true,
             UseShellExecute = false,
         }) ?? throw new InvalidOperationException("Python did not start.");
@@ -163,17 +163,10 @@ public sealed class DocumentSpecTests
 
     private static void RunAstropy(string python, string path)
     {
-        const string script =
-            "from astropy.io import fits\n"
-            + "import sys\n"
-            + "with fits.open(sys.argv[1], checksum=True) as hdul:\n"
-            + "    hdul.verify('exception')\n"
-            + "    assert len(hdul) == 2\n"
-            + "    assert hdul[0].header['EXPTIME'] == 12.75\n"
-            + "    assert hdul[1].header['EXTNAME'] == 'EVENTS'\n";
+        string script = Path.Combine(FindRoot(), "Tools", "CFITS.PyScripts", "Oracles", "ValidateDocument.py");
         using var process = Process.Start(new ProcessStartInfo(python)
         {
-            ArgumentList = { "-c", script, path },
+            ArgumentList = { script, path },
             RedirectStandardError = true,
             UseShellExecute = false,
         }) ?? throw new InvalidOperationException("Python did not start.");

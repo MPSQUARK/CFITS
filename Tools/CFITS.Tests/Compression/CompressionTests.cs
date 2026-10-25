@@ -50,28 +50,7 @@ public sealed class CompressionTests
         var python = PythonRuntime.Find(root);
         var directory = Path.Combine(root, "SampleData", "Compressed");
         Directory.CreateDirectory(directory);
-        var script = """
-            import numpy as np
-            from astropy.io import fits
-            images = {
-                'rice': np.arange(64, dtype=np.int16).reshape(8, 8),
-                'gzip': np.arange(48, dtype=np.int32).reshape(6, 8),
-                'gzip2': np.array([1.5, np.nan, -2.25, 4], dtype=np.float32).reshape(2, 2),
-                'hcomp': np.arange(42, dtype=np.int16).reshape(6, 7) - 20,
-            }
-            for name, data in images.items():
-                kind = {'rice': 'RICE_1', 'gzip': 'GZIP_1', 'gzip2': 'GZIP_2', 'hcomp': 'HCOMPRESS_1'}[name]
-                fits.CompImageHDU(data=data, compression_type=kind).writeto(f'{directory}/{name}.fits', overwrite=True)
-            smooth = (np.arange(64, dtype=np.int16).reshape(8, 8) * 10)
-            comp = fits.CompImageHDU(data=smooth, compression_type='HCOMPRESS_1', hcomp_scale=4, hcomp_smooth=True)
-            comp.writeto(f'{directory}/hcomp-smooth.fits', overwrite=True)
-            with fits.open(f'{directory}/hcomp-smooth.fits') as hdul:
-                np.savetxt(f'{directory}/hcomp-smooth.txt', hdul[1].data.reshape(-1), fmt='%d')
-            tiled = np.arange(35, dtype=np.int16).reshape(5, 7)
-            fits.CompImageHDU(data=tiled, compression_type='GZIP_1', tile_shape=(3, 2)).writeto(f'{directory}/tiled.fits', overwrite=True)
-            """;
-        var generator = Path.Combine(directory, "compress.py");
-        File.WriteAllText(generator, script.Replace("{directory}", directory.Replace("\\", "/")));
+        var generator = Path.Combine(root, "Tools", "CFITS.PyScripts", "Fixtures", "GenerateCompressionFixtures.py");
         var start = new System.Diagnostics.ProcessStartInfo(python)
         {
             WorkingDirectory = root,
@@ -80,6 +59,7 @@ public sealed class CompressionTests
             UseShellExecute = false,
         };
         start.ArgumentList.Add(generator);
+        start.ArgumentList.Add(directory);
         using var process = System.Diagnostics.Process.Start(start)!;
         string error = process.StandardError.ReadToEnd();
         process.WaitForExit();

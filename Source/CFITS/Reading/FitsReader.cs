@@ -64,7 +64,9 @@ public ref struct FitsReader
 
         if (_source.Length - _offset < FitsBlock.CardSize)
         {
-            throw new FitsException("The file ends in the middle of a header record.", new FitsLocation(Position: _offset));
+            throw new FitsException(
+                "The file ends in the middle of a header record.",
+                new FitsLocation(_hduIndex < 0 ? 0 : _hduIndex, Position: _offset));
         }
 
         var keyword = TrimEnd(_source.Slice(_offset, 8));
@@ -73,7 +75,9 @@ public ref struct FitsReader
         {
             if (!keyword.SequenceEqual("SIMPLE"u8))
             {
-                throw new FitsException("A FITS file must start with SIMPLE.", new FitsLocation(Position: _offset));
+                throw new FitsException(
+                    "A FITS file must start with SIMPLE.",
+                    new FitsLocation(0, "SIMPLE", Position: _offset));
             }
         }
         else if (!keyword.SequenceEqual("XTENSION"u8))
@@ -81,7 +85,9 @@ public ref struct FitsReader
             int remaining = _source.Length - _offset;
             if (remaining % FitsBlock.Size != 0)
             {
-                throw new FitsException("Trailing bytes are not a whole number of 2880-byte records.", new FitsLocation(Position: _offset));
+                throw new FitsException(
+                    "Trailing bytes are not a whole number of 2880-byte records.",
+                    new FitsLocation(_hduIndex, Position: _offset));
             }
 
             SpecialOffset = _offset;
@@ -103,10 +109,24 @@ public ref struct FitsReader
     {
         if (_source.Length - _offset < FitsBlock.CardSize)
         {
-            throw new FitsException("The header ended before the END record.", new FitsLocation(_hduIndex, Position: _offset));
+            throw new FitsException("The header ended before the END record.", new FitsLocation(_hduIndex, "END", Position: _offset));
         }
 
-        var view = FitsCardView.Parse(_source.Slice(_offset, FitsBlock.CardSize), _offset);
+        FitsCardView view;
+        try
+        {
+            view = FitsCardView.Parse(_source.Slice(_offset, FitsBlock.CardSize), _offset);
+        }
+        catch (FitsException error) when (error.HduIndex is null)
+        {
+            string? keyword = TrimEnd(_source.Slice(_offset, 8)) is var candidate && candidate.Length > 0
+                ? System.Text.Encoding.ASCII.GetString(candidate)
+                : null;
+            throw new FitsException(
+                error.Message,
+                new FitsLocation(_hduIndex, keyword, error.Column, error.Position),
+                error);
+        }
         int cardAt = _offset;
         _offset += FitsBlock.CardSize;
         if (view.IsEnd)
@@ -118,14 +138,14 @@ public ref struct FitsReader
             }
 
             var header = _source.Slice(_hduStart, (int)Math.Min(_dataOffset, _source.Length) - _hduStart);
-            _shape = DataLayout.Measure(header, _hduIndex);
+            _shape = DataLayout.Measure(header, _hduIndex, _hduStart);
             _dataLength = _shape.DataBytes;
             long available = _source.Length - _dataOffset;
             if (available < _dataLength)
             {
                 throw new FitsException(
                     "The file ends before the data array is complete.",
-                    new FitsLocation(_hduIndex, Position: _dataOffset));
+                    new FitsLocation(_hduIndex, "NAXIS", Position: _dataOffset));
             }
 
             TokenType = FitsToken.EndHeader;
@@ -142,13 +162,13 @@ public ref struct FitsReader
     {
         if (_dataOffset > _source.Length)
         {
-            throw new FitsException("The data block starts past the end of the file.", new FitsLocation(_hduIndex, Position: _dataOffset));
+            throw new FitsException("The data block starts past the end of the file.", new FitsLocation(_hduIndex, "NAXIS", Position: _dataOffset));
         }
 
         long available = _source.Length - _dataOffset;
         if (available < _dataLength)
         {
-            throw new FitsException("The file ends before the data array is complete.", new FitsLocation(_hduIndex, Position: _dataOffset));
+            throw new FitsException("The file ends before the data array is complete.", new FitsLocation(_hduIndex, "NAXIS", Position: _dataOffset));
         }
 
         long padded = FitsBlock.Pad(_dataLength);
