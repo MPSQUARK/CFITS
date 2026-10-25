@@ -17,7 +17,7 @@ public sealed class RealSurveyTests
             "sdss-spec-0500-002.fits",
             "sdss-spec-0500-003.fits",
         ];
-        string manifestPath = Path.Combine(root, "Benchmarks", "Results", "sdss-manifest.csv");
+        string manifestPath = Path.Combine(root, "SampleData", "Real", "sdss-manifest.csv");
         var expectedHashes = File.ReadLines(manifestPath)
             .Skip(1)
             .Select(line => line.Split(','))
@@ -115,6 +115,43 @@ public sealed class RealSurveyTests
             Assert.True(sum != 0);
             Assert.InRange(watch.Elapsed.TotalMilliseconds / 10, 0, 500);
             Console.WriteLine($"{name}: first flux {firstFlux}, loglam {firstWavelength}, sum {sum}, {watch.Elapsed.TotalMilliseconds / 10:0.0} ms");
+        }
+    }
+
+    [Fact]
+    public void DustMapsReadAndWriteAsWholeFitsFiles()
+    {
+        string root = FindRoot();
+        string[] names = ["SFD_dust_4096_ngp.fits", "SFD_dust_4096_sgp.fits"];
+        string outputDirectory = Path.Combine(Path.GetTempPath(), "cfits-dust-roundtrip", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(outputDirectory);
+        try
+        {
+            foreach (string name in names)
+            {
+                string source = Path.Combine(root, "SampleData", "Real", name);
+                string output = Path.Combine(outputDirectory, name);
+                Assert.True(File.Exists(source), source);
+
+                using var document = FitsDocument.Open(source);
+                Assert.NotEmpty(document.Hdus);
+                Assert.NotNull(document.Hdus[0].Image);
+                Assert.True(document.Hdus[0].Image!.Length > 0);
+
+                document.Save(output);
+                using var roundTrip = FitsDocument.Open(output);
+                Assert.Equal(document.Hdus.Count, roundTrip.Hdus.Count);
+                Assert.Equal(
+                    document.Hdus.Select(hdu => hdu.RawData.Length),
+                    roundTrip.Hdus.Select(hdu => hdu.RawData.Length));
+            }
+        }
+        finally
+        {
+            if (Directory.Exists(outputDirectory))
+            {
+                Directory.Delete(outputDirectory, recursive: true);
+            }
         }
     }
 
