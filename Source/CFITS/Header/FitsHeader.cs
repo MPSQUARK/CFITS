@@ -1,5 +1,3 @@
-using System.Collections.Frozen;
-
 namespace CFITS;
 
 /// <summary>Header keywords in file order. Lookup returns the last value for a name.</summary>
@@ -7,7 +5,7 @@ public sealed class FitsHeader
 {
     private readonly List<CardRecord> _records;
     private readonly IReadOnlyList<FitsCard> _cards;
-    private readonly FrozenDictionary<string, FitsCard> _lookup;
+    private readonly Dictionary<string, FitsCard> _lookup;
 
     private FitsHeader(List<CardRecord> records, int hduIndex)
     {
@@ -22,7 +20,7 @@ public sealed class FitsHeader
             }
         }
 
-        _lookup = lookup.ToFrozenDictionary(StringComparer.OrdinalIgnoreCase);
+        _lookup = lookup;
         HduIndex = hduIndex;
     }
 

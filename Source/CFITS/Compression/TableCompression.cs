@@ -43,31 +43,30 @@ internal static class TableCompression
             throw new FitsException("The ZFORMn widths do not add up to ZNAXIS1.", new FitsLocation(Keyword: "ZNAXIS1"));
         }
 
-        var body = new byte[checked(rowWidth * rows)];
+        int bodyLength = checked(rowWidth * rows);
         int declaredHeap = header.TryGetCard("ZPCOUNT", out var heapCard) ? checked((int)heapCard.GetInt64()) : 0;
         if (declaredHeap < 0)
         {
             throw new FitsException("ZPCOUNT must not be negative.", new FitsLocation(Keyword: "ZPCOUNT"));
         }
 
-        var heap = new byte[declaredHeap];
+        var data = new byte[checked(bodyLength + declaredHeap)];
+        Span<byte> body = data.AsSpan(0, bodyLength);
+        Span<byte> heap = data.AsSpan(bodyLength, declaredHeap);
         int blockSize = BlockSize(header);
         int offset = 0;
         for (int field = 0; field < fields; field++)
         {
-            ExpandColumn(compressed.Columns[field], compressed.RowCount, specs[field], algorithms[field], offset, rows, rowWidth, tileLength, blockSize, body, ref heap);
+            ExpandColumn(compressed.Columns[field], compressed.RowCount, specs[field], algorithms[field], offset, rows, rowWidth, tileLength, blockSize, body, heap);
             offset += specs[field].Width;
         }
 
-        var logical = LogicalHeader(header, fields, names, rowWidth * rows);
-        var data = new byte[checked(body.Length + heap.Length)];
-        body.CopyTo(data);
-        heap.CopyTo(data.AsSpan(body.Length));
-        var shape = new HduShape { Bitpix = 8, Axes = [rowWidth, rows], Gcount = 1, Pcount = heap.Length };
+        var logical = LogicalHeader(header, fields, names, bodyLength);
+        var shape = new HduShape { Bitpix = 8, Axes = [rowWidth, rows], Gcount = 1, Pcount = declaredHeap };
         return FitsTable.Create(logical, data, ascii: false, shape, mode);
     }
 
-    private static void ExpandColumn(FitsColumn column, int tiles, ColumnSpec spec, string algorithm, int offset, int rows, int rowWidth, int tileLength, int blockSize, byte[] body, ref byte[] heap)
+    private static void ExpandColumn(FitsColumn column, int tiles, ColumnSpec spec, string algorithm, int offset, int rows, int rowWidth, int tileLength, int blockSize, Span<byte> body, Span<byte> heap)
     {
         char element = spec.Variable ? spec.ElementCode : spec.Code;
         for (int tile = 0; tile < tiles; tile++)
@@ -82,20 +81,20 @@ internal static class TableCompression
             byte[] stored = column.ReadVariableBytes(tile);
             if (spec.Variable)
             {
-                ExpandVariable(column, spec, algorithm, element, stored, start, tileRows, offset, rowWidth, blockSize, body, ref heap);
+                ExpandVariable(column, spec, algorithm, element, stored, start, tileRows, offset, rowWidth, blockSize, body, heap);
             }
             else
             {
                 byte[] plain = Expand(algorithm, stored, tileRows * spec.Width, ElementBytes(element), Numeric(element), blockSize);
                 for (int row = 0; row < tileRows; row++)
                 {
-                    plain.AsSpan(row * spec.Width, spec.Width).CopyTo(body.AsSpan(((start + row) * rowWidth) + offset, spec.Width));
+                    plain.AsSpan(row * spec.Width, spec.Width).CopyTo(body.Slice(((start + row) * rowWidth) + offset, spec.Width));
                 }
             }
         }
     }
 
-    private static void ExpandVariable(FitsColumn column, ColumnSpec spec, string algorithm, char element, byte[] stored, int start, int tileRows, int offset, int rowWidth, int blockSize, byte[] body, ref byte[] heap)
+    private static void ExpandVariable(FitsColumn column, ColumnSpec spec, string algorithm, char element, byte[] stored, int start, int tileRows, int offset, int rowWidth, int blockSize, Span<byte> body, Span<byte> heap)
     {
         byte[] bundle = Gunzip(stored);
         int descriptor = spec.Width;
@@ -113,7 +112,7 @@ internal static class TableCompression
             long compressedCount = ReadDescriptorValue(bundle.AsSpan(compressedAt, valueWidth), valueWidth);
             long compressedOffset = ReadDescriptorValue(bundle.AsSpan(compressedAt + valueWidth, valueWidth), valueWidth);
             int originalAt = checked(originalBase + (row * descriptor));
-            bundle.AsSpan(originalAt, descriptor).CopyTo(body.AsSpan(((start + row) * rowWidth) + offset, descriptor));
+            bundle.AsSpan(originalAt, descriptor).CopyTo(body.Slice(((start + row) * rowWidth) + offset, descriptor));
             if (compressedCount < 0 || compressedOffset < 0 || compressedCount > int.MaxValue)
             {
                 throw new FitsException("A compressed variable-length descriptor is invalid.", new FitsLocation(Column: column.Name));
@@ -139,7 +138,7 @@ internal static class TableCompression
             byte[] payload = column.ReadHeap(compressedOffset, checked((int)compressedCount));
             int width = ElementBytes(element);
             byte[] plain = Expand(algorithm, payload, checked((int)elements * width), width, Numeric(element), blockSize);
-            Place(ref heap, heapOffset, plain);
+            Place(heap, heapOffset, plain);
         }
     }
 
@@ -150,7 +149,7 @@ internal static class TableCompression
         _ => throw new FitsException("A compressed variable-length descriptor has an invalid width.", new FitsLocation()),
     };
 
-    private static void Place(ref byte[] heap, long offset, byte[] plain)
+    private static void Place(Span<byte> heap, long offset, byte[] plain)
     {
         if (offset < 0)
         {
@@ -177,7 +176,7 @@ internal static class TableCompression
             throw new FitsException("A compressed variable-length descriptor exceeds the declared heap.", new FitsLocation());
         }
 
-        plain.CopyTo(heap.AsSpan((int)offset));
+        plain.CopyTo(heap[(int)offset..]);
     }
 
     private static byte[] Expand(string algorithm, byte[] compressed, int outputBytes, int elementBytes, bool numeric, int blockSize)
@@ -190,7 +189,7 @@ internal static class TableCompression
 
         if (name is "GZIP_1" or "GZIP_2")
         {
-            byte[] plain = Gunzip(compressed);
+            byte[] plain = GunzipExact(compressed, outputBytes);
             if (name == "GZIP_2" && numeric && elementBytes > 1)
             {
                 plain = Unshuffle(plain, elementBytes);
@@ -296,6 +295,31 @@ internal static class TableCompression
         using var output = new MemoryStream();
         gzip.CopyTo(output);
         return output.ToArray();
+    }
+
+    private static byte[] GunzipExact(byte[] compressed, int length)
+    {
+        var output = new byte[length];
+        using var input = new MemoryStream(compressed, writable: false);
+        using var gzip = new GZipStream(input, CompressionMode.Decompress);
+        int read = 0;
+        while (read < output.Length)
+        {
+            int count = gzip.Read(output.AsSpan(read));
+            if (count == 0)
+            {
+                throw new FitsException($"Decoded table column has {read} bytes; expected {length}.", new FitsLocation());
+            }
+
+            read += count;
+        }
+
+        if (gzip.ReadByte() >= 0)
+        {
+            throw new FitsException($"Decoded table column is longer than the expected {length} bytes.", new FitsLocation());
+        }
+
+        return output;
     }
 
     private static byte[] Unshuffle(byte[] shuffled, int width)

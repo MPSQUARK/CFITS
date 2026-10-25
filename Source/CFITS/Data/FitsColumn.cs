@@ -159,15 +159,44 @@ public sealed class FitsColumn
             return false;
         }
 
-        for (int row = 0; row < _rows; row++)
+        switch (_spec.Code)
         {
-            long stored = ReadStoredInteger(row, 0);
-            if (_null is long marker && stored == marker)
-            {
-                throw new FitsException($"Column '{Name}' row {row} is null.", new FitsLocation(_hduIndex, Column: Name));
-            }
-
-            destination[row] = stored;
+            case 'B':
+                for (int row = 0; row < _rows; row++)
+                {
+                    long stored = FixedField(row, 0, 1)[0];
+                    if (_null is long marker && stored == marker)
+                        throw NullAt(row);
+                    destination[row] = stored;
+                }
+                break;
+            case 'I':
+                for (int row = 0; row < _rows; row++)
+                {
+                    long stored = BinaryPrimitives.ReadInt16BigEndian(FixedField(row, 0, 2));
+                    if (_null is long marker && stored == marker)
+                        throw NullAt(row);
+                    destination[row] = stored;
+                }
+                break;
+            case 'J':
+                for (int row = 0; row < _rows; row++)
+                {
+                    long stored = BinaryPrimitives.ReadInt32BigEndian(FixedField(row, 0, 4));
+                    if (_null is long marker && stored == marker)
+                        throw NullAt(row);
+                    destination[row] = stored;
+                }
+                break;
+            case 'K':
+                for (int row = 0; row < _rows; row++)
+                {
+                    long stored = BinaryPrimitives.ReadInt64BigEndian(FixedField(row, 0, 8));
+                    if (_null is long marker && stored == marker)
+                        throw NullAt(row);
+                    destination[row] = stored;
+                }
+                break;
         }
 
         return true;
@@ -315,26 +344,65 @@ public sealed class FitsColumn
         }
 
         bool physical = _mode == FitsScaleMode.Physical;
-        for (int row = 0; row < _rows; row++)
+        switch (_spec.Code)
         {
-            long storedInteger = 0;
-            if (IsIntegerCode(_spec.Code))
-            {
-                storedInteger = ReadStoredInteger(row, 0);
-            }
-
-            double stored = IsIntegerCode(_spec.Code)
-                ? storedInteger
-                : ReadStoredReal(row, 0);
-            destination[row] = physical ? _zero + (_scale * stored) : stored;
-            if (_null is long marker && IsIntegerCode(_spec.Code) && storedInteger == marker)
-            {
-                destination[row] = double.NaN;
-            }
+            case 'B':
+                for (int row = 0; row < _rows; row++)
+                {
+                    long stored = FixedField(row, 0, 1)[0];
+                    destination[row] = _null is long marker && stored == marker
+                        ? double.NaN
+                        : physical ? _zero + (_scale * stored) : stored;
+                }
+                break;
+            case 'I':
+                for (int row = 0; row < _rows; row++)
+                {
+                    long stored = BinaryPrimitives.ReadInt16BigEndian(FixedField(row, 0, 2));
+                    destination[row] = _null is long marker && stored == marker
+                        ? double.NaN
+                        : physical ? _zero + (_scale * stored) : stored;
+                }
+                break;
+            case 'J':
+                for (int row = 0; row < _rows; row++)
+                {
+                    long stored = BinaryPrimitives.ReadInt32BigEndian(FixedField(row, 0, 4));
+                    destination[row] = _null is long marker && stored == marker
+                        ? double.NaN
+                        : physical ? _zero + (_scale * stored) : stored;
+                }
+                break;
+            case 'K':
+                for (int row = 0; row < _rows; row++)
+                {
+                    long stored = BinaryPrimitives.ReadInt64BigEndian(FixedField(row, 0, 8));
+                    destination[row] = _null is long marker && stored == marker
+                        ? double.NaN
+                        : physical ? _zero + (_scale * stored) : stored;
+                }
+                break;
+            case 'E':
+                for (int row = 0; row < _rows; row++)
+                {
+                    double stored = BinaryPrimitives.ReadSingleBigEndian(FixedField(row, 0, 4));
+                    destination[row] = physical ? _zero + (_scale * stored) : stored;
+                }
+                break;
+            case 'D':
+                for (int row = 0; row < _rows; row++)
+                {
+                    double stored = BinaryPrimitives.ReadDoubleBigEndian(FixedField(row, 0, 8));
+                    destination[row] = physical ? _zero + (_scale * stored) : stored;
+                }
+                break;
         }
 
         return true;
     }
+
+    private FitsException NullAt(int row) =>
+        new($"Column '{Name}' row {row} is null.", new FitsLocation(_hduIndex, Column: Name));
 
     public bool TryCopyReal(Span<float> destination)
     {

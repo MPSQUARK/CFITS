@@ -8,12 +8,17 @@ internal static class GeneratedSerializationBenchmarks
     {
         GeneratedExposure imageValue = CreateImageValue();
         byte[] image = CreateImage();
+        GeneratedCompositeFile compositeValue = CreateCompositeValue(imageValue);
+        byte[] composite = CreateComposite(compositeValue);
         var scenarios = new List<TargetedScenario>
         {
             new("generated_image_write", "source-generator", () => WriteGeneratedImage(imageValue)),
             new("generated_image_write_staged", "source-generator-staged", () => WriteGeneratedImageStaged(imageValue)),
             new("generated_image_read", "source-generator", () => ReadGeneratedImage(image)),
             new("runtime_image_read", "runtime-mapping", () => ReadRuntimeImage(image)),
+            new("generated_composite_write", "source-generator-composite", () => WriteGeneratedComposite(compositeValue)),
+            new("generated_composite_write_staged", "source-generator-composite-staged", () => WriteGeneratedCompositeStaged(compositeValue)),
+            new("generated_composite_read", "source-generator-composite", () => ReadGeneratedComposite(composite)),
         };
         foreach (int rowCount in new[] { 1_000, 20_000, 100_000 })
         {
@@ -28,6 +33,22 @@ internal static class GeneratedSerializationBenchmarks
         }
 
         return scenarios;
+    }
+
+    private static GeneratedCompositeFile CreateCompositeValue(GeneratedExposure image)
+    {
+        return new GeneratedCompositeFile
+        {
+            Image = image,
+            Events = CreateTableRows(1_000),
+        };
+    }
+
+    private static byte[] CreateComposite(GeneratedCompositeFile value)
+    {
+        using var stream = new MemoryStream();
+        FitsSerializer.Write(stream, value, GeneratedBenchmarkContext.Default.GeneratedCompositeFile);
+        return stream.ToArray();
     }
 
     private static GeneratedExposure CreateImageValue()
@@ -88,6 +109,27 @@ internal static class GeneratedSerializationBenchmarks
     {
         using var stream = new MemoryStream();
         FitsSerializer.Write(stream, rows, GeneratedBenchmarkContext.Default.GeneratedEventRow);
+        _sink = stream.Length;
+    }
+
+    private static void WriteGeneratedComposite(GeneratedCompositeFile value)
+    {
+        using var stream = new MemoryStream();
+        FitsSerializer.Write(stream, value, GeneratedBenchmarkContext.Default.GeneratedCompositeFile);
+        _sink = stream.Length;
+    }
+
+    private static void WriteGeneratedCompositeStaged(GeneratedCompositeFile value)
+    {
+        using var stream = new MemoryStream();
+        CreateImageBuilder(value.Image)
+            .BinaryTable(
+                new BinaryTableBuilder()
+                    .Add("TIME", value.Events.Select(row => row.Time).ToArray())
+                    .Add("PHA", value.Events.Select(row => row.Channel).ToArray()),
+                header => header.Text("EXTNAME", "EVENTS"))
+            .Build()
+            .Write(stream);
         _sink = stream.Length;
     }
 
@@ -179,6 +221,14 @@ internal static class GeneratedSerializationBenchmarks
         using var stream = new MemoryStream(data, writable: false);
         IReadOnlyList<GeneratedEventRow> rows = FitsSerializer.Read(stream, GeneratedBenchmarkContext.Default.GeneratedEventRow);
         _sink = rows[0].Time + rows[^1].Channel;
+    }
+
+    private static void ReadGeneratedComposite(byte[] data)
+    {
+        using var stream = new MemoryStream(data, writable: false);
+        GeneratedCompositeFile value = FitsSerializer.Read(
+            stream, GeneratedBenchmarkContext.Default.GeneratedCompositeFile);
+        _sink = value.Image.ExposureSeconds + value.Events[0].Channel + value.Events[^1].Time;
     }
 
     private static void ReadRuntimeTableScalar(byte[] data)

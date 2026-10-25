@@ -1,3 +1,4 @@
+using System.Buffers.Binary;
 using System.Globalization;
 
 namespace CFITS;
@@ -14,8 +15,9 @@ public static class FitsChecksum
         int aligned = bytes.Length - (bytes.Length % 4);
         for (int index = 0; index < aligned; index += 4)
         {
-            high += (uint)((bytes[index] << 8) | bytes[index + 1]);
-            low += (uint)((bytes[index + 2] << 8) | bytes[index + 3]);
+            uint word = BinaryPrimitives.ReadUInt32BigEndian(bytes[index..]);
+            high += word >> 16;
+            low += word & 0xFFFF;
         }
 
         if (aligned != bytes.Length)

@@ -386,4 +386,72 @@ public sealed class GeneratedSerializerTests
 
         Assert.Equal(records, result.SnapshotSpecialRecords().ToArray());
     }
+
+    [Fact]
+    public void GeneratedCompositeDirectWriteMatchesStagedWrite()
+    {
+        var value = new DirectCompositeFile
+        {
+            Image = new Exposure
+            {
+                ExposureSeconds = 12.5,
+                Pixels = new float[,] { { 1, 2 }, { 3, 4 } },
+            },
+            Events =
+            [
+                new EventRow { Time = 1.5, Channel = 4 },
+                new EventRow { Time = 2.5, Channel = 7 },
+            ],
+        };
+
+        using var generated = new MemoryStream();
+        FitsSerializer.Write(generated, value, AppFitsContext.Default.DirectCompositeFile);
+
+        using var staged = new MemoryStream();
+        FitsDocumentBuilder.Create()
+            .Image([2, 2], new[] { 1f, 2f, 3f, 4f }, header =>
+            {
+                header.Real("EXPTIME", value.Image.ExposureSeconds);
+            })
+            .BinaryTable(
+                new BinaryTableBuilder()
+                    .Add("TIME", value.Events.Select(row => row.Time).ToArray())
+                    .Add("PHA", value.Events.Select(row => row.Channel).ToArray()),
+                header => header.Text("EXTNAME", "EVENTS"))
+            .Build()
+            .Write(staged);
+
+        using var generatedDocument = FitsDocument.Parse(generated.ToArray());
+        using var stagedDocument = FitsDocument.Parse(staged.ToArray());
+        Assert.Equal(
+            stagedDocument.Hdus.Select(hdu => hdu.Kind),
+            generatedDocument.Hdus.Select(hdu => hdu.Kind));
+        Assert.Equal(
+            stagedDocument.Hdus[1].Header.GetString("EXTNAME"),
+            generatedDocument.Hdus[1].Header.GetString("EXTNAME"));
+        Assert.Equal(
+            stagedDocument.Hdus[1].Table!.Column("PHA").ReadInteger(1),
+            generatedDocument.Hdus[1].Table!.Column("PHA").ReadInteger(1));
+    }
+
+    [Fact]
+    public void GeneratedCompositeDirectWriteRoundTripsChildren()
+    {
+        var value = new DirectCompositeFile
+        {
+            Image = new Exposure { Pixels = new float[,] { { 1, 2 } } },
+            Events = [new EventRow { Time = 3.5, Channel = 8 }],
+        };
+
+        using var stream = new MemoryStream();
+        FitsSerializer.Write(stream, value, AppFitsContext.Default.DirectCompositeFile);
+        stream.Position = 0;
+
+        DirectCompositeFile result = FitsSerializer.Read(
+            stream, AppFitsContext.Default.DirectCompositeFile);
+
+        Assert.Equal(value.Image.Pixels, result.Image.Pixels);
+        Assert.Equal(value.Events[0].Time, result.Events[0].Time);
+        Assert.Equal(value.Events[0].Channel, result.Events[0].Channel);
+    }
 }

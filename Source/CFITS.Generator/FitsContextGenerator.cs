@@ -180,6 +180,10 @@ public sealed class FitsContextGenerator : IIncrementalGenerator
         string? name = attribute.NamedArguments.FirstOrDefault(
             static item => item.Key == "Name").Value.Value as string;
         name ??= attribute.ConstructorArguments.FirstOrDefault().Value as string;
+        if (table)
+        {
+            name ??= DescribeType(named).HduName;
+        }
         return new TypeModel(
             named,
             table,
@@ -491,14 +495,17 @@ public sealed class FitsContextGenerator : IIncrementalGenerator
     private static string EmitDocument(DocumentModel document, IReadOnlyList<TypeModel> knownTypes)
     {
         string root = document.Symbol.ToDisplayString();
+        bool hasUnknown = document.Members.Any(static member => member.Role == DocumentMemberRole.Unknown);
+        bool canWriteChildrenDirectly = CanWriteChildrenDirectly(document);
+        string mappedArgument = hasUnknown ? "mapped" : "null";
         string members = string.Join(NewLine, document.Members.Select(member =>
         {
             string assignment = member.Role switch
             {
                 DocumentMemberRole.Image =>
-                    $"{member.Property.Name} = {member.Child!.InfoName}.ReadDocument(document, mapped),",
+                    $"{member.Property.Name} = {member.Child!.InfoName}.ReadDocument(document, {mappedArgument}),",
                 DocumentMemberRole.Table =>
-                    $"{member.Property.Name} = {member.Child!.InfoName}.ReadDocument(document, mapped),",
+                    $"{member.Property.Name} = {member.Child!.InfoName}.ReadDocument(document, {mappedArgument}),",
                 DocumentMemberRole.Unknown =>
                     $"{member.Property.Name} = document.SnapshotHdus().Where(hdu => !mapped.Contains(hdu.Index)).ToArray(),",
                 DocumentMemberRole.SpecialRecords =>
@@ -510,9 +517,9 @@ public sealed class FitsContextGenerator : IIncrementalGenerator
         string helpers = string.Join(NewLine, document.Members
             .Where(static member => member.Child is not null)
             .Select(member => member.Child!.Table ? EmitTable(member.Child) : EmitImage(member.Child)));
-        string unknownUse = document.Members.Any(static member => member.Role == DocumentMemberRole.Unknown)
+        string unknownUse = hasUnknown
             ? "            var mapped = new System.Collections.Generic.HashSet<int>();"
-            : "            var mapped = new System.Collections.Generic.HashSet<int>();";
+            : "";
         string writes = string.Join(NewLine, document.Members
             .Where(static member => member.Child is not null)
             .Select((member, index) =>
@@ -537,6 +544,18 @@ public sealed class FitsContextGenerator : IIncrementalGenerator
         string specialWrite = document.Members.FirstOrDefault(static member => member.Role == DocumentMemberRole.SpecialRecords) is { } specialMember
             ? $"                        builder.SpecialRecords(value.{specialMember.Property.Name});"
             : "";
+        string writeBody = canWriteChildrenDirectly
+            ? EmitDirectDocumentWrite(document)
+            : $$"""
+                        var ordered = new System.Collections.Generic.List<(int Index, CFITS.FitsHduSnapshot Snapshot)>();
+            {{writes}}
+            {{unknownWrites}}
+                        ordered.Sort(static (left, right) => left.Index.CompareTo(right.Index));
+                        var builder = CFITS.FitsDocumentBuilder.Create();
+                        foreach (var item in ordered) builder.Hdu(item.Snapshot);
+            {{specialWrite}}
+                        builder.Write(stream);
+            """;
         return $$"""
                 private sealed class {{document.Symbol.Name}}Info : CFITS.FitsDocumentTypeInfo<{{root}}>
                 {
@@ -551,18 +570,49 @@ public sealed class FitsContextGenerator : IIncrementalGenerator
 
                     public override void Write(System.IO.Stream stream, {{root}} value)
                     {
-                        var ordered = new System.Collections.Generic.List<(int Index, CFITS.FitsHduSnapshot Snapshot)>();
-            {{writes}}
-            {{unknownWrites}}
-                        ordered.Sort(static (left, right) => left.Index.CompareTo(right.Index));
-                        var builder = CFITS.FitsDocumentBuilder.Create();
-                        foreach (var item in ordered) builder.Hdu(item.Snapshot);
-            {{specialWrite}}
-                        builder.Write(stream);
+            {{writeBody}}
                     }
                 }
             {{helpers}}
         """;
+    }
+
+    private static bool CanWriteChildrenDirectly(DocumentModel document)
+    {
+        if (document.Members.Any(static member =>
+                member.Role is DocumentMemberRole.Unknown or DocumentMemberRole.SpecialRecords))
+        {
+            return false;
+        }
+
+        var children = document.Members
+            .Where(static member => member.Child is not null)
+            .Select(static member => member.Child!)
+            .OrderBy(static child => child.HduIndex)
+            .ToArray();
+        return children.Length > 0
+            && children.Select(static child => child.HduIndex).SequenceEqual(Enumerable.Range(0, children.Length));
+    }
+
+    private static string EmitDirectDocumentWrite(DocumentModel document)
+    {
+        var children = document.Members
+            .Where(static member => member.Child is not null)
+            .OrderBy(static member => member.Child!.HduIndex)
+            .ToArray();
+        var lines = new List<string> { "                        var builder = CFITS.FitsDocumentBuilder.Create();" };
+        foreach (DocumentMemberModel member in children)
+        {
+            if (member.Child!.HduIndex > 0)
+            {
+                lines.Add("                        builder.EnsurePrimaryHdu();");
+            }
+
+            lines.Add($"                        {member.Child.InfoName}.WriteToBuilder(builder, value.{member.Property.Name});");
+        }
+
+        lines.Add("                        builder.Write(stream);");
+        return string.Join(NewLine, lines);
     }
 
     private static string EmitVariableColumnHelpers(IReadOnlyList<MemberModel> members)

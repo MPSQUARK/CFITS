@@ -65,10 +65,7 @@ internal static class Plio
                     if (count > 0)
                     {
                         int fill = opcode == 4 ? high : 0;
-                        for (int index = 0; index < count; index++)
-                        {
-                            output[outputIndex + index] = fill;
-                        }
+                        output.AsSpan(outputIndex, count).Fill(fill);
 
                         if (opcode == 5 && to == end)
                         {

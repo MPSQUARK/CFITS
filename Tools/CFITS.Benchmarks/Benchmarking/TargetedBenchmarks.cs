@@ -52,14 +52,18 @@ internal static class TargetedBenchmarks
         string gzipShuffled = Path.Combine(data, "gzip2.fits");
         string rice = Path.Combine(data, "rice.fits");
         string hcompress = Path.Combine(data, "hcomp.fits");
+        string checksum = Path.Combine(data, "checksum.fits");
 
         return
         [
             new("pixel_sum", "pixels", () => SumImage(image256)),
+            new("pixel_bulk_copy", "pixels", () => CopyImage(image256)),
+            new("pixel_stored_copy", "pixels", () => CopyStoredImage(image256)),
             new("pixel_shuffle_decode", "pixels", () => SumImage(gzipShuffled, 1)),
             new("gzip_decode", "compression", () => SumImage(gzip, 1)),
             new("rice_decode", "compression", () => SumImage(rice, 1)),
             new("hcompress_decode", "compression", () => SumImage(hcompress, 1)),
+            new("checksum_verify", "checksum", () => VerifyChecksum(checksum)),
             new("table_bit_packing", "tables", PackBits),
             new("table_ascii_writer", "tables", WriteAsciiTable),
             new("table_direct_writer", "tables", WriteBinaryTable),
@@ -199,10 +203,34 @@ internal static class TargetedBenchmarks
         return document.Hdus[0].Image!.SumPhysical();
     }
 
+    private static void CopyImage(string path)
+    {
+        using var document = FitsDocument.Open(path);
+        FitsImage image = document.Hdus[0].Image!;
+        var destination = new double[image.Length];
+        image.CopyPhysical(destination);
+        _sink = destination[^1];
+    }
+
+    private static void CopyStoredImage(string path)
+    {
+        using var document = FitsDocument.Open(path);
+        FitsImage image = document.Hdus[0].Image!;
+        var destination = new short[image.Length];
+        image.CopyInteger(destination);
+        _sink = destination[^1];
+    }
+
     private static double SumImage(string path, int hdu = 0)
     {
         using var document = FitsDocument.Open(path);
         return document.Hdus[hdu].Image!.SumPhysical();
+    }
+
+    private static bool VerifyChecksum(string path)
+    {
+        using var document = FitsDocument.Open(path, new FitsOpenOptions { VerifyChecksum = true });
+        return document.Hdus[0].Integrity.IsValid;
     }
 
     private static double Mean(double[] values) => values.Average();

@@ -112,7 +112,7 @@ public sealed class FitsDocument : IDisposable
                     hdus.Add(hdu);
                     break;
                 case FitsToken.SpecialRecords:
-                    special = owned.AsMemory((int)reader.SpecialOffset, reader.SpecialLength).ToArray();
+                    special = owned.AsMemory((int)reader.SpecialOffset, reader.SpecialLength);
                     break;
             }
         }

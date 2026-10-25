@@ -40,7 +40,17 @@ internal static class Pixels
     public static double Read(ReadOnlySpan<byte> raw, int bitpix, int index)
     {
         PixelFormat format = GetFormat(bitpix);
-        return format.Read(raw.Slice(index * format.Width, format.Width));
+        int offset = index * format.Width;
+        return bitpix switch
+        {
+            8 => raw[offset],
+            16 => ReadBigEndian<short>(raw, offset),
+            32 => ReadBigEndian<int>(raw, offset),
+            64 => ReadBigEndian<long>(raw, offset),
+            -32 => ReadBigEndian<float>(raw, offset),
+            -64 => ReadBigEndian<double>(raw, offset),
+            _ => format.Read(raw.Slice(offset, format.Width)),
+        };
     }
 
     public static long ReadInteger(ReadOnlySpan<byte> raw, int bitpix, int index)
@@ -51,7 +61,65 @@ internal static class Pixels
             throw new FitsException("Stored integers are only defined for integer BITPIX.", new FitsLocation(Keyword: "BITPIX"));
         }
 
-        return reader(raw.Slice(index * format.Width, format.Width));
+        return ReadIntegerAt(raw, bitpix, index);
+    }
+
+    public static void CopyStored(ReadOnlySpan<byte> raw, int bitpix, int length, Span<byte> destination)
+    {
+        if (destination.Length < length)
+        {
+            throw new FitsException("The destination is shorter than the image.", new FitsLocation());
+        }
+
+        if (bitpix == 8)
+        {
+            raw[..length].CopyTo(destination);
+            return;
+        }
+
+        for (int index = 0; index < length; index++)
+        {
+            destination[index] = (byte)ReadIntegerAt(raw, bitpix, index);
+        }
+    }
+
+    public static void CopyStored(ReadOnlySpan<byte> raw, int bitpix, int length, Span<short> destination)
+    {
+        if (destination.Length < length)
+        {
+            throw new FitsException("The destination is shorter than the image.", new FitsLocation());
+        }
+
+        for (int index = 0; index < length; index++)
+        {
+            destination[index] = (short)ReadIntegerAt(raw, bitpix, index);
+        }
+    }
+
+    public static void CopyStored(ReadOnlySpan<byte> raw, int bitpix, int length, Span<int> destination)
+    {
+        if (destination.Length < length)
+        {
+            throw new FitsException("The destination is shorter than the image.", new FitsLocation());
+        }
+
+        for (int index = 0; index < length; index++)
+        {
+            destination[index] = (int)ReadIntegerAt(raw, bitpix, index);
+        }
+    }
+
+    public static void CopyStored(ReadOnlySpan<byte> raw, int bitpix, int length, Span<long> destination)
+    {
+        if (destination.Length < length)
+        {
+            throw new FitsException("The destination is shorter than the image.", new FitsLocation());
+        }
+
+        for (int index = 0; index < length; index++)
+        {
+            destination[index] = ReadIntegerAt(raw, bitpix, index);
+        }
     }
 
     public static void Write(Span<byte> raw, int bitpix, int index, double stored)
@@ -155,6 +223,19 @@ internal static class Pixels
         }
 
         throw new FitsException($"BITPIX {bitpix} is not a legal FITS value.", new FitsLocation(Keyword: "BITPIX"));
+    }
+
+    private static long ReadIntegerAt(ReadOnlySpan<byte> raw, int bitpix, int index)
+    {
+        int offset = index * (bitpix >> 3);
+        return bitpix switch
+        {
+            8 => raw[offset],
+            16 => ReadBigEndian<short>(raw, offset),
+            32 => ReadBigEndian<int>(raw, offset),
+            64 => ReadBigEndian<long>(raw, offset),
+            _ => throw new FitsException("Stored integers are only defined for integer BITPIX.", new FitsLocation(Keyword: "BITPIX")),
+        };
     }
 
     private static int WidthFromBitpix(int bitpix)
@@ -336,11 +417,18 @@ internal static class Pixels
     {
         int width = Unsafe.SizeOf<T>();
         int offset = 0;
+        int row = 0;
+        int column = 0;
         for (int index = 0; index < length; index++)
         {
             long stored = long.CreateChecked(ReadBigEndian<T>(raw, offset, width));
-            destination[index / n1, index % n1] = blank == stored ? double.NaN : zero + (scale * stored);
+            destination[row, column] = blank == stored ? double.NaN : zero + (scale * stored);
             offset += width;
+            if (++column == n1)
+            {
+                column = 0;
+                row++;
+            }
         }
     }
 
@@ -348,15 +436,24 @@ internal static class Pixels
         where T : unmanaged, IBinaryInteger<T>
     {
         int width = Unsafe.SizeOf<T>();
-        int plane = n1 * n2;
         int offset = 0;
+        int z = 0;
+        int row = 0;
+        int column = 0;
         for (int index = 0; index < length; index++)
         {
             long stored = long.CreateChecked(ReadBigEndian<T>(raw, offset, width));
-            int z = index / plane;
-            int remainder = index - (z * plane);
-            destination[z, remainder / n1, remainder % n1] = blank == stored ? double.NaN : zero + (scale * stored);
+            destination[z, row, column] = blank == stored ? double.NaN : zero + (scale * stored);
             offset += width;
+            if (++column == n1)
+            {
+                column = 0;
+                if (++row == n2)
+                {
+                    row = 0;
+                    z++;
+                }
+            }
         }
     }
 
@@ -365,13 +462,20 @@ internal static class Pixels
     {
         int width = Unsafe.SizeOf<T>();
         int offset = 0;
+        int row = 0;
+        int column = 0;
         for (int index = 0; index < length; index++)
         {
             long stored = long.CreateChecked(ReadBigEndian<T>(raw, offset, width));
-            destination[index / n1, index % n1] = blank == stored
+            destination[row, column] = blank == stored
                 ? float.NaN
                 : (float)(zero + (scale * stored));
             offset += width;
+            if (++column == n1)
+            {
+                column = 0;
+                row++;
+            }
         }
     }
 
@@ -379,17 +483,26 @@ internal static class Pixels
         where T : unmanaged, IBinaryInteger<T>
     {
         int width = Unsafe.SizeOf<T>();
-        int plane = n1 * n2;
         int offset = 0;
+        int z = 0;
+        int row = 0;
+        int column = 0;
         for (int index = 0; index < length; index++)
         {
-            int z = index / plane;
-            int remainder = index - (z * plane);
             long stored = long.CreateChecked(ReadBigEndian<T>(raw, offset, width));
-            destination[z, remainder / n1, remainder % n1] = blank == stored
+            destination[z, row, column] = blank == stored
                 ? float.NaN
                 : (float)(zero + (scale * stored));
             offset += width;
+            if (++column == n1)
+            {
+                column = 0;
+                if (++row == n2)
+                {
+                    row = 0;
+                    z++;
+                }
+            }
         }
     }
 
@@ -398,10 +511,17 @@ internal static class Pixels
     {
         int width = Unsafe.SizeOf<T>();
         int offset = 0;
+        int row = 0;
+        int column = 0;
         for (int index = 0; index < length; index++)
         {
-            destination[index / n1, index % n1] = zero + (scale * double.CreateChecked(ReadBigEndian<T>(raw, offset, width)));
+            destination[row, column] = zero + (scale * double.CreateChecked(ReadBigEndian<T>(raw, offset, width)));
             offset += width;
+            if (++column == n1)
+            {
+                column = 0;
+                row++;
+            }
         }
     }
 
@@ -409,14 +529,23 @@ internal static class Pixels
         where T : unmanaged, IFloatingPointIeee754<T>
     {
         int width = Unsafe.SizeOf<T>();
-        int plane = n1 * n2;
         int offset = 0;
+        int z = 0;
+        int row = 0;
+        int column = 0;
         for (int index = 0; index < length; index++)
         {
-            int z = index / plane;
-            int remainder = index - (z * plane);
-            destination[z, remainder / n1, remainder % n1] = zero + (scale * double.CreateChecked(ReadBigEndian<T>(raw, offset, width)));
+            destination[z, row, column] = zero + (scale * double.CreateChecked(ReadBigEndian<T>(raw, offset, width)));
             offset += width;
+            if (++column == n1)
+            {
+                column = 0;
+                if (++row == n2)
+                {
+                    row = 0;
+                    z++;
+                }
+            }
         }
     }
 
@@ -425,10 +554,17 @@ internal static class Pixels
     {
         int width = Unsafe.SizeOf<T>();
         int offset = 0;
+        int row = 0;
+        int column = 0;
         for (int index = 0; index < length; index++)
         {
-            destination[index / n1, index % n1] = (float)(zero + (scale * double.CreateChecked(ReadBigEndian<T>(raw, offset, width))));
+            destination[row, column] = (float)(zero + (scale * double.CreateChecked(ReadBigEndian<T>(raw, offset, width))));
             offset += width;
+            if (++column == n1)
+            {
+                column = 0;
+                row++;
+            }
         }
     }
 
@@ -436,14 +572,23 @@ internal static class Pixels
         where T : unmanaged, IFloatingPointIeee754<T>
     {
         int width = Unsafe.SizeOf<T>();
-        int plane = n1 * n2;
         int offset = 0;
+        int z = 0;
+        int row = 0;
+        int column = 0;
         for (int index = 0; index < length; index++)
         {
-            int z = index / plane;
-            int remainder = index - (z * plane);
-            destination[z, remainder / n1, remainder % n1] = (float)(zero + (scale * double.CreateChecked(ReadBigEndian<T>(raw, offset, width))));
+            destination[z, row, column] = (float)(zero + (scale * double.CreateChecked(ReadBigEndian<T>(raw, offset, width))));
             offset += width;
+            if (++column == n1)
+            {
+                column = 0;
+                if (++row == n2)
+                {
+                    row = 0;
+                    z++;
+                }
+            }
         }
     }
 
@@ -519,25 +664,27 @@ internal static class Pixels
     private static T ReadBigEndian<T>(ReadOnlySpan<byte> raw, int offset, int width)
         where T : unmanaged
     {
-        ReadOnlySpan<byte> source = raw.Slice(offset, width);
         if (!BitConverter.IsLittleEndian || width == sizeof(byte))
         {
-            return MemoryMarshal.Read<T>(source);
+            return Unsafe.ReadUnaligned<T>(ref Unsafe.Add(ref MemoryMarshal.GetReference(raw), offset));
         }
 
         if (width == sizeof(short))
         {
-            short reversed = BinaryPrimitives.ReverseEndianness(MemoryMarshal.Read<short>(source));
+            short reversed = BinaryPrimitives.ReverseEndianness(
+                Unsafe.ReadUnaligned<short>(ref Unsafe.Add(ref MemoryMarshal.GetReference(raw), offset)));
             return Unsafe.As<short, T>(ref reversed);
         }
 
         if (width == sizeof(int))
         {
-            int reversed = BinaryPrimitives.ReverseEndianness(MemoryMarshal.Read<int>(source));
+            int reversed = BinaryPrimitives.ReverseEndianness(
+                Unsafe.ReadUnaligned<int>(ref Unsafe.Add(ref MemoryMarshal.GetReference(raw), offset)));
             return Unsafe.As<int, T>(ref reversed);
         }
 
-        long reversedLong = BinaryPrimitives.ReverseEndianness(MemoryMarshal.Read<long>(source));
+        long reversedLong = BinaryPrimitives.ReverseEndianness(
+            Unsafe.ReadUnaligned<long>(ref Unsafe.Add(ref MemoryMarshal.GetReference(raw), offset)));
         return Unsafe.As<long, T>(ref reversedLong);
     }
 

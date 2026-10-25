@@ -9,4 +9,5 @@ namespace CFITS.Tests;
 [FitsSerializable(typeof(UnsupportedTableRow))]
 [FitsSerializable(typeof(MultiHduFile))]
 [FitsSerializable(typeof(InterleavedHduFile))]
+[FitsSerializable(typeof(DirectCompositeFile))]
 public sealed partial class AppFitsContext : FitsSerializerContext;

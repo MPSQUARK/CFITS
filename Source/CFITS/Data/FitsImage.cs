@@ -62,92 +62,100 @@ public sealed class FitsImage
             throw new FitsException("The destination is shorter than the image.", new FitsLocation());
         }
 
-        var raw = _raw.Span;
-        for (int index = 0; index < Length; index++)
-        {
-            destination[index] = System.Buffers.Binary.BinaryPrimitives.ReadInt32BigEndian(raw.Slice(index * 4, 4));
-        }
+        Pixels.CopyStored(_raw.Span, Bitpix, Length, destination);
     }
 
     public void CopyInteger(Span<int> destination)
     {
         EnsureIntegerDestination(destination);
-        for (int index = 0; index < Length; index++)
-        {
-            destination[index] = (int)ReadInteger(index);
-        }
+        Pixels.CopyStored(_raw.Span, Bitpix, Length, destination);
     }
 
     public void CopyInteger(Span<short> destination)
     {
         EnsureIntegerDestination(destination);
-        for (int index = 0; index < Length; index++)
-        {
-            destination[index] = (short)ReadInteger(index);
-        }
+        Pixels.CopyStored(_raw.Span, Bitpix, Length, destination);
     }
 
     public void CopyInteger(Span<long> destination)
     {
         EnsureIntegerDestination(destination);
-        for (int index = 0; index < Length; index++)
-        {
-            destination[index] = (long)ReadInteger(index);
-        }
+        Pixels.CopyStored(_raw.Span, Bitpix, Length, destination);
     }
 
     public void CopyInteger(Span<byte> destination)
     {
         EnsureIntegerDestination(destination);
-        for (int index = 0; index < Length; index++)
-        {
-            destination[index] = (byte)ReadInteger(index);
-        }
+        Pixels.CopyStored(_raw.Span, Bitpix, Length, destination);
     }
 
-    public void CopyInteger(short[,] destination) => CopyInteger(destination, static (values, index, value) => values[index / values.GetLength(1), index % values.GetLength(1)] = (short)value);
-
-    public void CopyInteger(int[,] destination) => CopyInteger(destination, static (values, index, value) => values[index / values.GetLength(1), index % values.GetLength(1)] = (int)value);
-
-    public void CopyInteger(long[,] destination) => CopyInteger(destination, static (values, index, value) => values[index / values.GetLength(1), index % values.GetLength(1)] = (long)value);
-
-    public void CopyInteger(byte[,] destination) => CopyInteger(destination, static (values, index, value) => values[index / values.GetLength(1), index % values.GetLength(1)] = (byte)value);
-
-    public void CopyInteger(short[,,] destination) => CopyInteger(destination, static (values, index, value) =>
+    public void CopyInteger(short[,] destination)
     {
-        int n2 = values.GetLength(2);
-        int n1 = values.GetLength(1);
-        int z = index / (n1 * n2);
-        int remainder = index % (n1 * n2);
-        values[z, remainder / n2, remainder % n2] = (short)value;
-    });
+        ValidateRectangularShape(destination.GetLength(0), destination.GetLength(1), 0, 2);
+        EnsureIntegerDestination(destination.Length);
+        for (int index = 0; index < Length; index++)
+            destination[index / destination.GetLength(1), index % destination.GetLength(1)] = (short)ReadInteger(index);
+    }
 
-    public void CopyInteger(int[,,] destination) => CopyInteger(destination, static (values, index, value) =>
+    public void CopyInteger(int[,] destination)
     {
-        int n2 = values.GetLength(2);
-        int n1 = values.GetLength(1);
-        int z = index / (n1 * n2);
-        int remainder = index % (n1 * n2);
-        values[z, remainder / n2, remainder % n2] = (int)value;
-    });
+        ValidateRectangularShape(destination.GetLength(0), destination.GetLength(1), 0, 2);
+        EnsureIntegerDestination(destination.Length);
+        for (int index = 0; index < Length; index++)
+            destination[index / destination.GetLength(1), index % destination.GetLength(1)] = (int)ReadInteger(index);
+    }
 
-    public void CopyInteger(long[,,] destination) => CopyInteger(destination, static (values, index, value) =>
+    public void CopyInteger(long[,] destination)
     {
-        int n2 = values.GetLength(2);
-        int n1 = values.GetLength(1);
-        int z = index / (n1 * n2);
-        int remainder = index % (n1 * n2);
-        values[z, remainder / n2, remainder % n2] = (long)value;
-    });
+        ValidateRectangularShape(destination.GetLength(0), destination.GetLength(1), 0, 2);
+        EnsureIntegerDestination(destination.Length);
+        for (int index = 0; index < Length; index++)
+            destination[index / destination.GetLength(1), index % destination.GetLength(1)] = (long)ReadInteger(index);
+    }
 
-    public void CopyInteger(byte[,,] destination) => CopyInteger(destination, static (values, index, value) =>
+    public void CopyInteger(byte[,] destination)
     {
-        int n2 = values.GetLength(2);
-        int n1 = values.GetLength(1);
-        int z = index / (n1 * n2);
-        int remainder = index % (n1 * n2);
-        values[z, remainder / n2, remainder % n2] = (byte)value;
-    });
+        ValidateRectangularShape(destination.GetLength(0), destination.GetLength(1), 0, 2);
+        EnsureIntegerDestination(destination.Length);
+        for (int index = 0; index < Length; index++)
+            destination[index / destination.GetLength(1), index % destination.GetLength(1)] = (byte)ReadInteger(index);
+    }
+
+    public void CopyInteger(short[,,] destination)
+    {
+        ValidateRectangularShape(destination.GetLength(0), destination.GetLength(1), destination.GetLength(2), 3);
+        EnsureIntegerDestination(destination.Length);
+        for (int index = 0; index < Length; index++)
+            destination[index / (destination.GetLength(1) * destination.GetLength(2)),
+                (index / destination.GetLength(2)) % destination.GetLength(1), index % destination.GetLength(2)] = (short)ReadInteger(index);
+    }
+
+    public void CopyInteger(int[,,] destination)
+    {
+        ValidateRectangularShape(destination.GetLength(0), destination.GetLength(1), destination.GetLength(2), 3);
+        EnsureIntegerDestination(destination.Length);
+        for (int index = 0; index < Length; index++)
+            destination[index / (destination.GetLength(1) * destination.GetLength(2)),
+                (index / destination.GetLength(2)) % destination.GetLength(1), index % destination.GetLength(2)] = (int)ReadInteger(index);
+    }
+
+    public void CopyInteger(long[,,] destination)
+    {
+        ValidateRectangularShape(destination.GetLength(0), destination.GetLength(1), destination.GetLength(2), 3);
+        EnsureIntegerDestination(destination.Length);
+        for (int index = 0; index < Length; index++)
+            destination[index / (destination.GetLength(1) * destination.GetLength(2)),
+                (index / destination.GetLength(2)) % destination.GetLength(1), index % destination.GetLength(2)] = (long)ReadInteger(index);
+    }
+
+    public void CopyInteger(byte[,,] destination)
+    {
+        ValidateRectangularShape(destination.GetLength(0), destination.GetLength(1), destination.GetLength(2), 3);
+        EnsureIntegerDestination(destination.Length);
+        for (int index = 0; index < Length; index++)
+            destination[index / (destination.GetLength(1) * destination.GetLength(2)),
+                (index / destination.GetLength(2)) % destination.GetLength(1), index % destination.GetLength(2)] = (byte)ReadInteger(index);
+    }
 
     public void CopyPhysical(Span<double> destination)
     {
@@ -318,26 +326,6 @@ public sealed class FitsImage
         if (destination.Length < Length)
         {
             throw new FitsException("The destination is shorter than the image.", new FitsLocation());
-        }
-    }
-
-    private void CopyInteger<T>(T[,] destination, Action<T[,], int, Int128> assign)
-    {
-        ValidateRectangularShape(destination.GetLength(0), destination.GetLength(1), 0, 2);
-        EnsureIntegerDestination(destination.Length);
-        for (int index = 0; index < Length; index++)
-        {
-            assign(destination, index, ReadInteger(index));
-        }
-    }
-
-    private void CopyInteger<T>(T[,,] destination, Action<T[,,], int, Int128> assign)
-    {
-        ValidateRectangularShape(destination.GetLength(0), destination.GetLength(1), destination.GetLength(2), 3);
-        EnsureIntegerDestination(destination.Length);
-        for (int index = 0; index < Length; index++)
-        {
-            assign(destination, index, ReadInteger(index));
         }
     }
 

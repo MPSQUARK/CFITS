@@ -98,6 +98,42 @@ public sealed class ImageTests
     }
 
     [Fact]
+    public void EveryBitpixBulkCopyMatchesPhysicalScalarReads()
+    {
+        using var byteDocument = FitsDocumentBuilder.Create()
+            .Image([3], new byte[] { 0, 255, 7 }, header => header
+                .Real("BSCALE", 2.5)
+                .Real("BZERO", 10)
+                .Integer("BLANK", 255))
+            .Build();
+        using var shortDocument = FitsDocumentBuilder.Create()
+            .Image([3], new short[] { -2, -1, 3 }, header => header
+                .Real("BSCALE", 2.5)
+                .Real("BZERO", 10)
+                .Integer("BLANK", -1))
+            .Build();
+        using var intDocument = FitsDocumentBuilder.Create()
+            .Image([3], new[] { int.MinValue, 0, int.MaxValue }, header => header.Real("BSCALE", 2.5).Real("BZERO", 10))
+            .Build();
+        using var longDocument = FitsDocumentBuilder.Create()
+            .Image([3], new[] { (1L << 60) + 3, long.MinValue, long.MaxValue }, header => header.Real("BSCALE", 2.5).Real("BZERO", 10))
+            .Build();
+        using var floatDocument = FitsDocumentBuilder.Create()
+            .Image([3], new[] { float.NaN, -1.25f, float.PositiveInfinity }, header => header.Real("BSCALE", 2.5).Real("BZERO", 10))
+            .Build();
+        using var doubleDocument = FitsDocumentBuilder.Create()
+            .Image([3], new[] { double.NaN, -1.25, double.PositiveInfinity }, header => header.Real("BSCALE", 2.5).Real("BZERO", 10))
+            .Build();
+
+        AssertDoubleBulkMatchesScalar(byteDocument.Hdus[0].Image!);
+        AssertDoubleBulkMatchesScalar(shortDocument.Hdus[0].Image!);
+        AssertDoubleBulkMatchesScalar(intDocument.Hdus[0].Image!);
+        AssertDoubleBulkMatchesScalar(longDocument.Hdus[0].Image!);
+        AssertDoubleBulkMatchesScalar(floatDocument.Hdus[0].Image!);
+        AssertDoubleBulkMatchesScalar(doubleDocument.Hdus[0].Image!);
+    }
+
+    [Fact]
     public void FloatBulkCopyValidatesDestinationLength()
     {
         using var document = FitsDocumentBuilder.Create().Image([2], new short[] { 1, 2 }).Build();
@@ -192,6 +228,24 @@ public sealed class ImageTests
         for (int index = 0; index < image.Length; index++)
         {
             Assert.Equal((float)image.ReadPhysical(index), values[index]);
+        }
+    }
+
+    private static void AssertDoubleBulkMatchesScalar(FitsImage image)
+    {
+        var values = new double[image.Length];
+        image.CopyPhysical(values);
+        for (int index = 0; index < image.Length; index++)
+        {
+            double expected = image.ReadPhysical(index);
+            if (double.IsNaN(expected))
+            {
+                Assert.True(double.IsNaN(values[index]));
+            }
+            else
+            {
+                Assert.Equal(expected, values[index]);
+            }
         }
     }
 }

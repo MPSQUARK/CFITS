@@ -379,33 +379,47 @@ public sealed class BinaryTableBuilder
             .Integer("PCOUNT", heapSize)
             .Integer("GCOUNT", 1)
             .Integer("TFIELDS", _columns.Count);
+        var offsets = new int[_columns.Count];
         int offset = 0;
-        int heapCursor = 0;
         for (int field = 0; field < _columns.Count; field++)
         {
             var column = _columns[field];
+            offsets[field] = offset;
             header.Text($"TTYPE{field + 1}", column.Name);
             header.Text($"TFORM{field + 1}", column.Format);
             if (column.Dimensions is not null)
             {
                 header.Text($"TDIM{field + 1}", column.Dimensions);
             }
-            if (!column.Variable)
+            offset += column.Width;
+        }
+
+        // Write fixed cells row-major so each row is touched once and wide tables
+        // do not repeatedly jump by the complete row stride.
+        for (int row = 0; row < rows; row++)
+        {
+            int rowOffset = row * stride;
+            for (int field = 0; field < _columns.Count; field++)
             {
-                int rowOffset = offset;
-                for (int row = 0; row < rows; row++)
+                BinaryColumn column = _columns[field];
+                if (!column.Variable)
                 {
-                    column.Cells.AsSpan(row * column.Width, column.Width).CopyTo(data.AsSpan(rowOffset, column.Width));
-                    rowOffset += stride;
+                    column.Cells.AsSpan(row * column.Width, column.Width)
+                        .CopyTo(data.AsSpan(rowOffset + offsets[field], column.Width));
                 }
             }
-            else
+        }
+
+        int heapCursor = 0;
+        for (int field = 0; field < _columns.Count; field++)
+        {
+            var column = _columns[field];
+            if (column.Variable)
             {
                 int local = 0;
-                int rowOffset = offset;
                 for (int row = 0; row < rows; row++)
                 {
-                    int descriptor = rowOffset;
+                    int descriptor = (row * stride) + offsets[field];
                     int byteOffset = heapCursor + local;
                     if (column.WideDescriptor)
                     {
@@ -419,14 +433,11 @@ public sealed class BinaryTableBuilder
                     }
 
                     local += column.HeapRowLengths[row];
-                    rowOffset += stride;
                 }
 
                 column.Heap.CopyTo(data.AsSpan((stride * rows) + heapCursor));
                 heapCursor += column.Heap.Length;
             }
-
-            offset += column.Width;
         }
 
         return new TablePayload(header.Build(), data);

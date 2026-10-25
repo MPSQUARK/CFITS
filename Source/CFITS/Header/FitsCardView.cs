@@ -1,5 +1,6 @@
 using System.Buffers.Text;
 using System.Globalization;
+using System.Text;
 
 namespace CFITS;
 
@@ -469,13 +470,7 @@ public readonly ref struct FitsCardView
 
     private static string Ascii(ReadOnlySpan<byte> bytes)
     {
-        Span<char> chars = stackalloc char[bytes.Length];
-        for (int i = 0; i < bytes.Length; i++)
-        {
-            chars[i] = (char)bytes[i];
-        }
-
-        return new string(chars);
+        return Encoding.ASCII.GetString(bytes);
     }
 
     private static void RequirePrintable(ReadOnlySpan<byte> card, long position)

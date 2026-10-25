@@ -1,3 +1,5 @@
+using System.Numerics;
+
 namespace CFITS.Compression;
 
 /// <summary>
@@ -72,11 +74,7 @@ internal static class HCompress
         }
 
         int longest = Math.Max(rows, columns);
-        int depth = (int)((Math.Log((float)longest) / Math.Log(2.0)) + 0.5);
-        if (longest > (1 << depth))
-        {
-            depth++;
-        }
+        int depth = Depth(longest);
 
         int codeLength = ((rows + 1) / 2) * ((columns + 1) / 2);
         Span<byte> codes = codesScratch.AsSpan(0, codeLength);
@@ -271,11 +269,7 @@ internal static class HCompress
     private static void Inverse(int[] pixels, int width, int height, int smooth, int scale)
     {
         int longest = Math.Max(width, height);
-        int depth = (int)((Math.Log((float)longest) / Math.Log(2.0)) + 0.5);
-        if (longest > (1 << depth))
-        {
-            depth++;
-        }
+        int depth = Depth(longest);
 
         var scratch = new int[(longest + 1) / 2];
         int shift = 1;
@@ -415,6 +409,9 @@ internal static class HCompress
 
     private static int Round(int value, int positive, int negative, int mask) =>
         (value + (value >= 0 ? positive : negative)) & mask;
+
+    private static int Depth(int longest) =>
+        longest <= 1 ? 0 : BitOperations.Log2((uint)(longest - 1)) + 1;
 
     private static void Smooth(int[] pixels, int rows, int columns, int stride, int scale)
     {
