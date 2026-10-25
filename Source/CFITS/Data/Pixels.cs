@@ -10,6 +10,11 @@ internal static class Pixels
     private delegate double ReadValue(ReadOnlySpan<byte> source);
     private delegate long ReadIntegerValue(ReadOnlySpan<byte> source);
     private delegate void CopyValues(ReadOnlySpan<byte> raw, int length, double scale, double zero, long? blank, Span<double> destination);
+    private delegate void CopyFloatValues(ReadOnlySpan<byte> raw, int length, double scale, double zero, long? blank, Span<float> destination);
+    private delegate void CopyDouble2DValues(ReadOnlySpan<byte> raw, int length, double scale, double zero, long? blank, double[,] destination, int n1);
+    private delegate void CopyDouble3DValues(ReadOnlySpan<byte> raw, int length, double scale, double zero, long? blank, double[,,] destination, int n1, int n2);
+    private delegate void CopyFloat2DValues(ReadOnlySpan<byte> raw, int length, double scale, double zero, long? blank, float[,] destination, int n1);
+    private delegate void CopyFloat3DValues(ReadOnlySpan<byte> raw, int length, double scale, double zero, long? blank, float[,,] destination, int n1, int n2);
     private delegate double SumValues(ReadOnlySpan<byte> raw, int length, double scale, double zero, long? blank);
     private delegate void WriteValue(Span<byte> destination, double value);
 
@@ -19,6 +24,11 @@ internal static class Pixels
         public required ReadValue Read { get; init; }
         public ReadIntegerValue? ReadInteger { get; init; }
         public required CopyValues Copy { get; init; }
+        public required CopyFloatValues CopyFloat { get; init; }
+        public required CopyDouble2DValues CopyDouble2D { get; init; }
+        public required CopyDouble3DValues CopyDouble3D { get; init; }
+        public required CopyFloat2DValues CopyFloat2D { get; init; }
+        public required CopyFloat3DValues CopyFloat3D { get; init; }
         public required SumValues Sum { get; init; }
         public required WriteValue Write { get; init; }
     }
@@ -89,6 +99,36 @@ internal static class Pixels
         GetFormat(bitpix).Copy(raw, length, scale, zero, blank, destination);
     }
 
+    public static void Copy(ReadOnlySpan<byte> raw, int bitpix, int length, double scale, double zero, long? blank, Span<float> destination)
+    {
+        if (destination.Length < length)
+        {
+            throw new FitsException("The destination is shorter than the image.", new FitsLocation());
+        }
+
+        GetFormat(bitpix).CopyFloat(raw, length, scale, zero, blank, destination);
+    }
+
+    public static void Copy(ReadOnlySpan<byte> raw, int bitpix, int length, double scale, double zero, long? blank, double[,] destination, int n1)
+    {
+        GetFormat(bitpix).CopyDouble2D(raw, length, scale, zero, blank, destination, n1);
+    }
+
+    public static void Copy(ReadOnlySpan<byte> raw, int bitpix, int length, double scale, double zero, long? blank, double[,,] destination, int n1, int n2)
+    {
+        GetFormat(bitpix).CopyDouble3D(raw, length, scale, zero, blank, destination, n1, n2);
+    }
+
+    public static void Copy(ReadOnlySpan<byte> raw, int bitpix, int length, double scale, double zero, long? blank, float[,] destination, int n1)
+    {
+        GetFormat(bitpix).CopyFloat2D(raw, length, scale, zero, blank, destination, n1);
+    }
+
+    public static void Copy(ReadOnlySpan<byte> raw, int bitpix, int length, double scale, double zero, long? blank, float[,,] destination, int n1, int n2)
+    {
+        GetFormat(bitpix).CopyFloat3D(raw, length, scale, zero, blank, destination, n1, n2);
+    }
+
     public static double Sum(ReadOnlySpan<byte> raw, int bitpix, int length, double scale, double zero, long? blank)
     {
         return GetFormat(bitpix).Sum(raw, length, scale, zero, blank);
@@ -137,6 +177,11 @@ internal static class Pixels
             Read = source => double.CreateChecked(ReadBigEndian<T>(source, 0)),
             ReadInteger = source => long.CreateChecked(ReadBigEndian<T>(source, 0)),
             Copy = CopyInteger<T>,
+            CopyFloat = CopyInteger<T>,
+            CopyDouble2D = CopyInteger2D<T>,
+            CopyDouble3D = CopyInteger3D<T>,
+            CopyFloat2D = CopyInteger2DFloat<T>,
+            CopyFloat3D = CopyInteger3DFloat<T>,
             Sum = SumInteger<T>,
             Write = write,
         };
@@ -151,6 +196,11 @@ internal static class Pixels
             Width = width,
             Read = source => double.CreateChecked(ReadBigEndian<T>(source, 0)),
             Copy = CopyReal<T>,
+            CopyFloat = CopyReal<T>,
+            CopyDouble2D = CopyReal2D<T>,
+            CopyDouble3D = CopyReal3D<T>,
+            CopyFloat2D = CopyReal2DFloat<T>,
+            CopyFloat3D = CopyReal3DFloat<T>,
             Sum = SumReal<T>,
             Write = write,
         };
@@ -219,6 +269,44 @@ internal static class Pixels
         }
     }
 
+    private static void CopyInteger<T>(ReadOnlySpan<byte> raw, int length, double scale, double zero, long? blank, Span<float> destination)
+        where T : unmanaged, IBinaryInteger<T>
+    {
+        int width = Unsafe.SizeOf<T>();
+        if (scale == 1 && zero == 0 && blank is null)
+        {
+            int offset = 0;
+            for (int index = 0; index < length; index++)
+            {
+                destination[index] = (float)double.CreateChecked(ReadBigEndian<T>(raw, offset, width));
+                offset += width;
+            }
+
+            return;
+        }
+
+        if (blank is null)
+        {
+            int offset = 0;
+            for (int index = 0; index < length; index++)
+            {
+                long stored = long.CreateChecked(ReadBigEndian<T>(raw, offset, width));
+                destination[index] = (float)(zero + (scale * stored));
+                offset += width;
+            }
+
+            return;
+        }
+
+        int position = 0;
+        for (int index = 0; index < length; index++)
+        {
+            long stored = long.CreateChecked(ReadBigEndian<T>(raw, position, width));
+            destination[index] = blank == stored ? float.NaN : (float)(zero + (scale * stored));
+            position += width;
+        }
+    }
+
     private static void CopyReal<T>(ReadOnlySpan<byte> raw, int length, double scale, double zero, long? blank, Span<double> destination)
         where T : unmanaged, IFloatingPointIeee754<T>
     {
@@ -227,6 +315,134 @@ internal static class Pixels
         for (int index = 0; index < length; index++)
         {
             destination[index] = zero + (scale * double.CreateChecked(ReadBigEndian<T>(raw, offset, width)));
+            offset += width;
+        }
+    }
+
+    private static void CopyReal<T>(ReadOnlySpan<byte> raw, int length, double scale, double zero, long? blank, Span<float> destination)
+        where T : unmanaged, IFloatingPointIeee754<T>
+    {
+        int width = Unsafe.SizeOf<T>();
+        int offset = 0;
+        for (int index = 0; index < length; index++)
+        {
+            destination[index] = (float)(zero + (scale * double.CreateChecked(ReadBigEndian<T>(raw, offset, width))));
+            offset += width;
+        }
+    }
+
+    private static void CopyInteger2D<T>(ReadOnlySpan<byte> raw, int length, double scale, double zero, long? blank, double[,] destination, int n1)
+        where T : unmanaged, IBinaryInteger<T>
+    {
+        int width = Unsafe.SizeOf<T>();
+        int offset = 0;
+        for (int index = 0; index < length; index++)
+        {
+            long stored = long.CreateChecked(ReadBigEndian<T>(raw, offset, width));
+            destination[index / n1, index % n1] = blank == stored ? double.NaN : zero + (scale * stored);
+            offset += width;
+        }
+    }
+
+    private static void CopyInteger3D<T>(ReadOnlySpan<byte> raw, int length, double scale, double zero, long? blank, double[,,] destination, int n1, int n2)
+        where T : unmanaged, IBinaryInteger<T>
+    {
+        int width = Unsafe.SizeOf<T>();
+        int plane = n1 * n2;
+        int offset = 0;
+        for (int index = 0; index < length; index++)
+        {
+            long stored = long.CreateChecked(ReadBigEndian<T>(raw, offset, width));
+            int z = index / plane;
+            int remainder = index - (z * plane);
+            destination[z, remainder / n1, remainder % n1] = blank == stored ? double.NaN : zero + (scale * stored);
+            offset += width;
+        }
+    }
+
+    private static void CopyInteger2DFloat<T>(ReadOnlySpan<byte> raw, int length, double scale, double zero, long? blank, float[,] destination, int n1)
+        where T : unmanaged, IBinaryInteger<T>
+    {
+        int width = Unsafe.SizeOf<T>();
+        int offset = 0;
+        for (int index = 0; index < length; index++)
+        {
+            long stored = long.CreateChecked(ReadBigEndian<T>(raw, offset, width));
+            destination[index / n1, index % n1] = blank == stored
+                ? float.NaN
+                : (float)(zero + (scale * stored));
+            offset += width;
+        }
+    }
+
+    private static void CopyInteger3DFloat<T>(ReadOnlySpan<byte> raw, int length, double scale, double zero, long? blank, float[,,] destination, int n1, int n2)
+        where T : unmanaged, IBinaryInteger<T>
+    {
+        int width = Unsafe.SizeOf<T>();
+        int plane = n1 * n2;
+        int offset = 0;
+        for (int index = 0; index < length; index++)
+        {
+            int z = index / plane;
+            int remainder = index - (z * plane);
+            long stored = long.CreateChecked(ReadBigEndian<T>(raw, offset, width));
+            destination[z, remainder / n1, remainder % n1] = blank == stored
+                ? float.NaN
+                : (float)(zero + (scale * stored));
+            offset += width;
+        }
+    }
+
+    private static void CopyReal2D<T>(ReadOnlySpan<byte> raw, int length, double scale, double zero, long? blank, double[,] destination, int n1)
+        where T : unmanaged, IFloatingPointIeee754<T>
+    {
+        int width = Unsafe.SizeOf<T>();
+        int offset = 0;
+        for (int index = 0; index < length; index++)
+        {
+            destination[index / n1, index % n1] = zero + (scale * double.CreateChecked(ReadBigEndian<T>(raw, offset, width)));
+            offset += width;
+        }
+    }
+
+    private static void CopyReal3D<T>(ReadOnlySpan<byte> raw, int length, double scale, double zero, long? blank, double[,,] destination, int n1, int n2)
+        where T : unmanaged, IFloatingPointIeee754<T>
+    {
+        int width = Unsafe.SizeOf<T>();
+        int plane = n1 * n2;
+        int offset = 0;
+        for (int index = 0; index < length; index++)
+        {
+            int z = index / plane;
+            int remainder = index - (z * plane);
+            destination[z, remainder / n1, remainder % n1] = zero + (scale * double.CreateChecked(ReadBigEndian<T>(raw, offset, width)));
+            offset += width;
+        }
+    }
+
+    private static void CopyReal2DFloat<T>(ReadOnlySpan<byte> raw, int length, double scale, double zero, long? blank, float[,] destination, int n1)
+        where T : unmanaged, IFloatingPointIeee754<T>
+    {
+        int width = Unsafe.SizeOf<T>();
+        int offset = 0;
+        for (int index = 0; index < length; index++)
+        {
+            destination[index / n1, index % n1] = (float)(zero + (scale * double.CreateChecked(ReadBigEndian<T>(raw, offset, width))));
+            offset += width;
+        }
+    }
+
+    private static void CopyReal3DFloat<T>(ReadOnlySpan<byte> raw, int length, double scale, double zero, long? blank, float[,,] destination, int n1, int n2)
+        where T : unmanaged, IFloatingPointIeee754<T>
+    {
+        int width = Unsafe.SizeOf<T>();
+        int plane = n1 * n2;
+        int offset = 0;
+        for (int index = 0; index < length; index++)
+        {
+            int z = index / plane;
+            int remainder = index - (z * plane);
+            destination[z, remainder / n1, remainder % n1] = (float)(zero + (scale * double.CreateChecked(ReadBigEndian<T>(raw, offset, width))));
             offset += width;
         }
     }

@@ -59,4 +59,116 @@ public sealed class ImageTests
         Assert.Equal((Int128)awkward, column.ReadExactInteger(1));
         Assert.Equal((Int128)long.MaxValue, column.ReadExactInteger(2));
     }
+
+    [Fact]
+    public void FloatBulkCopyMatchesPhysicalScalarReads()
+    {
+        using var byteDocument = FitsDocumentBuilder.Create()
+            .Image([2], new byte[] { 0, 255 }, header => header.Integer("BLANK", 255))
+            .Build();
+        AssertBulkMatchesScalar(byteDocument.Hdus[0].Image!);
+
+        using var integerDocument = FitsDocumentBuilder.Create()
+            .Image([4], new short[] { -2, -1, 0, 3 }, header => header
+                .Real("BSCALE", 2.5)
+                .Real("BZERO", 10)
+                .Integer("BLANK", -1))
+            .Build();
+        AssertBulkMatchesScalar(integerDocument.Hdus[0].Image!);
+
+        using var intDocument = FitsDocumentBuilder.Create()
+            .Image([2], new[] { int.MinValue, int.MaxValue })
+            .Build();
+        AssertBulkMatchesScalar(intDocument.Hdus[0].Image!);
+
+        using var longDocument = FitsDocumentBuilder.Create()
+            .Image([2], new[] { long.MinValue, long.MaxValue })
+            .Build();
+        AssertBulkMatchesScalar(longDocument.Hdus[0].Image!);
+
+        using var floatingDocument = FitsDocumentBuilder.Create()
+            .Image([4], new[] { float.NaN, float.PositiveInfinity, -1.25f, 2.5f })
+            .Build();
+        AssertBulkMatchesScalar(floatingDocument.Hdus[0].Image!);
+
+        using var doubleDocument = FitsDocumentBuilder.Create()
+            .Image([3], new[] { double.NaN, double.NegativeInfinity, 1.5 })
+            .Build();
+        AssertBulkMatchesScalar(doubleDocument.Hdus[0].Image!);
+    }
+
+    [Fact]
+    public void FloatBulkCopyValidatesDestinationLength()
+    {
+        using var document = FitsDocumentBuilder.Create().Image([2], new short[] { 1, 2 }).Build();
+        FitsImage image = document.Hdus[0].Image!;
+
+        Assert.Throws<FitsException>(() => image.CopyPhysical(Array.Empty<float>()));
+        Assert.Throws<FitsException>(() => image.CopyPhysical(new float[1]));
+    }
+
+    [Fact]
+    public void RectangularFloatCopiesMatchScalarReadsAndAxisOrder()
+    {
+        using var document = FitsDocumentBuilder.Create()
+            .Image([3, 2], new short[] { 1, 2, 3, 4, 5, 6 }, header => header
+                .Real("BSCALE", 2)
+                .Real("BZERO", 10)
+                .Integer("BLANK", 5))
+            .Build();
+        FitsImage image = document.Hdus[0].Image!;
+        var values = new float[2, 3];
+        image.CopyPhysical(values);
+
+        for (int y = 0; y < values.GetLength(0); y++)
+        {
+            for (int x = 0; x < values.GetLength(1); x++)
+            {
+                Assert.Equal((float)image.ReadPhysical(x + (y * 3)), values[y, x]);
+            }
+        }
+        Assert.True(float.IsNaN(values[1, 1]));
+    }
+
+    [Fact]
+    public void RectangularDoubleCopiesMatchScalarReadsForRankThree()
+    {
+        using var document = FitsDocumentBuilder.Create()
+            .Image([2, 3, 2], new double[] { 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12 })
+            .Build();
+        FitsImage image = document.Hdus[0].Image!;
+        var values = new double[2, 3, 2];
+        image.CopyPhysical(values);
+
+        for (int z = 0; z < values.GetLength(0); z++)
+        {
+            for (int y = 0; y < values.GetLength(1); y++)
+            {
+                for (int x = 0; x < values.GetLength(2); x++)
+                {
+                    Assert.Equal(image.ReadPhysical(x + (2 * (y + (3 * z)))), values[z, y, x]);
+                }
+            }
+        }
+    }
+
+    [Fact]
+    public void RectangularCopiesValidateRankAndShape()
+    {
+        using var document = FitsDocumentBuilder.Create().Image([3, 2], new float[6]).Build();
+        FitsImage image = document.Hdus[0].Image!;
+
+        Assert.Throws<FitsException>(() => image.CopyPhysical(new float[3, 2, 1]));
+        Assert.Throws<FitsException>(() => image.CopyPhysical(new float[2, 2]));
+    }
+
+    private static void AssertBulkMatchesScalar(FitsImage image)
+    {
+        var values = new float[image.Length];
+        image.CopyPhysical(values);
+        for (int index = 0; index < image.Length; index++)
+        {
+            Assert.Equal((float)image.ReadPhysical(index), values[index]);
+        }
+    }
 }

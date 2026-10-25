@@ -17,7 +17,9 @@ internal static class TargetedBenchmarks
         string root = FitsScenarios.FindRoot();
         string data = Path.Combine(root, "Benchmarks", "Data");
         string results = Path.Combine(root, "Benchmarks", "Results", "optimization-targeted.csv");
-        var scenarios = CreateScenarios(data);
+        var scenarios = CreateScenarios(data)
+            .Concat(GeneratedSerializationBenchmarks.CreateScenarios())
+            .ToArray();
 
         Directory.CreateDirectory(Path.GetDirectoryName(results)!);
         using var csv = new StreamWriter(results);

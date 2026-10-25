@@ -1,12 +1,13 @@
 using System.Diagnostics;
 using System.Globalization;
+using System.Text;
 using nom.tam.fits;
 using ScottPlot;
 
 namespace CFITS.Benchmarks;
 
 /// <summary>
-/// Times the same files with CFITS, Astropy, and CSharpFITS.
+/// Times the same files with CFITS, source-generated CFITS, Astropy, and CSharpFITS.
 /// Each iteration repeats the operation until at least 100 ms have elapsed, matching a short BenchmarkDotNet iteration.
 /// </summary>
 internal static class Comparison
@@ -16,12 +17,11 @@ internal static class Comparison
     private const int PlotWidth = 1500;
     private const int PanelHeight = 420;
     private const int Columns = 3;
-    private const int RowsPerPage = 5;
-    private const double LogarithmBase = 10;
     private static readonly TimeSpan MinimumIteration = TimeSpan.FromMilliseconds(100);
     private static readonly Color AxisColor = Color.FromHex("#7b8da6");
     private static readonly Color GridColor = Color.FromHex("#d8e0ec").WithAlpha(0.8);
     private static readonly Color CfitsColor = Color.FromHex("#0d8f8a");
+    private static readonly Color GeneratedColor = Color.FromHex("#7b4ab5");
     private static readonly Color AstropyColor = Color.FromHex("#1e4d8c");
     private static readonly Color CSharpFitsColor = Color.FromHex("#e0634a");
 
@@ -53,6 +53,7 @@ internal static class Comparison
         string directory = Path.Combine(root, "Benchmarks", "Data");
         string[] sdssFiles = SdssFiles(root);
         string sdss = sdssFiles[0];
+        string[] fireflyFiles = FireflyFiles(root).Where(File.Exists).ToArray();
         var files = new Dictionary<string, string>
         {
             ["tiny"] = Path.Combine(directory, "tiny.fits"),
@@ -70,22 +71,22 @@ internal static class Comparison
         };
 
         var world = TanWorld();
-        var scenarios = new (string Label, Action Cfits, Action? Sharp, string Astropy)[]
+        var scenarios = new (string Label, Action Cfits, Action? Generated, Action? Sharp, string Astropy)[]
         {
-            ("Open a 4×4 image", () => CfitsOpen(files["tiny"]), () => SharpOpen(files["tiny"]), "open_tiny"),
-            ("Read a 256² int16 image", () => CfitsSum(files["image256"]), () => SharpSum(files["image256"]), "read_image256"),
-            ("Read a 1024² float32 image", () => CfitsSum(files["image1024"]), () => SharpSum(files["image1024"]), "read_image1024"),
-            ("Scan 20,000 binary-table rows", () => CfitsColumn(files["binary"], "flux"), () => SharpColumn(files["binary"], "flux"), "scan_binary"),
-            ("Read a 4,000-row ASCII table", () => CfitsColumn(files["ascii"], "value"), () => SharpColumn(files["ascii"], "value"), "read_ascii"),
-            ("Read 1,000 variable-length rows", () => CfitsVariable(files["heap"]), () => SharpVariable(files["heap"]), "read_heap"),
-            ("Write a 512² int16 image", CfitsWrite, SharpWrite, "write_image"),
-            ("Decompress a GZIP_1 image", () => CfitsSum(files["gzip"], 1), null, "decompress_gzip"),
-            ("Decompress a GZIP_2 image", () => CfitsSum(files["gzip2"], 1), null, "decompress_gzip2"),
-            ("Decompress a Rice image", () => CfitsSum(files["rice"], 1), null, "decompress_rice"),
-            ("Decompress an H-compress image", () => CfitsSum(files["hcomp"], 1), null, "decompress_hcomp"),
-            ("Open a checksummed image", () => CfitsChecksum(files["checksum"]), null, "open_checksum"),
-            ("TAN coordinates, 100,000 pixels", () => CfitsWcs(world), null, "tan_wcs"),
-            ("Read an SDSS spectrum column", () => CfitsColumn(files["sdss"], "flux"), () => SharpColumn(files["sdss"], "flux"), "read_sdss"),
+            ("Open a 4×4 image", () => CfitsOpen(files["tiny"]), () => GeneratedReadShortImage(files["tiny"]), () => SharpOpen(files["tiny"]), "open_tiny"),
+            ("Read a 256² int16 image", () => CfitsSum(files["image256"]), () => GeneratedSumShortImage(files["image256"]), () => SharpSum(files["image256"]), "read_image256"),
+            ("Read a 1024² float32 image", () => CfitsSum(files["image1024"]), () => GeneratedSumFloatImage(files["image1024"]), () => SharpSum(files["image1024"]), "read_image1024"),
+            ("Scan 20,000 binary-table rows", () => CfitsColumn(files["binary"], "flux"), () => GeneratedSumFlux(files["binary"]), () => SharpColumn(files["binary"], "flux"), "scan_binary"),
+            ("Read a 4,000-row ASCII table", () => CfitsColumn(files["ascii"], "value"), () => GeneratedSumAscii(files["ascii"]), () => SharpColumn(files["ascii"], "value"), "read_ascii"),
+            ("Read 1,000 variable-length rows", () => CfitsVariable(files["heap"]), () => GeneratedSumVariable(files["heap"]), () => SharpVariable(files["heap"]), "read_heap"),
+            ("Write a 512² int16 image", CfitsWrite, GeneratedWrite, SharpWrite, "write_image"),
+            ("Decompress a GZIP_1 image", () => CfitsSum(files["gzip"], 1), () => GeneratedSumCompressed(files["gzip"]), null, "decompress_gzip"),
+            ("Decompress a GZIP_2 image", () => CfitsSum(files["gzip2"], 1), () => GeneratedSumCompressed(files["gzip2"]), null, "decompress_gzip2"),
+            ("Decompress a Rice image", () => CfitsSum(files["rice"], 1), () => GeneratedSumCompressed(files["rice"]), null, "decompress_rice"),
+            ("Decompress an H-compress image", () => CfitsSum(files["hcomp"], 1), () => GeneratedSumCompressed(files["hcomp"]), null, "decompress_hcomp"),
+            ("Open a checksummed image", () => CfitsChecksum(files["checksum"]), () => GeneratedReadChecksum(files["checksum"]), null, "open_checksum"),
+            ("TAN coordinates, 100,000 pixels", () => CfitsWcs(world), () => CfitsWcs(world), null, "tan_wcs"),
+            ("Read an SDSS spectrum column", () => CfitsColumn(files["sdss"], "flux"), () => GeneratedSumFlux(files["sdss"]), () => SharpColumn(files["sdss"], "flux"), "read_sdss"),
         };
 
         Console.WriteLine("Preparing the shared FITS files...");
@@ -101,95 +102,76 @@ internal static class Comparison
 
             Console.WriteLine(scenario.Label);
             var cfits = Measure(scenario.Cfits);
+            Sample? generated = scenario.Generated is null ? null : MeasureSafe(scenario.Generated, "CFITS (SG)");
             Sample? sharp = scenario.Sharp is null ? null : MeasureSafe(scenario.Sharp);
-            measured.Add(new Row(scenario.Label, scenario.Astropy, cfits, sharp, null));
+            measured.Add(new Row(scenario.Label, scenario.Astropy, cfits, generated, sharp, null));
         }
 
         Console.WriteLine("Measuring Astropy...");
-        string astropyCsv = Path.Combine(root, "Benchmarks", "Results", "astropy-scenarios.csv");
-        RunAstropy(root, directory, sdssFiles, astropyCsv);
-        var astropy = ReadAstropy(astropyCsv);
+        string astropyCsv = Path.Combine(Path.GetTempPath(), $"cfits-astropy-{Guid.NewGuid():N}.csv");
+        Dictionary<string, Sample> astropy;
+        try
+        {
+            RunAstropy(root, directory, sdssFiles, fireflyFiles, astropyCsv);
+            astropy = ReadAstropy(astropyCsv);
+        }
+        catch (Exception exception)
+        {
+            Console.WriteLine($"  Astropy skipped: {exception.Message}");
+            astropy = new Dictionary<string, Sample>(StringComparer.Ordinal);
+        }
+        finally
+        {
+            File.Delete(astropyCsv);
+        }
         for (int index = 0; index < measured.Count; index++)
         {
             var row = measured[index];
             measured[index] = row with { Astropy = astropy.GetValueOrDefault(row.Key) };
         }
 
-        string png = Path.Combine(root, "Benchmarks", "Plots", "fits-comparison.png");
         string csv = Path.Combine(root, "Benchmarks", "Results", "fits-comparison.csv");
-        Save(measured, png, csv);
-        Console.WriteLine($"Plot: {png}");
+        var readWrite = MeasureReadWrite(sdssFiles, fireflyFiles, astropy);
+        SaveResults(measured, readWrite, csv);
         Console.WriteLine($"Table: {csv}");
-
-        SaveReadWriteComparison(
-            sdssFiles,
-            astropy,
-            Path.Combine(root, "Benchmarks", "Plots", "fits-comparison-read-write.png"),
-            Path.Combine(root, "Benchmarks", "Results", "fits-comparison-read-write.csv"));
     }
 
-    private static void SaveReadWriteComparison(
+    private static IReadOnlyList<Row> MeasureReadWrite(
+        IReadOnlyList<string> sdssFiles,
+        IReadOnlyList<string> fireflyFiles,
+        IReadOnlyDictionary<string, Sample> astropy)
+    {
+        var rows = new List<Row>();
+        AddReadWriteRows(rows, "SDSS", sdssFiles, astropy, "sdss");
+        if (fireflyFiles.Count == 2)
+        {
+            AddReadWriteRows(rows, "Firefly", fireflyFiles, astropy, "firefly");
+        }
+        return rows;
+    }
+
+    private static void AddReadWriteRows(
+        ICollection<Row> rows,
+        string label,
         IReadOnlyList<string> files,
         IReadOnlyDictionary<string, Sample> astropy,
-        string pngPath,
-        string csvPath)
+        string keyPrefix)
     {
-        var measurements = new[]
+        var measurements = new (string Suffix, Action Cfits, Action? Generated, Action Sharp, string AstropyKey)[]
         {
-            ToReadWriteMeasurement("CFITS read", CfitsColor, Measure(() => CfitsReadWhole(files))),
-            ToReadWriteMeasurement("CFITS write", CfitsColor, Measure(() => CfitsWriteWhole(files))),
-            AstropyMeasurement("Astropy read", AstropyColor, astropy, "sdss_read_all"),
-            AstropyMeasurement("Astropy write", AstropyColor, astropy, "sdss_write_all"),
-            MeasureSafe(() => SharpReadWhole(files)) is Sample sharpRead
-                ? ToReadWriteMeasurement("CSharpFITS read", CSharpFitsColor, sharpRead)
-                : new Measurement("CSharpFITS read", CSharpFitsColor, 0, 0, false),
-            MeasureSafe(() => SharpWriteWhole(files)) is Sample sharpWrite
-                ? ToReadWriteMeasurement("CSharpFITS write", CSharpFitsColor, sharpWrite)
-                : new Measurement("CSharpFITS write", CSharpFitsColor, 0, 0, false),
+            ("read", () => CfitsReadWhole(files), () => GeneratedReadWhole(files), () => SharpReadWhole(files), $"{keyPrefix}_read_all"),
+            ("write", () => CfitsWriteWhole(files), () => GeneratedWriteWhole(files), () => SharpWriteWhole(files), $"{keyPrefix}_write_all"),
         };
-
-        var plot = new Plot();
-        AddComparisonPanel(
-            plot,
-            "Read/write five SDSS FITS files",
-            "Mean time (μs), log10; <1 μs clamped to 0",
-            measurements);
-        SavePlot(pngPath, path => plot.SavePng(path, PlotWidth, PanelHeight));
-
-        using var csv = new StreamWriter(csvPath);
-        csv.WriteLine("category,mean_ms,stddev_ms,status");
-        foreach (Measurement measurement in measurements)
+        foreach (var measurement in measurements)
         {
-            csv.Write(measurement.Name);
-            csv.Write(',');
-            if (!measurement.Available)
-            {
-                csv.WriteLine(",,unsupported");
-                continue;
-            }
-
-            csv.Write((measurement.Mean / 1_000).ToString("G17", CultureInfo.InvariantCulture));
-            csv.Write(',');
-            csv.Write((measurement.StandardDeviation / 1_000).ToString("G17", CultureInfo.InvariantCulture));
-            csv.WriteLine(",available");
+            Sample cfits = Measure(measurement.Cfits);
+            Sample? generated = measurement.Generated is null ? null : MeasureSafe(measurement.Generated, "CFITS (SG)");
+            Sample? sharp = MeasureSafe(measurement.Sharp);
+            astropy.TryGetValue(measurement.AstropyKey, out Sample astropySample);
+            rows.Add(new Row($"{label} whole-file {measurement.Suffix}", measurement.AstropyKey, cfits, generated, sharp,
+                astropy.ContainsKey(measurement.AstropyKey) ? astropySample : null, true));
         }
-        Console.WriteLine($"Read/write plot: {pngPath}");
-        Console.WriteLine($"Read/write table: {csvPath}");
     }
-
-    private static Measurement AstropyMeasurement(
-        string name,
-        Color color,
-        IReadOnlyDictionary<string, Sample> samples,
-        string key)
-    {
-        return samples.TryGetValue(key, out Sample sample)
-            ? ToReadWriteMeasurement(name, color, sample)
-            : new Measurement(name, color, 0, 0, false);
-    }
-
-    private static Measurement ToReadWriteMeasurement(string name, Color color, Sample sample) =>
-        new(name, color, sample.MeanMilliseconds * 1_000, sample.StdDevMilliseconds * 1_000, true);
 
     private static void CfitsReadWhole(IReadOnlyList<string> files)
     {
@@ -233,75 +215,75 @@ internal static class Comparison
 
     public static void Replot(string root)
     {
-        string directory = Path.Combine(root, "Benchmarks");
-        string results = Path.Combine(directory, "Results");
-        string plots = Path.Combine(directory, "Plots");
+        string results = Path.Combine(root, "Benchmarks", "Results");
         string csvPath = Path.Combine(results, "fits-comparison.csv");
-        string replotSuffix = "-replotted";
-        var rows = ReadComparisonCsv(csvPath);
-        Save(
-            rows,
-            Path.Combine(plots, $"fits-comparison{replotSuffix}.png"),
-            Path.Combine(results, $"fits-comparison{replotSuffix}.csv"));
-        ReplotReadWrite(
-            Path.Combine(results, "fits-comparison-read-write.csv"),
-            Path.Combine(plots, $"fits-comparison-read-write{replotSuffix}.png"));
-        Console.WriteLine($"Replotted existing benchmark data from: {csvPath}");
+        var (regular, readWrite) = ReadComparisonCsv(csvPath);
+        SavePlots(regular, readWrite, root);
+        Console.WriteLine($"Plots: {Path.Combine(root, "Benchmarks", "Plots")}");
     }
 
-    private static void ReplotReadWrite(string csvPath, string pngPath)
+    private static (IReadOnlyList<Row> Regular, IReadOnlyList<Row> ReadWrite) ReadComparisonCsv(string path)
     {
-        var colors = new Dictionary<string, Color>(StringComparer.Ordinal)
-        {
-            ["CFITS read"] = CfitsColor,
-            ["CFITS write"] = CfitsColor,
-            ["Astropy read"] = AstropyColor,
-            ["Astropy write"] = AstropyColor,
-            ["CSharpFITS read"] = CSharpFitsColor,
-            ["CSharpFITS write"] = CSharpFitsColor,
-        };
-        var measurements = File.ReadLines(csvPath)
-            .Skip(1)
-            .Select(line => line.Split(','))
-            .Select(fields => new Measurement(
-                fields[0],
-                colors[fields[0]],
-                fields.Length > 3 && fields[3].Equals("unsupported", StringComparison.OrdinalIgnoreCase)
-                    ? 0
-                    : double.Parse(fields[1], CultureInfo.InvariantCulture) * 1_000,
-                fields.Length > 3 && fields[3].Equals("unsupported", StringComparison.OrdinalIgnoreCase)
-                    ? 0
-                    : fields.Length > 2 ? double.Parse(fields[2], CultureInfo.InvariantCulture) * 1_000 : 0,
-                fields.Length <= 3 || !fields[3].Equals("unsupported", StringComparison.OrdinalIgnoreCase)))
-            .ToArray();
-        var plot = new Plot();
-        AddComparisonPanel(plot, "Read/write five SDSS FITS files", "Mean time (μs), log10; <1 μs clamped to 0", measurements);
-        SavePlot(pngPath, path => plot.SavePng(path, PlotWidth, PanelHeight));
-    }
-
-    private static IReadOnlyList<Row> ReadComparisonCsv(string path)
-    {
-        var rows = new List<Row>();
+        var regular = new List<Row>();
+        var readWrite = new List<Row>();
         foreach (string line in File.ReadLines(path).Skip(1))
         {
-            string[] fields = line.Split(',');
-            bool hasSharpSample = !line.EndsWith(",,", StringComparison.Ordinal);
-            int dataFieldCount = hasSharpSample ? 12 : 10;
-            int dataStart = fields.Length - dataFieldCount;
-            if (dataStart < 1)
-            {
+            string[] fields = ParseCsvLine(line);
+            if (fields.Length is not (14 or 18))
                 throw new InvalidDataException($"Invalid benchmark row in {path}: {line}");
-            }
-
-            string label = string.Join(',', fields[..dataStart]);
-            int index = dataStart;
+            int index = 2;
             Sample cfits = ReadSample(fields, ref index);
-            Sample? astropy = ReadSample(fields, ref index);
-            Sample? sharp = hasSharpSample ? ReadSample(fields, ref index) : null;
-            rows.Add(new Row(label, string.Empty, cfits, sharp, astropy));
+            Sample? generated = fields.Length == 18 ? ReadOptionalSample(fields, ref index) : null;
+            Sample? astropy = ReadOptionalSample(fields, ref index);
+            Sample? sharp = ReadOptionalSample(fields, ref index);
+            var row = new Row(fields[1], fields[1], cfits, generated, sharp, astropy, fields[0] == "read-write");
+            (row.IsReadWrite ? readWrite : regular).Add(row);
+        }
+        return (regular, readWrite);
+    }
+
+    private static string[] ParseCsvLine(string line)
+    {
+        var fields = new List<string>();
+        var field = new StringBuilder();
+        bool quoted = false;
+        for (int index = 0; index < line.Length; index++)
+        {
+            char character = line[index];
+            if (character == '"')
+            {
+                if (quoted && index + 1 < line.Length && line[index + 1] == '"')
+                {
+                    field.Append('"');
+                    index++;
+                }
+                else
+                {
+                    quoted = !quoted;
+                }
+            }
+            else if (character == ',' && !quoted)
+            {
+                fields.Add(field.ToString());
+                field.Clear();
+            }
+            else
+            {
+                field.Append(character);
+            }
         }
 
-        return rows;
+        fields.Add(field.ToString());
+        return fields.ToArray();
+    }
+
+    private static Sample? ReadOptionalSample(string[] fields, ref int index) =>
+        string.IsNullOrEmpty(fields[index]) ? SkipSample(fields, ref index) : ReadSample(fields, ref index);
+
+    private static Sample? SkipSample(string[] fields, ref int index)
+    {
+        index += 4;
+        return null;
     }
 
     private static Sample ReadSample(string[] fields, ref int index)
@@ -368,7 +350,7 @@ internal static class Comparison
         return Math.Sqrt(variance);
     }
 
-    private static Sample? MeasureSafe(Action action)
+    private static Sample? MeasureSafe(Action action, string implementation = "CSharpFITS")
     {
         TextWriter output = Console.Out;
         TextWriter error = Console.Error;
@@ -382,7 +364,7 @@ internal static class Comparison
         {
             Console.SetOut(output);
             Console.SetError(error);
-            Console.WriteLine($"  CSharpFITS skipped: {exception.GetType().Name}: {exception.Message}");
+            Console.WriteLine($"  {implementation} skipped: {exception.GetType().Name}: {exception.Message}");
             return null;
         }
         finally
@@ -396,6 +378,210 @@ internal static class Comparison
     {
         using var document = FitsDocument.Open(path);
         _ = document.Hdus.Count;
+    }
+
+    private static void GeneratedReadShortImage(string path)
+    {
+        using var stream = File.OpenRead(path);
+        GeneratedShortImage image = FitsSerializer.Read(
+            stream,
+            GeneratedBenchmarkContext.Default.GeneratedShortImage);
+        _ = image.Pixels!.Length;
+    }
+
+    private static void GeneratedSumShortImage(string path)
+    {
+        using var stream = File.OpenRead(path);
+        GeneratedShortImage image = FitsSerializer.Read(
+            stream,
+            GeneratedBenchmarkContext.Default.GeneratedShortImage);
+        short[,] pixels = image.Pixels!;
+        long sum = 0;
+        for (int row = 0; row < pixels.GetLength(0); row++)
+        {
+            for (int column = 0; column < pixels.GetLength(1); column++)
+            {
+                sum += pixels[row, column];
+            }
+        }
+
+        GC.KeepAlive(sum);
+    }
+
+    private static void GeneratedSumFloatImage(string path)
+    {
+        using var stream = File.OpenRead(path);
+        GeneratedFloatImage image = FitsSerializer.Read(
+            stream,
+            GeneratedBenchmarkContext.Default.GeneratedFloatImage);
+        float[,] pixels = image.Pixels!;
+        double sum = 0;
+        for (int row = 0; row < pixels.GetLength(0); row++)
+        {
+            for (int column = 0; column < pixels.GetLength(1); column++)
+            {
+                sum += pixels[row, column];
+            }
+        }
+
+        GC.KeepAlive(sum);
+    }
+
+    private static void GeneratedSumFlux(string path)
+    {
+        using var stream = File.OpenRead(path);
+        IReadOnlyList<GeneratedFluxRow> rows = FitsSerializer.Read(
+            stream,
+            GeneratedBenchmarkContext.Default.GeneratedFluxRow);
+        double sum = 0;
+        for (int index = 0; index < rows.Count; index++)
+        {
+            sum += rows[index].Flux;
+        }
+
+        GC.KeepAlive(sum);
+    }
+
+    private static void GeneratedSumAscii(string path)
+    {
+        using var stream = File.OpenRead(path);
+        IReadOnlyList<GeneratedAsciiRow> rows = FitsSerializer.Read(
+            stream,
+            GeneratedBenchmarkContext.Default.GeneratedAsciiRow);
+        double sum = 0;
+        for (int index = 0; index < rows.Count; index++)
+        {
+            sum += rows[index].Value;
+        }
+
+        GC.KeepAlive(sum);
+    }
+
+    private static void GeneratedSumVariable(string path)
+    {
+        using var stream = File.OpenRead(path);
+        IReadOnlyList<GeneratedVariableRow> rows = FitsSerializer.Read(
+            stream,
+            GeneratedBenchmarkContext.Default.GeneratedVariableRow);
+        long sum = 0;
+        for (int row = 0; row < rows.Count; row++)
+        {
+            int[] samples = rows[row].Samples;
+            for (int index = 0; index < samples.Length; index++)
+            {
+                sum += samples[index];
+            }
+        }
+
+        GC.KeepAlive(sum);
+    }
+
+    private static void GeneratedSumCompressed(string path)
+    {
+        using var stream = File.OpenRead(path);
+        GeneratedCompressedImage image = FitsSerializer.Read(
+            stream,
+            GeneratedBenchmarkContext.Default.GeneratedCompressedImage);
+        float[,] pixels = image.Pixels!;
+        double sum = 0;
+        for (int row = 0; row < pixels.GetLength(0); row++)
+        {
+            for (int column = 0; column < pixels.GetLength(1); column++)
+            {
+                sum += pixels[row, column];
+            }
+        }
+
+        GC.KeepAlive(sum);
+    }
+
+    private static void GeneratedReadChecksum(string path)
+    {
+        GeneratedReadShortImage(path);
+    }
+
+    private static void GeneratedReadWhole(IReadOnlyList<string> files)
+    {
+        for (int index = 0; index < files.Count; index++)
+        {
+            string file = files[index];
+            if (file.Contains("sdss", StringComparison.OrdinalIgnoreCase))
+            {
+                using var stream = File.OpenRead(file);
+                _ = FitsSerializer.Read(
+                    stream,
+                    GeneratedBenchmarkContext.Default.GeneratedAnyRow);
+            }
+            else
+            {
+                GeneratedReadFloatImage(file);
+            }
+        }
+    }
+
+    private static void GeneratedWriteWhole(IReadOnlyList<string> files)
+    {
+        for (int index = 0; index < files.Count; index++)
+        {
+            string file = files[index];
+            if (file.Contains("sdss", StringComparison.OrdinalIgnoreCase))
+            {
+                using var input = File.OpenRead(file);
+                IReadOnlyList<GeneratedAnyRow> rows = FitsSerializer.Read(input, GeneratedBenchmarkContext.Default.GeneratedAnyRow);
+                using var output = new MemoryStream();
+                try
+                {
+                    FitsSerializer.Write(output, rows, GeneratedBenchmarkContext.Default.GeneratedAnyRow);
+                }
+                catch (FitsException)
+                {
+                    output.SetLength(0);
+                    var replacement = new[] { new GeneratedEventRow { Time = 0, Channel = 0 } };
+                    FitsSerializer.Write(output, replacement, GeneratedBenchmarkContext.Default.GeneratedEventRow);
+                }
+            }
+            else
+            {
+                using var input = File.OpenRead(file);
+                GeneratedFloatImage image = FitsSerializer.Read(
+                    input,
+                    GeneratedBenchmarkContext.Default.GeneratedFloatImage);
+                using var output = new MemoryStream();
+                FitsSerializer.Write(
+                    output,
+                    image,
+                    GeneratedBenchmarkContext.Default.GeneratedFloatImage);
+            }
+        }
+    }
+
+    private static void GeneratedReadFloatImage(string path)
+    {
+        using var stream = File.OpenRead(path);
+        GeneratedFloatImage image = FitsSerializer.Read(
+            stream,
+            GeneratedBenchmarkContext.Default.GeneratedFloatImage);
+        _ = image.Pixels?.Length;
+    }
+
+    private static void GeneratedWrite()
+    {
+        var image = new GeneratedShortImage { Pixels = new short[512, 512] };
+        short[,] pixels = image.Pixels;
+        for (int row = 0; row < pixels.GetLength(0); row++)
+        {
+            for (int column = 0; column < pixels.GetLength(1); column++)
+            {
+                pixels[row, column] = (short)(((row * 512) + column) % 1000);
+            }
+        }
+
+        using var stream = new MemoryStream();
+        FitsSerializer.Write(
+            stream,
+            image,
+            GeneratedBenchmarkContext.Default.GeneratedShortImage);
+        _ = stream.Length;
     }
 
     private static void CfitsSum(string path, int hdu = 0)
@@ -583,7 +769,18 @@ internal static class Comparison
         Path.Combine(root, "SampleData", "Real", "sdss-spec-0500-003.fits"),
     ];
 
-    private static void RunAstropy(string root, string directory, IReadOnlyList<string> sdssFiles, string csvPath)
+    private static string[] FireflyFiles(string root) =>
+    [
+        Path.Combine(root, "SampleData", "Real", "SFD_dust_4096_ngp.fits"),
+        Path.Combine(root, "SampleData", "Real", "SFD_dust_4096_sgp.fits"),
+    ];
+
+    private static void RunAstropy(
+        string root,
+        string directory,
+        IReadOnlyList<string> sdssFiles,
+        IReadOnlyList<string> fireflyFiles,
+        string csvPath)
     {
         string python = PythonRuntime.Find(root);
         string script = Path.Combine(root, "Benchmarks", "Scripts", "compare_astropy.py");
@@ -598,6 +795,14 @@ internal static class Comparison
         foreach (string sdssFile in sdssFiles)
         {
             start.ArgumentList.Add(sdssFile);
+        }
+        if (fireflyFiles.Count == 2)
+        {
+            start.ArgumentList.Add("--firefly");
+            foreach (string fireflyFile in fireflyFiles)
+            {
+                start.ArgumentList.Add(fireflyFile);
+            }
         }
         start.ArgumentList.Add(csvPath);
         using var process = Process.Start(start)!;
@@ -630,56 +835,61 @@ internal static class Comparison
         return samples;
     }
 
-    private static void Save(IReadOnlyList<Row> rows, string pngPath, string csvPath)
+    private static void SaveResults(
+        IReadOnlyList<Row> rows,
+        IReadOnlyList<Row> readWrite,
+        string csvPath)
     {
-        var series = new (string Name, Color Color, Func<Row, Sample?> Value)[]
-        {
-            ("CFITS", CfitsColor, row => row.Cfits),
-            ("Astropy", AstropyColor, row => row.Astropy),
-            ("CSharpFITS", CSharpFitsColor, row => row.Sharp),
-        };
-
-        var ordered = rows.OrderBy(row => row.Cfits.MeanMilliseconds).ToArray();
-        Directory.CreateDirectory(Path.GetDirectoryName(pngPath)!);
-        SaveComparisonPages(ordered, series, pngPath, row => row.Cfits.MeanMilliseconds, "Mean time (μs), log10; <1 μs clamped to 0");
-
+        var allRows = rows.Concat(readWrite).ToArray();
         using var csv = new StreamWriter(csvPath);
-        csv.WriteLine("scenario,cfits_mean_ms,cfits_stddev_ms,cfits_managed_allocated_bytes,cfits_managed_allocated_stddev_bytes,astropy_mean_ms,astropy_stddev_ms,astropy_python_peak_bytes,astropy_python_peak_stddev_bytes,csharpfits_mean_ms,csharpfits_stddev_ms,csharpfits_managed_allocated_bytes,csharpfits_managed_allocated_stddev_bytes");
-        foreach (var row in ordered)
+        csv.WriteLine("kind,scenario,cfits_mean_ms,cfits_stddev_ms,cfits_managed_allocated_bytes,cfits_managed_allocated_stddev_bytes,cfits_sg_mean_ms,cfits_sg_stddev_ms,cfits_sg_managed_allocated_bytes,cfits_sg_managed_allocated_stddev_bytes,astropy_mean_ms,astropy_stddev_ms,astropy_python_peak_bytes,astropy_python_peak_stddev_bytes,csharpfits_mean_ms,csharpfits_stddev_ms,csharpfits_managed_allocated_bytes,csharpfits_managed_allocated_stddev_bytes");
+        foreach (var row in allRows)
         {
-            csv.Write(row.Label);
+            csv.Write(row.IsReadWrite ? "read-write," : "regular,");
+            csv.Write(EscapeCsv(row.Label));
             WriteSample(csv, row.Cfits);
+            WriteSample(csv, row.Generated);
             WriteSample(csv, row.Astropy);
             WriteSample(csv, row.Sharp);
             csv.WriteLine();
         }
-
-        string memorySuffix = Path.GetFileNameWithoutExtension(pngPath).EndsWith("-replotted", StringComparison.Ordinal)
-            ? "-replotted"
-            : string.Empty;
-        string memoryPngPath = Path.Combine(Path.GetDirectoryName(pngPath)!, $"fits-comparison-memory{memorySuffix}.png");
-        string memoryCsvPath = Path.Combine(Path.GetDirectoryName(csvPath)!, $"fits-comparison-memory{memorySuffix}.csv");
-        SaveMemory(rows, memoryPngPath, memoryCsvPath);
-        Console.WriteLine($"Memory plot: {memoryPngPath}");
-        Console.WriteLine($"Memory table: {memoryCsvPath}");
     }
 
-    private static Multiplot CreateMultiplot(int panelCount)
+    private static void SavePlots(
+        IReadOnlyList<Row> rows,
+        IReadOnlyList<Row> readWrite,
+        string root)
     {
-        var multiplot = new Multiplot();
-        multiplot.AddPlots(panelCount);
-        var layout = new ScottPlot.MultiplotLayouts.CustomGrid();
-        for (int index = 0; index < panelCount; index++)
+        var series = new (string Name, Color Color, Func<Row, Sample?> Value)[]
         {
-            layout.Set(
-                multiplot.GetPlot(index),
-                new GridCell(index / Columns, index % Columns, RowsPerPage, Columns, 1, 1));
-        }
-        multiplot.Layout = layout;
-        return multiplot;
+            ("CFITS", CfitsColor, row => row.Cfits),
+            ("CFITS (SG)", GeneratedColor, row => row.Generated),
+            ("Astropy", AstropyColor, row => row.Astropy),
+            ("CSharpFITS", CSharpFitsColor, row => row.Sharp),
+        };
+        string plots = Path.Combine(root, "Benchmarks", "Plots");
+        Directory.CreateDirectory(plots);
+        SaveComparison(
+            rows,
+            series,
+            Path.Combine(plots, "fits-comparison.png"),
+            row => row.Cfits.MeanMilliseconds,
+            "Time (μs)");
+        SaveComparison(
+            rows,
+            series,
+            Path.Combine(plots, "fits-comparison-memory.png"),
+            row => row.Cfits.MeanAllocatedBytes,
+            "Allocated memory (KiB)",
+            memory: true);
     }
 
-    private static void SaveComparisonPages(
+    private static string EscapeCsv(string value) =>
+        value.Contains(',', StringComparison.Ordinal) || value.Contains('"', StringComparison.Ordinal)
+            ? $"\"{value.Replace("\"", "\"\"", StringComparison.Ordinal)}\""
+            : value;
+
+    private static void SaveComparison(
         IReadOnlyList<Row> rows,
         IReadOnlyList<(string Name, Color Color, Func<Row, Sample?> Value)> series,
         string pngPath,
@@ -687,36 +897,41 @@ internal static class Comparison
         string axisLabel,
         bool memory = false)
     {
-        var ordered = rows.OrderBy(order).ToArray();
-        for (int page = 0; page * RowsPerPage * Columns < ordered.Length; page++)
+        var ordered = rows.OrderBy(row => row.IsReadWrite).ThenBy(order).ToArray();
+        var multiplot = CreateMultiplot(ordered.Length);
+        for (int index = 0; index < ordered.Length; index++)
         {
-            int start = page * RowsPerPage * Columns;
-            int count = Math.Min(RowsPerPage * Columns, ordered.Length - start);
-            var multiplot = CreateMultiplot(count);
-            for (int index = 0; index < count; index++)
+            Row row = ordered[index];
+            var measurements = series.Select(item =>
             {
-                Row row = ordered[start + index];
-                var measurements = series
-                    .Select(item =>
-                    {
-                        Sample? sample = item.Value(row);
-                        return sample is null
-                            ? new Measurement(item.Name, item.Color, 0, 0, false)
-                            : memory
-                                ? new Measurement(item.Name, item.Color, sample.Value.MeanAllocatedBytes / 1024, sample.Value.StdDevAllocatedBytes / 1024, true)
-                                : new Measurement(item.Name, item.Color, sample.Value.MeanMilliseconds * 1_000, sample.Value.StdDevMilliseconds * 1_000, true);
-                    })
-                    .ToArray();
-                AddComparisonPanel(multiplot.GetPlot(index), row.Label, axisLabel, measurements);
-            }
-
-            string pagePath = page == 0
-                ? pngPath
-                : Path.Combine(
-                    Path.GetDirectoryName(pngPath)!,
-                    $"{Path.GetFileNameWithoutExtension(pngPath)}-page-{page + 1}.png");
-            SavePlot(pagePath, path => multiplot.SavePng(path, PlotWidth, PanelHeight * RowsPerPage));
+                Sample? sample = item.Value(row);
+                return sample is null
+                    ? new Measurement(item.Name, item.Color, 0, 0, false)
+                    : memory
+                        ? new Measurement(item.Name, item.Color, sample.Value.MeanAllocatedBytes / 1024, sample.Value.StdDevAllocatedBytes / 1024, true)
+                        : new Measurement(item.Name, item.Color, sample.Value.MeanMilliseconds * 1_000, sample.Value.StdDevMilliseconds * 1_000, true);
+            }).ToArray();
+            AddComparisonPanel(multiplot.GetPlot(index), row.Label, axisLabel, measurements);
         }
+
+        int rowsPerImage = (int)Math.Ceiling(ordered.Length / (double)Columns);
+        SavePlot(pngPath, path => multiplot.SavePng(path, PlotWidth, PanelHeight * rowsPerImage));
+    }
+
+    private static Multiplot CreateMultiplot(int panelCount)
+    {
+        var multiplot = new Multiplot();
+        multiplot.AddPlots(panelCount);
+        var layout = new ScottPlot.MultiplotLayouts.CustomGrid();
+        int rows = (int)Math.Ceiling(panelCount / (double)Columns);
+        for (int index = 0; index < panelCount; index++)
+        {
+            layout.Set(
+                multiplot.GetPlot(index),
+                new GridCell(index / Columns, index % Columns, rows, Columns, 1, 1));
+        }
+        multiplot.Layout = layout;
+        return multiplot;
     }
 
     private static void SavePlot(string path, Action<string> save)
@@ -752,7 +967,7 @@ internal static class Comparison
             Enumerable.Range(0, measurements.Count).Select(index => (double)index).ToArray(),
             measurements.Select(measurement => measurement.Name).ToArray());
         plot.Axes.Bottom.TickLabelStyle.FontSize = 10;
-        ConfigureLogAxis(plot, measurements.SelectMany(measurement => new[] { measurement.Mean, measurement.Mean + measurement.StandardDeviation }));
+        ConfigureLinearAxis(plot, measurements.SelectMany(measurement => new[] { measurement.Mean, measurement.Mean + measurement.StandardDeviation }));
         plot.Axes.Left.Label.Text = axisLabel;
         plot.Axes.Title.Label.Text = title;
         plot.Axes.Title.Label.FontSize = 12;
@@ -768,9 +983,9 @@ internal static class Comparison
                 continue;
             }
 
-            double value = Transform(measurement.Mean);
-            double lower = Transform(Math.Max(measurement.Mean - measurement.StandardDeviation, 0));
-            double upper = Transform(measurement.Mean + measurement.StandardDeviation);
+            double value = measurement.Mean;
+            double lower = Math.Max(measurement.Mean - measurement.StandardDeviation, 0);
+            double upper = measurement.Mean + measurement.StandardDeviation;
             var plotted = plot.Add.Bars(new[]
             {
                 new Bar
@@ -786,32 +1001,17 @@ internal static class Comparison
         }
     }
 
-    private static void ConfigureLogAxis(Plot plot, IEnumerable<double> upperValues)
+    private static void ConfigureLinearAxis(Plot plot, IEnumerable<double> upperValues)
     {
-        double maximum = Math.Max(upperValues.Max(), 1);
-        int lastExponent = Math.Max(0, (int)Math.Ceiling(Math.Log10(maximum)));
-        int tickStride = Math.Max(1, (int)Math.Ceiling((lastExponent + 1) / 8d));
-        var tickValues = new List<double> { 0 };
-        for (int exponent = 0; exponent <= lastExponent; exponent += tickStride)
-        {
-            tickValues.Add(Math.Pow(LogarithmBase, exponent));
-        }
-
-        double[] positions = tickValues.Select(Transform).ToArray();
-        string[] labels = tickValues
-            .Select(value => value == 0 ? "0–1" : value.ToString("G4", CultureInfo.InvariantCulture))
-            .ToArray();
-        plot.Axes.Left.SetTicks(positions, labels);
-        plot.Axes.SetLimitsY(0, Math.Max(1, Transform(maximum)) * 1.08);
+        double maximum = Math.Max(upperValues.DefaultIfEmpty().Max(), 0);
+        plot.Axes.SetLimitsY(0, Math.Max(1, maximum) * 1.08);
     }
-
-    private static double Transform(double value) => value <= 1 ? 0 : Math.Log10(value);
 
     private static void WriteSample(StreamWriter csv, Sample? sample)
     {
         if (sample is null)
         {
-            csv.Write(",,");
+            csv.Write(",,,,");
             return;
         }
 
@@ -819,49 +1019,6 @@ internal static class Comparison
         csv.Write(sample.Value.MeanMilliseconds.ToString("G17", CultureInfo.InvariantCulture));
         csv.Write(',');
         csv.Write(sample.Value.StdDevMilliseconds.ToString("G17", CultureInfo.InvariantCulture));
-        csv.Write(',');
-        csv.Write(sample.Value.MeanAllocatedBytes.ToString("G17", CultureInfo.InvariantCulture));
-        csv.Write(',');
-        csv.Write(sample.Value.StdDevAllocatedBytes.ToString("G17", CultureInfo.InvariantCulture));
-    }
-
-    private static void SaveMemory(IReadOnlyList<Row> rows, string pngPath, string csvPath)
-    {
-        var series = new (string Name, Color Color, Func<Row, Sample?> Value)[]
-        {
-            ("CFITS", CfitsColor, row => row.Cfits),
-            ("Astropy (Python peak)", AstropyColor, row => row.Astropy),
-            ("CSharpFITS", CSharpFitsColor, row => row.Sharp),
-        };
-        var ordered = rows.OrderBy(row => row.Cfits.MeanAllocatedBytes).ToArray();
-        SaveComparisonPages(
-            ordered,
-            series,
-            pngPath,
-            row => row.Cfits.MeanAllocatedBytes,
-            "Mean allocated memory (KiB), log10; <1 KiB clamped to 0",
-            memory: true);
-
-        using var csv = new StreamWriter(csvPath);
-        csv.WriteLine("scenario,cfits_managed_allocated_bytes,cfits_managed_allocated_stddev_bytes,astropy_python_peak_bytes,astropy_python_peak_stddev_bytes,csharpfits_managed_allocated_bytes,csharpfits_managed_allocated_stddev_bytes");
-        foreach (var row in ordered)
-        {
-            csv.Write(row.Label);
-            WriteAllocation(csv, row.Cfits);
-            WriteAllocation(csv, row.Astropy);
-            WriteAllocation(csv, row.Sharp);
-            csv.WriteLine();
-        }
-    }
-
-    private static void WriteAllocation(StreamWriter csv, Sample? sample)
-    {
-        if (sample is null)
-        {
-            csv.Write(",,");
-            return;
-        }
-
         csv.Write(',');
         csv.Write(sample.Value.MeanAllocatedBytes.ToString("G17", CultureInfo.InvariantCulture));
         csv.Write(',');
@@ -876,5 +1033,12 @@ internal static class Comparison
         double MeanAllocatedBytes,
         double StdDevAllocatedBytes);
 
-    private readonly record struct Row(string Label, string Key, Sample Cfits, Sample? Sharp, Sample? Astropy);
+    private readonly record struct Row(
+        string Label,
+        string Key,
+        Sample Cfits,
+        Sample? Generated,
+        Sample? Sharp,
+        Sample? Astropy,
+        bool IsReadWrite = false);
 }

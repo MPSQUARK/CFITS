@@ -17,6 +17,21 @@ public sealed class FitsDocumentBuilder
         return this;
     }
 
+    public void Write(Stream stream)
+    {
+        if (_checksum)
+        {
+            using var document = Build();
+            document.Write(stream);
+            return;
+        }
+
+        foreach (var write in _writers)
+        {
+            write(stream);
+        }
+    }
+
     public FitsDocumentBuilder Image(ReadOnlySpan<int> axes, ReadOnlySpan<byte> values, Action<FitsHeaderBuilder>? header = null) =>
         AddImage(8, axes, values, static (destination, value) => destination[0] = value, header);
 

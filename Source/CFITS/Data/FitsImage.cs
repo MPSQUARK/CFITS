@@ -87,6 +87,88 @@ public sealed class FitsImage
             destination);
     }
 
+    public void CopyPhysical(Span<float> destination)
+    {
+        if (destination.Length < Length)
+        {
+            throw new FitsException("The destination is shorter than the image.", new FitsLocation());
+        }
+
+        bool physical = _mode == FitsScaleMode.Physical;
+        Pixels.Copy(
+            _raw.Span,
+            Bitpix,
+            Length,
+            physical ? Scale : 1,
+            physical ? Zero : 0,
+            physical ? Blank : null,
+            destination);
+    }
+
+    public void CopyPhysical(float[,] destination)
+    {
+        ValidateRectangularShape(destination.GetLength(0), destination.GetLength(1), 0, 2);
+        int n1 = Axes[0];
+        Pixels.Copy(
+            _raw.Span,
+            Bitpix,
+            Length,
+            _mode == FitsScaleMode.Physical ? Scale : 1,
+            _mode == FitsScaleMode.Physical ? Zero : 0,
+            _mode == FitsScaleMode.Physical ? Blank : null,
+            destination,
+            n1);
+    }
+
+    public void CopyPhysical(float[,,] destination)
+    {
+        ValidateRectangularShape(destination.GetLength(0), destination.GetLength(1), destination.GetLength(2), 3);
+        int n1 = Axes[0];
+        int n2 = Axes[1];
+        Pixels.Copy(
+            _raw.Span,
+            Bitpix,
+            Length,
+            _mode == FitsScaleMode.Physical ? Scale : 1,
+            _mode == FitsScaleMode.Physical ? Zero : 0,
+            _mode == FitsScaleMode.Physical ? Blank : null,
+            destination,
+            n1,
+            n2);
+    }
+
+    public void CopyPhysical(double[,] destination)
+    {
+        ValidateRectangularShape(destination.GetLength(0), destination.GetLength(1), 0, 2);
+        int n1 = Axes[0];
+        Pixels.Copy(
+            _raw.Span,
+            Bitpix,
+            Length,
+            _mode == FitsScaleMode.Physical ? Scale : 1,
+            _mode == FitsScaleMode.Physical ? Zero : 0,
+            _mode == FitsScaleMode.Physical ? Blank : null,
+            destination,
+            n1);
+    }
+
+    public void CopyPhysical(double[,,] destination)
+    {
+        ValidateRectangularShape(destination.GetLength(0), destination.GetLength(1), destination.GetLength(2), 3);
+        int n1 = Axes[0];
+        int n2 = Axes[1];
+        Pixels.Copy(
+            _raw.Span,
+            Bitpix,
+            Length,
+            _mode == FitsScaleMode.Physical ? Scale : 1,
+            _mode == FitsScaleMode.Physical ? Zero : 0,
+            _mode == FitsScaleMode.Physical ? Blank : null,
+            destination,
+            n1,
+            n2);
+    }
+
     public double SumPhysical()
     {
         bool physical = _mode == FitsScaleMode.Physical;
@@ -144,6 +226,17 @@ public sealed class FitsImage
 
         long storedInteger = _integer ? Pixels.ReadInteger(_raw.Span, Bitpix, index) : 0;
         return Pixels.Physical(stored, storedInteger, _integer, Blank, Scale, Zero);
+    }
+
+    private void ValidateRectangularShape(int first, int second, int third, int rank)
+    {
+        bool valid = Axes.Count == rank
+            && (rank != 2 || (first == Axes[1] && second == Axes[0]))
+            && (rank != 3 || (first == Axes[2] && second == Axes[1] && third == Axes[0]));
+        if (!valid)
+        {
+            throw new FitsException("The destination shape does not match the image.", new FitsLocation());
+        }
     }
 
     internal static FitsImage Create(FitsHeader header, ReadOnlyMemory<byte> raw, HduShape shape, FitsScaleMode mode)

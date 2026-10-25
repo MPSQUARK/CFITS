@@ -89,9 +89,16 @@ def write_image():
 
 def main():
     directory = Path(sys.argv[1])
-    sdss_files = [Path(value) for value in sys.argv[2:-1]]
+    arguments = sys.argv[2:]
+    destination = Path(arguments.pop())
+    if "--firefly" in arguments:
+        marker = arguments.index("--firefly")
+        sdss_files = [Path(value) for value in arguments[:marker]]
+        firefly_files = [Path(value) for value in arguments[marker + 1:]]
+    else:
+        sdss_files = [Path(value) for value in arguments]
+        firefly_files = []
     sdss = sdss_files[0]
-    destination = Path(sys.argv[-1])
     world = WCS(naxis=2)
     world.wcs.crpix = [128, 128]
     world.wcs.crval = [83.633, -5.391]
@@ -126,6 +133,24 @@ def main():
                 total += buffer.tell()
         return total
 
+    def read_whole(files):
+        total = 0
+        for path in files:
+            with fits.open(path, memmap=False) as hdul:
+                for hdu in hdul:
+                    if hdu.data is not None:
+                        total += int(np.asarray(hdu.data).copy().nbytes)
+        return total
+
+    def write_whole(files):
+        total = 0
+        for path in files:
+            with fits.open(path, memmap=False) as hdul:
+                buffer = BytesIO()
+                hdul.writeto(buffer)
+                total += buffer.tell()
+        return total
+
     scenarios = [
         ("open_tiny", lambda: open_image(directory / "tiny.fits")),
         ("read_image256", lambda: image_sum(directory / "image256.fits")),
@@ -146,10 +171,13 @@ def main():
     ]
     if sdss.exists():
         scenarios.append(("read_sdss", lambda: column_sum(sdss, "flux")))
-    scenarios.extend([
-        ("sdss_read_all", read_sdss_files),
-        ("sdss_write_all", write_sdss_files),
-    ])
+    scenarios.append(("sdss_read_all", read_sdss_files))
+    scenarios.append(("sdss_write_all", write_sdss_files))
+    if len(firefly_files) == 2 and all(path.exists() for path in firefly_files):
+        scenarios.extend([
+            ("firefly_read_all", lambda: read_whole(firefly_files)),
+            ("firefly_write_all", lambda: write_whole(firefly_files)),
+        ])
 
     # tracemalloc reports Python-managed peak growth; NumPy/Astropy native buffers
     # are not included and are intentionally labeled as such in the output.

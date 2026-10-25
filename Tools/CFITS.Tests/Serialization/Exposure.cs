@@ -1,6 +1,6 @@
 namespace CFITS.Tests;
 
-[FitsImage]
+[FitsImage("EXPOSURE")]
 public sealed class Exposure
 {
     [FitsKeyword("EXPTIME")]

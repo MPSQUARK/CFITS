@@ -10,6 +10,8 @@ namespace CFITS.Generator;
 public sealed class FitsContextGenerator : IIncrementalGenerator
 {
     private const string NewLine = "\n";
+    // Bulk copies amortize their buffers and setup only on larger tables.
+    private const int BulkReadRowThreshold = 8_192;
 
     public void Initialize(IncrementalGeneratorInitializationContext context)
     {
@@ -67,17 +69,20 @@ public sealed class FitsContextGenerator : IIncrementalGenerator
     {
         bool table = false;
         string? hduName = null;
+        int hduIndex = -1;
         foreach (var attribute in target.GetAttributes())
         {
             if (attribute.AttributeClass?.Name == "FitsTableAttribute")
             {
                 table = true;
                 hduName = attribute.ConstructorArguments.FirstOrDefault().Value as string;
+                hduIndex = GetHduIndex(attribute);
             }
 
             if (attribute.AttributeClass?.Name == "FitsImageAttribute")
             {
                 hduName = attribute.ConstructorArguments.FirstOrDefault().Value as string;
+                hduIndex = GetHduIndex(attribute);
             }
         }
 
@@ -102,7 +107,20 @@ public sealed class FitsContextGenerator : IIncrementalGenerator
             }
         }
 
-        return new TypeModel(target, table, hduName, members);
+        return new TypeModel(target, table, hduName, hduIndex, members);
+    }
+
+    private static int GetHduIndex(AttributeData attribute)
+    {
+        foreach (var argument in attribute.NamedArguments)
+        {
+            if (argument.Key == "HduIndex" && argument.Value.Value is int index)
+            {
+                return index;
+            }
+        }
+
+        return -1;
     }
 
     private static void Emit(SourceProductionContext output, ContextModel model)
@@ -122,6 +140,7 @@ public sealed class FitsContextGenerator : IIncrementalGenerator
         }));
         string types = string.Join(NewLine, model.Types.Select(static type => type.Table ? EmitTable(type) : EmitImage(type)));
         string code = $$"""
+            #nullable enable
             {{namespaceDeclaration}}public partial class {{model.Symbol.Name}}
             {
                 public static {{model.Symbol.Name}} Default { get; } = new();
@@ -137,26 +156,33 @@ public sealed class FitsContextGenerator : IIncrementalGenerator
     {
         string name = type.Symbol.ToDisplayString();
         var data = type.Members.FirstOrDefault(static member => member.Role == MemberRole.Data);
+        if (data is not null
+            && (data.Symbol.Type is not IArrayTypeSymbol supportedArray
+                || supportedArray.Rank > 3
+                || !IsSupportedImageElement(supportedArray.ElementType)))
+        {
+            return EmitUnsupportedImage(type, data);
+        }
+
+        bool hasReadableData = data?.Symbol.Type is IArrayTypeSymbol readableArray
+            && readableArray.Rank <= 3
+            && IsSupportedImageElement(readableArray.ElementType);
         string keywords = string.Join(NewLine, type.Members
             .Where(static member => member.Role == MemberRole.Keyword)
             .Select(static member => $"                {member.Symbol.Name} = {ReadKeyword(member)},"));
         string dataAssignment = "";
         if (data is not null && data.Symbol.Type is IArrayTypeSymbol array)
         {
-            string value = array.Rank > 3
-                ? "throw new System.NotSupportedException(\"Generated image serialization supports arrays up to rank 3.\")"
-                : ReadArray(array);
-            dataAssignment = $"                {data.Symbol.Name} = {value},";
+            dataAssignment = ReadArray(array);
         }
 
         string write = data is not null && data.Symbol.Type is IArrayTypeSymbol written
             ? EmitImageWrite(type, written, data.Symbol.Name)
             : $$"""
-                        var built = CFITS.FitsDocumentBuilder.Create().Image(System.ReadOnlySpan<int>.Empty, System.ReadOnlySpan<byte>.Empty, header =>
+                        CFITS.FitsDocumentBuilder.Create().Image(System.ReadOnlySpan<int>.Empty, System.ReadOnlySpan<byte>.Empty, header =>
                         {
             {{EmitKeywordWrites(type, "value")}}
-                        }).Build();
-                        built.Write(stream);
+                        }).Write(stream);
             """;
         return $$"""
                 private sealed class {{type.Symbol.Name}}Info : CFITS.FitsTypeInfo<{{name}}>
@@ -164,11 +190,12 @@ public sealed class FitsContextGenerator : IIncrementalGenerator
                     public override {{name}} Read(System.IO.Stream stream)
                     {
                         using var document = CFITS.FitsDocument.Open(stream);
-                        var hdu = {{FindImage(type.HduName)}};
+            {{FindImage(type.HduName, type.HduIndex, "candidate.Kind == CFITS.FitsHduKind.Image")}}
                         var image = hdu.Image ?? throw new CFITS.FitsException("The HDU is not an image.");
+            {{dataAssignment}}
                         return new {{name}}
                         {
-            {{keywords}}{{(keywords.Length > 0 && dataAssignment.Length > 0 ? NewLine : "")}}{{dataAssignment}}
+            {{keywords}}{{(keywords.Length > 0 && hasReadableData ? NewLine : "")}}{{(hasReadableData ? $"                {data!.Symbol.Name} = __cfitsData," : "")}}
                         };
                     }
                     public override void Write(System.IO.Stream stream, {{name}} value)
@@ -179,20 +206,47 @@ public sealed class FitsContextGenerator : IIncrementalGenerator
             """;
     }
 
+    private static string EmitUnsupportedImage(TypeModel type, MemberModel member)
+    {
+        string name = type.Symbol.ToDisplayString();
+        string message = member.Symbol.Type is IArrayTypeSymbol array && array.Rank > 3
+            ? "Generated image serialization supports arrays up to rank 3."
+            : member.Symbol.Type is IArrayTypeSymbol
+                ? "Generated image serialization supports only byte, short, int, long, float, and double arrays."
+                : $"Generated image serialization requires a supported array for [FitsData], but member '{member.Symbol.Name}' has type '{member.Symbol.Type.ToDisplayString()}'.";
+        string literal = Literal(message);
+        return $$"""
+                private sealed class {{type.Symbol.Name}}Info : CFITS.FitsTypeInfo<{{name}}>
+                {
+                    public override {{name}} Read(System.IO.Stream stream)
+                    {
+                        throw new System.NotSupportedException({{literal}});
+                    }
+                    public override void Write(System.IO.Stream stream, {{name}} value)
+                    {
+                        throw new System.NotSupportedException({{literal}});
+                    }
+                }
+            """;
+    }
+
     private static string EmitImageWrite(TypeModel type, IArrayTypeSymbol array, string property)
     {
-        if (array.Rank > 3)
+        if (array.Rank > 3 || !IsSupportedImageElement(array.ElementType))
         {
-            return "            throw new System.NotSupportedException(\"Generated image serialization supports arrays up to rank 3.\");";
+            return "            throw new System.NotSupportedException(\"Generated image serialization supports only byte, short, int, long, float, and double arrays up to rank 3.\");";
         }
 
         string element = ElementName(array.ElementType);
+        string extensionName = string.IsNullOrEmpty(type.HduName)
+            ? ""
+            : $"                header.Text(\"EXTNAME\", {Literal(type.HduName!)});";
         string dimensions;
         if (array.Rank == 1)
         {
             dimensions = $$"""
                         int n1 = pixels.Length;
-                        var built = CFITS.FitsDocumentBuilder.Create().Image(new int[] { n1 }, pixels, header =>
+                        CFITS.FitsDocumentBuilder.Create().Image(new int[] { n1 }, pixels, header =>
                 """;
         }
         else if (array.Rank == 2)
@@ -202,7 +256,7 @@ public sealed class FitsContextGenerator : IIncrementalGenerator
                         int n1 = pixels.GetLength(1);
                         var stored = new {{element}}[n1 * n2];
                         for (int y = 0; y < n2; y++) for (int x = 0; x < n1; x++) stored[x + (y * n1)] = pixels[y, x];
-                        var built = CFITS.FitsDocumentBuilder.Create().Image(new int[] { n1, n2 }, stored, header =>
+                        CFITS.FitsDocumentBuilder.Create().Image(new int[] { n1, n2 }, stored, header =>
                 """;
         }
         else
@@ -213,7 +267,7 @@ public sealed class FitsContextGenerator : IIncrementalGenerator
                         int n1 = pixels.GetLength(2);
                         var stored = new {{element}}[n1 * n2 * n3];
                         for (int z = 0; z < n3; z++) for (int y = 0; y < n2; y++) for (int x = 0; x < n1; x++) stored[x + n1 * (y + (n2 * z))] = pixels[z, y, x];
-                        var built = CFITS.FitsDocumentBuilder.Create().Image(new int[] { n1, n2, n3 }, stored, header =>
+                        CFITS.FitsDocumentBuilder.Create().Image(new int[] { n1, n2, n3 }, stored, header =>
                 """;
         }
 
@@ -222,58 +276,170 @@ public sealed class FitsContextGenerator : IIncrementalGenerator
             {{dimensions}}
                     {
             {{EmitKeywordWrites(type, "value")}}
-                    }).Build();
-                    built.Write(stream);
+            {{extensionName}}
+                    }).Write(stream);
             """;
     }
 
     private static string EmitTable(TypeModel type)
     {
         string name = type.Symbol.ToDisplayString();
-        string columns = string.Join(NewLine, type.Members
+        var columnMembers = type.Members.Where(static member => member.Role == MemberRole.Column).ToList();
+        MemberModel? unsupported = type.Members.FirstOrDefault(static member =>
+            member.Role is MemberRole.Column or MemberRole.Keyword
+            && !IsSupportedTableMember(member.Symbol.Type));
+        if (unsupported is not null)
+        {
+            return EmitUnsupportedTable(type, unsupported);
+        }
+
+        string cachedColumns = string.Join(NewLine, columnMembers.Select((member, index) =>
+            $"                        var __cfitsColumn{index} = table.Column({Literal(member.ColumnName)});"));
+        string bulkCapabilities = string.Join(NewLine, columnMembers
+            .Select((member, index) => EmitBulkColumn(member, index))
+            .Where(static text => text.Length > 0));
+        string bulkBuffers = string.Join(NewLine, columnMembers
+            .Select((member, index) => EmitBulkBuffer(member, index))
+            .Where(static text => text.Length > 0));
+        string scalarColumns = string.Join(NewLine, type.Members
             .Where(static member => member.Role == MemberRole.Column)
-            .Select(static member => $"                    {member.Symbol.Name} = {ReadColumn(member)},"));
+            .Select((member, index) => $"                    {member.Symbol.Name} = {ReadColumn(member, index, bulk: false)},"));
+        string bulkColumnsRead = string.Join(NewLine, type.Members
+            .Where(static member => member.Role == MemberRole.Column)
+            .Select((member, index) => $"                    {member.Symbol.Name} = {ReadColumn(member, index, bulk: true)},"));
+        string bulkCondition = string.Join(" && ", columnMembers
+            .Select((member, index) => BulkCapability(member, index))
+            );
+        string scalarLoop = string.Join(NewLine,
+            "                            for (int row = 0; row < table.RowCount; row++)",
+            "                            {",
+            $"                                rows[row] = new {name}",
+            "                                {",
+            scalarColumns,
+            "                                };",
+            "                            }");
+        string bulkLoop = string.Join(NewLine,
+            "                            for (int row = 0; row < table.RowCount; row++)",
+            "                            {",
+            $"                                rows[row] = new {name}",
+            "                                {",
+            bulkColumnsRead,
+            "                                };",
+            "                            }");
+        string rowLoops = bulkCondition.Length == 0
+            ? string.Join(NewLine,
+                "                        for (int row = 0; row < table.RowCount; row++)",
+                "                        {",
+                $"                            rows[row] = new {name}",
+                "                            {",
+                scalarColumns,
+                "                            };",
+                "                        }")
+            : string.Join(NewLine,
+                $"                        if (table.RowCount >= {BulkReadRowThreshold} && {bulkCondition})",
+                "                        {",
+                bulkBuffers,
+                bulkLoop,
+                "                        }",
+                "                        else",
+                "                        {",
+                scalarLoop,
+                "                        }");
         string writes = string.Join(NewLine, type.Members
             .Where(static member => member.Role == MemberRole.Column)
             .Select(EmitColumnWrite));
         string extensionName = string.IsNullOrEmpty(type.HduName)
             ? ""
             : $"                header.Text(\"EXTNAME\", {Literal(type.HduName!)});";
+        string variableHelpers = EmitVariableColumnHelpers(columnMembers);
         return $$"""
                 private sealed class {{type.Symbol.Name}}Info : CFITS.FitsTableTypeInfo<{{name}}>
                 {
+            {{variableHelpers}}
                     public override System.Collections.Generic.IReadOnlyList<{{name}}> Read(System.IO.Stream stream)
                     {
                         using var document = CFITS.FitsDocument.Open(stream);
-                        var hdu = {{FindTable(type.HduName)}};
+            {{FindTable(type.HduName, type.HduIndex)}}
                         var table = hdu.Table ?? throw new CFITS.FitsException("The HDU is not a table.");
-                        var rows = new System.Collections.Generic.List<{{name}}>(table.RowCount);
-                        for (int row = 0; row < table.RowCount; row++)
-                        {
-                            rows.Add(new {{name}}
-                            {
-            {{columns}}
-                            });
-                        }
+                        var rows = new {{name}}[table.RowCount];
+            {{cachedColumns}}
+            {{bulkCapabilities}}
+            {{rowLoops}}
                         return rows;
                     }
                     public override void Write(System.IO.Stream stream, System.Collections.Generic.IReadOnlyList<{{name}}> rows)
                     {
                         var table = new CFITS.BinaryTableBuilder();
             {{writes}}
-                        var built = CFITS.FitsDocumentBuilder.Create().BinaryTable(table, header =>
+                        CFITS.FitsDocumentBuilder.Create().BinaryTable(table, header =>
                         {
             {{extensionName}}
-                        }).Build();
-                        built.Write(stream);
+                        }).Write(stream);
                     }
                 }
             """;
     }
 
+    private static string EmitVariableColumnHelpers(IReadOnlyList<MemberModel> members)
+    {
+        bool hasInteger = members.Any(static member =>
+            member.Symbol.Type is IArrayTypeSymbol array
+            && array.ElementType.SpecialType == SpecialType.System_Int32);
+        bool hasDouble = members.Any(static member =>
+            member.Symbol.Type is IArrayTypeSymbol array
+            && array.ElementType.SpecialType == SpecialType.System_Double);
+        var helpers = new StringBuilder();
+        if (hasInteger)
+        {
+            helpers.AppendLine("""
+                    private static int[] ReadInt32Array(CFITS.FitsColumn column, int row)
+                    {
+                        var values = new int[column.Count(row)];
+                        for (int index = 0; index < values.Length; index++)
+                        {
+                            values[index] = (int)column.ReadInteger(row, index);
+                        }
+
+                        return values;
+                    }
+                """);
+        }
+
+        if (hasDouble)
+        {
+            helpers.AppendLine("""
+                    private static double[] ReadDoubleArray(CFITS.FitsColumn column, int row)
+                    {
+                        var values = new double[column.Count(row)];
+                        for (int index = 0; index < values.Length; index++)
+                        {
+                            values[index] = column.ReadReal(row, index);
+                        }
+
+                        return values;
+                    }
+                """);
+        }
+
+        return helpers.ToString();
+    }
+
     private static string EmitColumnWrite(MemberModel member)
     {
         string local = member.Symbol.Name.ToLowerInvariant() + "Values";
+        if (member.Symbol.Type is IArrayTypeSymbol array)
+        {
+            string arrayElement = ElementName(array.ElementType);
+            return $$"""
+                        var {{local}} = new {{arrayElement}}[rows.Count][];
+                        for (int index = 0; index < rows.Count; index++)
+                        {
+                            {{local}}[index] = rows[index].{{member.Symbol.Name}};
+                        }
+                        table.AddVariable({{Literal(member.ColumnName)}}, {{local}});
+            """;
+        }
+
         string element = ElementName(member.Symbol.Type);
         if (member.Symbol.Type.SpecialType == SpecialType.System_String)
         {
@@ -289,6 +455,25 @@ public sealed class FitsContextGenerator : IIncrementalGenerator
                     var {{local}} = new {{element}}[rows.Count];
                     for (int index = 0; index < rows.Count; index++) {{local}}[index] = rows[index].{{member.Symbol.Name}};
                     table.Add({{Literal(member.ColumnName)}}, {{local}});
+            """;
+    }
+
+    private static string EmitUnsupportedTable(TypeModel type, MemberModel member)
+    {
+        string name = type.Symbol.ToDisplayString();
+        string message = Literal($"Generated table serialization does not support member '{member.ColumnName}' of type '{member.Symbol.Type.ToDisplayString()}'.");
+        return $$"""
+                private sealed class {{type.Symbol.Name}}Info : CFITS.FitsTableTypeInfo<{{name}}>
+                {
+                    public override System.Collections.Generic.IReadOnlyList<{{name}}> Read(System.IO.Stream stream)
+                    {
+                        throw new System.NotSupportedException({{message}});
+                    }
+                    public override void Write(System.IO.Stream stream, System.Collections.Generic.IReadOnlyList<{{name}}> rows)
+                    {
+                        throw new System.NotSupportedException({{message}});
+                    }
+                }
             """;
     }
 
@@ -329,59 +514,223 @@ public sealed class FitsContextGenerator : IIncrementalGenerator
         };
     }
 
-    private static string ReadColumn(MemberModel member)
+    private static string ReadColumn(MemberModel member, int index, bool bulk = true)
     {
-        string column = $"table.Column({Literal(member.ColumnName)})";
+        string column = $"__cfitsColumn{index}";
+        string integer = $"__cfitsInteger{index}![row]";
+        string real = $"__cfitsReal{index}![row]";
+        if (member.Symbol.Type is IArrayTypeSymbol array)
+        {
+            return array.ElementType.SpecialType switch
+            {
+                SpecialType.System_Double => $"ReadDoubleArray({column}, row)",
+                _ => $"ReadInt32Array({column}, row)",
+            };
+        }
+
         return member.Symbol.Type.SpecialType switch
         {
             SpecialType.System_Boolean => $"{column}.ReadLogical(row)",
-            SpecialType.System_Int32 => $"(int){column}.ReadInteger(row)",
-            SpecialType.System_Int16 => $"(short){column}.ReadInteger(row)",
-            SpecialType.System_Int64 => $"{column}.ReadInteger(row)",
-            SpecialType.System_Byte => $"(byte){column}.ReadInteger(row)",
-            SpecialType.System_Double => $"{column}.ReadReal(row)",
-            SpecialType.System_Single => $"(float){column}.ReadReal(row)",
+            SpecialType.System_Int32 => bulk ? $"(int){integer}" : $"(int){column}.ReadInteger(row)",
+            SpecialType.System_Int16 => bulk ? $"(short){integer}" : $"(short){column}.ReadInteger(row)",
+            SpecialType.System_Int64 => bulk ? integer : $"{column}.ReadInteger(row)",
+            SpecialType.System_Byte => bulk ? $"(byte){integer}" : $"(byte){column}.ReadInteger(row)",
+            SpecialType.System_Double => bulk ? real : $"{column}.ReadReal(row)",
+            SpecialType.System_Single => bulk ? $"(float){real}" : $"(float){column}.ReadReal(row)",
             SpecialType.System_String => $"{column}.ReadString(row)",
             _ => $"{column}.ReadString(row)",
         };
     }
 
+    private static string EmitBulkColumn(MemberModel member, int index)
+    {
+        return member.Symbol.Type.SpecialType switch
+        {
+            SpecialType.System_Int32 or SpecialType.System_Int16 or SpecialType.System_Int64 or SpecialType.System_Byte =>
+                $"                        bool __cfitsInteger{index}Bulk = __cfitsColumn{index}.CanCopyInteger;",
+            SpecialType.System_Double or SpecialType.System_Single =>
+                $"                        bool __cfitsReal{index}Bulk = __cfitsColumn{index}.CanCopyReal;",
+            _ => "",
+        };
+    }
+
+    private static string EmitBulkBuffer(MemberModel member, int index)
+    {
+        return member.Symbol.Type.SpecialType switch
+        {
+            SpecialType.System_Int32 or SpecialType.System_Int16 or SpecialType.System_Int64 or SpecialType.System_Byte =>
+                $"                            long[] __cfitsInteger{index} = new long[table.RowCount];{NewLine}                            if (!__cfitsColumn{index}.TryCopyInteger(__cfitsInteger{index})) throw new CFITS.FitsException(\"The column changed bulk-copy capability.\");",
+            SpecialType.System_Double or SpecialType.System_Single =>
+                $"                            double[] __cfitsReal{index} = new double[table.RowCount];{NewLine}                            if (!__cfitsColumn{index}.TryCopyReal(__cfitsReal{index})) throw new CFITS.FitsException(\"The column changed bulk-copy capability.\");",
+            _ => "",
+        };
+    }
+
+    private static string BulkCapability(MemberModel member, int index) =>
+        member.Symbol.Type.SpecialType switch
+        {
+            SpecialType.System_Int32 or SpecialType.System_Int16 or SpecialType.System_Int64 or SpecialType.System_Byte =>
+                $"__cfitsInteger{index}Bulk",
+            SpecialType.System_Double or SpecialType.System_Single =>
+                $"__cfitsReal{index}Bulk",
+            _ => "false",
+        };
+
     private static string ReadArray(IArrayTypeSymbol array)
     {
         string element = ElementName(array.ElementType);
         string cast = array.ElementType.SpecialType == SpecialType.System_Double ? "" : $"({element})";
+        bool integer = IsIntegerImageElement(array.ElementType);
+        bool bulk = array.ElementType.SpecialType is SpecialType.System_Single or SpecialType.System_Double;
         if (array.Rank == 1)
         {
-            return $"ReadRank1{element}(image)".Replace("ReadRank1" + element, $"new Func<{element}[]>(() => {{ var values = new {element}[image.Length]; for (int i = 0; i < image.Length; i++) values[i] = {cast}image.ReadPhysical(i); return values; }})()");
+            string validation = ImageRankValidation(1);
+            if (bulk)
+            {
+                return validation
+                    + $"                            var __cfitsData = new {element}[image.Length];{NewLine}"
+                    + $"                            image.CopyPhysical(__cfitsData);";
+            }
+
+            return validation
+                + $"                            var __cfitsData = new {element}[image.Length];{NewLine}"
+                + $"                            for (int i = 0; i < image.Length; i++){NewLine}"
+                + $"                            {{{NewLine}"
+                + $"                                __cfitsData[i] = {(integer ? $"{cast}image.ReadInteger(i)" : $"{cast}image.ReadPhysical(i)")};{NewLine}"
+                + "                            }";
         }
 
         if (array.Rank == 2)
         {
-            return $"new Func<{element}[,]>(() => {{ int n1 = image.Axes[0]; int n2 = image.Axes.Count > 1 ? image.Axes[1] : 1; var values = new {element}[n2, n1]; for (int y = 0; y < n2; y++) for (int x = 0; x < n1; x++) values[y, x] = {cast}image.ReadPhysical(x + (y * n1)); return values; }})()";
+            string validation = ImageRankValidation(2);
+            if (bulk)
+            {
+                return validation
+                    + "                            int n1 = image.Axes[0];\n"
+                    + "                            int n2 = image.Axes[1];\n"
+                    + $"                            var __cfitsData = new {element}[n2, n1];\n"
+                    + "                            image.CopyPhysical(__cfitsData);";
+            }
+
+            return $$"""
+            {{validation}}
+                            int n1 = image.Axes[0];
+                            int n2 = image.Axes[1];
+                            var __cfitsData = new {{element}}[n2, n1];
+                            for (int y = 0; y < n2; y++)
+                            {
+                                for (int x = 0; x < n1; x++)
+                                {
+                                    __cfitsData[y, x] = {{(integer ? $"{cast}image.ReadInteger(x + (y * n1))" : $"{cast}image.ReadPhysical(x + (y * n1))")}};
+                                }
+                            }
+            """;
         }
 
-        return $"new Func<{element}[,,]>(() => {{ int n1 = image.Axes[0]; int n2 = image.Axes[1]; int n3 = image.Axes[2]; var values = new {element}[n3, n2, n1]; for (int z = 0; z < n3; z++) for (int y = 0; y < n2; y++) for (int x = 0; x < n1; x++) values[z, y, x] = {cast}image.ReadPhysical(x + n1 * (y + (n2 * z))); return values; }})()";
+        if (bulk)
+        {
+            return ImageRankValidation(3)
+                + "                            int n1 = image.Axes[0];\n"
+                + "                            int n2 = image.Axes[1];\n"
+                + "                            int n3 = image.Axes[2];\n"
+                + $"                            var __cfitsData = new {element}[n3, n2, n1];\n"
+                + "                            image.CopyPhysical(__cfitsData);";
+        }
+
+        return $$"""
+        {{ImageRankValidation(3)}}
+                            int n1 = image.Axes[0];
+                            int n2 = image.Axes[1];
+                            int n3 = image.Axes[2];
+                            var __cfitsData = new {{element}}[n3, n2, n1];
+                            for (int z = 0; z < n3; z++)
+                            {
+                                for (int y = 0; y < n2; y++)
+                                {
+                                    for (int x = 0; x < n1; x++)
+                                    {
+                                        __cfitsData[z, y, x] = {{(integer ? $"{cast}image.ReadInteger(x + n1 * (y + (n2 * z)))" : $"{cast}image.ReadPhysical(x + n1 * (y + (n2 * z)))")}};
+                                    }
+                                }
+                            }
+        """;
     }
 
-    private static string FindImage(string? name)
-    {
-        if (string.IsNullOrEmpty(name))
-        {
-            return "System.Linq.Enumerable.First(document.Hdus, hdu => hdu.Kind == CFITS.FitsHduKind.Image)";
-        }
+    private static string ImageRankValidation(int rank) =>
+        $"                            if (image.Axes.Count != {rank}) throw new CFITS.FitsException(\"Generated image rank does not match the target array.\");\n";
 
-        return $"System.Linq.Enumerable.First(document.Hdus, hdu => hdu.Kind == CFITS.FitsHduKind.Image && hdu.Header.TryGetCard(\"EXTNAME\", out var extname) && extname.GetString() == {Literal(name ?? "")})";
+    private static bool IsSupportedImageElement(ITypeSymbol type) =>
+        IsIntegerImageElement(type)
+        || type.SpecialType is SpecialType.System_Single or SpecialType.System_Double;
+
+    private static bool IsIntegerImageElement(ITypeSymbol type) =>
+        type.SpecialType is SpecialType.System_Byte
+            or SpecialType.System_Int16
+            or SpecialType.System_Int32
+            or SpecialType.System_Int64;
+
+    private static bool IsSupportedTableMember(ITypeSymbol type) =>
+        type is IArrayTypeSymbol array
+            && array.Rank == 1
+            && array.ElementType.SpecialType is (SpecialType.System_Int32 or SpecialType.System_Double)
+        || type.SpecialType is SpecialType.System_Boolean
+            or SpecialType.System_Byte
+            or SpecialType.System_Int16
+            or SpecialType.System_Int32
+            or SpecialType.System_Int64
+            or SpecialType.System_Single
+            or SpecialType.System_Double
+            or SpecialType.System_String;
+
+    private static string FindImage(string? name, int hduIndex, string kindCondition)
+    {
+        return FindHdu(name, hduIndex, kindCondition);
     }
 
-    private static string FindTable(string? name)
+    private static string FindTable(string? name, int hduIndex)
     {
-        string kinds = "hdu.Kind == CFITS.FitsHduKind.BinaryTable || hdu.Kind == CFITS.FitsHduKind.AsciiTable";
-        if (string.IsNullOrEmpty(name))
+        string kinds = "candidate.Kind == CFITS.FitsHduKind.BinaryTable || candidate.Kind == CFITS.FitsHduKind.AsciiTable";
+        return FindHdu(name, hduIndex, kinds);
+    }
+
+    private static string FindHdu(string? name, int hduIndex, string kindCondition)
+    {
+        kindCondition = $"({kindCondition})";
+        string match = string.IsNullOrEmpty(name)
+            ? kindCondition
+            : $"{kindCondition} && candidate.Header.TryGetCard(\"EXTNAME\", out var extname) && extname.GetString() == {Literal(name ?? "")}";
+        if (hduIndex >= 0)
         {
-            return $"System.Linq.Enumerable.First(document.Hdus, hdu => {kinds})";
+            string indexedMatch = match.Replace("candidate", "hdu");
+            return $$"""
+                        if (document.Hdus.Count <= {{hduIndex}})
+                        {
+                            throw new System.InvalidOperationException("The requested HDU does not exist.");
+                        }
+                        CFITS.FitsHdu hdu = document.Hdus[{{hduIndex}}];
+                        if (!({{indexedMatch}}))
+                        {
+                            throw new System.InvalidOperationException("The requested HDU has an incompatible type.");
+                        }
+            """;
         }
 
-        return $"System.Linq.Enumerable.First(document.Hdus, hdu => ({kinds}) && hdu.Header.TryGetCard(\"EXTNAME\", out var extname) && extname.GetString() == {Literal(name ?? "")})";
+        return $$"""
+                        CFITS.FitsHdu hdu = null!;
+                        for (int index = 0; index < document.Hdus.Count; index++)
+                        {
+                            var candidate = document.Hdus[index];
+                            if ({{match}})
+                            {
+                                hdu = candidate;
+                                break;
+                            }
+                        }
+                        if (hdu is null)
+                        {
+                            throw new System.InvalidOperationException("Sequence contains no matching element");
+                        }
+            """;
     }
 
     private static string ElementName(ITypeSymbol type) => type.SpecialType switch
@@ -414,11 +763,12 @@ public sealed class FitsContextGenerator : IIncrementalGenerator
 
     private sealed class TypeModel
     {
-        public TypeModel(INamedTypeSymbol symbol, bool table, string? hduName, List<MemberModel> members)
+        public TypeModel(INamedTypeSymbol symbol, bool table, string? hduName, int hduIndex, List<MemberModel> members)
         {
             Symbol = symbol;
             Table = table;
             HduName = hduName;
+            HduIndex = hduIndex;
             Members = members;
         }
 
@@ -427,6 +777,8 @@ public sealed class FitsContextGenerator : IIncrementalGenerator
         public bool Table { get; }
 
         public string? HduName { get; }
+
+        public int HduIndex { get; }
 
         public List<MemberModel> Members { get; }
     }
