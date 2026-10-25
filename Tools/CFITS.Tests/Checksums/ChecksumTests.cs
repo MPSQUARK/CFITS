@@ -3,6 +3,37 @@ namespace CFITS.Tests;
 public sealed class ChecksumTests
 {
     [Fact]
+    public void EncodingMatchesDivisionBasedReference()
+    {
+        uint[] values =
+        [
+            0,
+            1,
+            0x12345678,
+            0x80000000,
+            0xFFFFFFFF,
+            0xA5A5A5A5,
+        ];
+
+        foreach (uint value in values)
+        {
+            Assert.Equal(ReferenceEncode(value), FitsChecksum.Encode(value));
+        }
+    }
+
+    [Theory]
+    [InlineData(1, 0x01000000u)]
+    [InlineData(2, 0x01020000u)]
+    [InlineData(3, 0x01020300u)]
+    [InlineData(4, 0x01020304u)]
+    public void SumHandlesEveryTrailingLength(int length, uint expected)
+    {
+        byte[] bytes = [1, 2, 3, 4];
+
+        Assert.Equal(expected, FitsChecksum.Sum(bytes.AsSpan(0, length)));
+    }
+
+    [Fact]
     public void StampedImageMatchesItsKeywordsAndAstropy()
     {
         var root = FindRoot();
@@ -65,5 +96,50 @@ public sealed class ChecksumTests
         }
 
         throw new InvalidOperationException("The CFITS repository root was not found.");
+    }
+
+    private static string ReferenceEncode(uint sum)
+    {
+        int[] excluded = [0x3a, 0x3b, 0x3c, 0x3d, 0x3e, 0x3f, 0x40, 0x5b, 0x5c, 0x5d, 0x5e, 0x5f, 0x60];
+        uint value = 0xFFFFFFFF - sum;
+        Span<char> assembled = stackalloc char[16];
+        Span<int> encoded = stackalloc int[4];
+        for (int byteIndex = 0; byteIndex < 4; byteIndex++)
+        {
+            int piece = (int)((value >> (24 - (8 * byteIndex))) & 0xFF);
+            int quotient = (piece / 4) + 0x30;
+            encoded.Fill(quotient);
+            encoded[0] += piece % 4;
+            int pending = 1;
+            while (pending != 0)
+            {
+                pending = 0;
+                foreach (int excludedCharacter in excluded)
+                {
+                    for (int index = 0; index < 4; index += 2)
+                    {
+                        if (encoded[index] == excludedCharacter || encoded[index + 1] == excludedCharacter)
+                        {
+                            encoded[index]++;
+                            encoded[index + 1]--;
+                            pending++;
+                        }
+                    }
+                }
+            }
+
+            for (int index = 0; index < 4; index++)
+            {
+                assembled[(4 * index) + byteIndex] = (char)encoded[index];
+            }
+        }
+
+        Span<char> characters = stackalloc char[16];
+        for (int index = 0; index < characters.Length; index++)
+        {
+            characters[index] = assembled[(index + 15) % 16];
+        }
+
+        return new string(characters);
     }
 }

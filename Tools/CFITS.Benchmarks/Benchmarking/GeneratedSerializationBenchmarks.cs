@@ -13,10 +13,12 @@ internal static class GeneratedSerializationBenchmarks
         var scenarios = new List<TargetedScenario>
         {
             new("generated_image_write", "source-generator", () => WriteGeneratedImage(imageValue)),
+            new("generated_image_builder_write", "source-generator-builder", () => WriteGeneratedImageBuilder(imageValue)),
             new("generated_image_write_staged", "source-generator-staged", () => WriteGeneratedImageStaged(imageValue)),
             new("generated_image_read", "source-generator", () => ReadGeneratedImage(image)),
             new("runtime_image_read", "runtime-mapping", () => ReadRuntimeImage(image)),
             new("generated_composite_write", "source-generator-composite", () => WriteGeneratedComposite(compositeValue)),
+            new("generated_composite_builder_write", "source-generator-composite-builder", () => WriteGeneratedCompositeBuilder(compositeValue)),
             new("generated_composite_write_staged", "source-generator-composite-staged", () => WriteGeneratedCompositeStaged(compositeValue)),
             new("generated_composite_read", "source-generator-composite", () => ReadGeneratedComposite(composite)),
         };
@@ -26,6 +28,7 @@ internal static class GeneratedSerializationBenchmarks
             byte[] table = CreateTable(rowCount);
             string label = rowCount.ToString(System.Globalization.CultureInfo.InvariantCulture);
             scenarios.Add(new($"generated_table_write_{label}_rows", "source-generator", () => WriteGeneratedTable(rows)));
+            scenarios.Add(new($"generated_table_builder_write_{label}_rows", "source-generator-builder", () => WriteGeneratedTableBuilder(rows)));
             scenarios.Add(new($"generated_table_write_staged_{label}_rows", "source-generator-staged", () => WriteGeneratedTableStaged(rows)));
             scenarios.Add(new($"generated_table_read_{label}_rows", "source-generator", () => ReadGeneratedTable(table)));
             scenarios.Add(new($"runtime_table_scalar_{label}_rows", "runtime-mapping-scalar", () => ReadRuntimeTableScalar(table)));
@@ -105,6 +108,13 @@ internal static class GeneratedSerializationBenchmarks
         _sink = stream.Length;
     }
 
+    private static void WriteGeneratedImageBuilder(GeneratedExposure value)
+    {
+        var builder = FitsDocumentBuilder.Create();
+        FitsSerializer.Write(builder, value, GeneratedBenchmarkContext.Default.GeneratedExposure);
+        _sink = builder.Build().ToArray().Length;
+    }
+
     private static void WriteGeneratedTable(IReadOnlyList<GeneratedEventRow> rows)
     {
         using var stream = new MemoryStream();
@@ -112,11 +122,26 @@ internal static class GeneratedSerializationBenchmarks
         _sink = stream.Length;
     }
 
+    private static void WriteGeneratedTableBuilder(IReadOnlyList<GeneratedEventRow> rows)
+    {
+        var builder = FitsDocumentBuilder.Create();
+        FitsSerializer.Write(builder, rows, GeneratedBenchmarkContext.Default.GeneratedEventRow);
+        _sink = builder.Build().ToArray().Length;
+    }
+
     private static void WriteGeneratedComposite(GeneratedCompositeFile value)
     {
         using var stream = new MemoryStream();
         FitsSerializer.Write(stream, value, GeneratedBenchmarkContext.Default.GeneratedCompositeFile);
         _sink = stream.Length;
+    }
+
+    private static void WriteGeneratedCompositeBuilder(GeneratedCompositeFile value)
+    {
+        var builder = FitsDocumentBuilder.Create();
+        FitsSerializer.Write(builder, value.Image, GeneratedBenchmarkContext.Default.GeneratedExposure);
+        FitsSerializer.Write(builder, value.Events, GeneratedBenchmarkContext.Default.GeneratedEventRow);
+        _sink = builder.Build().ToArray().Length;
     }
 
     private static void WriteGeneratedCompositeStaged(GeneratedCompositeFile value)

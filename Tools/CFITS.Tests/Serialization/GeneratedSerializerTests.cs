@@ -33,6 +33,26 @@ public sealed class GeneratedSerializerTests
     }
 
     [Fact]
+    public void GeneratedImageCanWriteIntoAnExistingBuilder()
+    {
+        var value = new Exposure
+        {
+            ExposureSeconds = 12.5,
+            Pixels = new float[,] { { 1, 2 }, { 3, 4 } },
+        };
+
+        var builder = FitsDocumentBuilder.Create();
+        FitsSerializer.Write(builder, value, AppFitsContext.Default.Exposure);
+
+        using var stream = new MemoryStream();
+        builder.Write(stream);
+        using var document = FitsDocument.Parse(stream.ToArray());
+
+        Assert.Equal(12.5, document.Hdus[0].Header.GetDouble("EXPTIME"));
+        Assert.Equal(4, document.Hdus[0].Image!.ReadPhysical(3));
+    }
+
+    [Fact]
     public void GeneratedTableDirectWriteMatchesBuildWrite()
     {
         var rows = new[]

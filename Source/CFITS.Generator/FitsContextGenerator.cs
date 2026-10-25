@@ -219,10 +219,10 @@ public sealed class FitsContextGenerator : IIncrementalGenerator
         {
             string property = type.Symbol.Name;
             string info = type.Table ? "CFITS.FitsTableTypeInfo" : "CFITS.FitsTypeInfo";
-            return $"    public {info}<{type.Symbol.ToDisplayString()}> {property} {{ get; }} = new {property}Info();";
+            return $"    private static readonly {info}<{type.Symbol.ToDisplayString()}> __{property} = new {property}Info();{NewLine}    public {info}<{type.Symbol.ToDisplayString()}> {property} => __{property};";
         }));
         string documentProperties = string.Join(NewLine, model.Documents.Select(document =>
-            $"    public CFITS.FitsDocumentTypeInfo<{document.Symbol.ToDisplayString()}> {document.Symbol.Name} {{ get; }} = new {document.Symbol.Name}Info();"));
+            $"    private static readonly CFITS.FitsDocumentTypeInfo<{document.Symbol.ToDisplayString()}> __{document.Symbol.Name} = new {document.Symbol.Name}Info();{NewLine}    public CFITS.FitsDocumentTypeInfo<{document.Symbol.ToDisplayString()}> {document.Symbol.Name} => __{document.Symbol.Name};"));
         string types = string.Join(NewLine, model.Types.Select(static type => type.Table ? EmitTable(type) : EmitImage(type)));
         string documents = string.Join(NewLine, model.Documents.Select(document => EmitDocument(document, model.Types)));
         string code = $$"""
@@ -286,10 +286,10 @@ public sealed class FitsContextGenerator : IIncrementalGenerator
                         return ReadDocument(document);
                     }
 
-                    internal static {{name}} ReadDocument(CFITS.FitsDocument document, System.Collections.Generic.HashSet<int>? mapped = null)
+                    internal static {{name}} ReadDocument(CFITS.FitsDocument document, bool[]? mapped = null)
                     {
             {{FindImage(type.HduName, type.HduIndex, "candidate.Kind == CFITS.FitsHduKind.Image")}}
-                        mapped?.Add(hdu.Index);
+                        if (mapped is not null) mapped[hdu.Index] = true;
                         var image = hdu.Image ?? throw new CFITS.FitsException("The HDU is not an image.");
             {{dataAssignment}}
                         return new {{name}}
@@ -300,8 +300,12 @@ public sealed class FitsContextGenerator : IIncrementalGenerator
                     public override void Write(System.IO.Stream stream, {{name}} value)
                     {
                         var builder = CFITS.FitsDocumentBuilder.Create();
-                        WriteToBuilder(builder, value);
+                        Write(builder, value);
                         builder.Write(stream);
+                    }
+                    public override void Write(CFITS.FitsDocumentBuilder builder, {{name}} value)
+                    {
+                        WriteToBuilder(builder, value);
                     }
                     internal static void WriteToBuilder(CFITS.FitsDocumentBuilder builder, {{name}} value)
                     {
@@ -462,10 +466,10 @@ public sealed class FitsContextGenerator : IIncrementalGenerator
                         return ReadDocument(document);
                     }
 
-                    internal static System.Collections.Generic.IReadOnlyList<{{name}}> ReadDocument(CFITS.FitsDocument document, System.Collections.Generic.HashSet<int>? mapped = null)
+                    internal static System.Collections.Generic.IReadOnlyList<{{name}}> ReadDocument(CFITS.FitsDocument document, bool[]? mapped = null)
                     {
             {{FindTable(type.HduName, type.HduIndex)}}
-                        mapped?.Add(hdu.Index);
+                        if (mapped is not null) mapped[hdu.Index] = true;
                         var table = hdu.Table ?? throw new CFITS.FitsException("The HDU is not a table.");
                         var rows = new {{name}}[table.RowCount];
             {{cachedColumns}}
@@ -476,8 +480,12 @@ public sealed class FitsContextGenerator : IIncrementalGenerator
                     public override void Write(System.IO.Stream stream, System.Collections.Generic.IReadOnlyList<{{name}}> rows)
                     {
                         var builder = CFITS.FitsDocumentBuilder.Create();
-                        WriteToBuilder(builder, rows);
+                        Write(builder, rows);
                         builder.Write(stream);
+                    }
+                    public override void Write(CFITS.FitsDocumentBuilder builder, System.Collections.Generic.IReadOnlyList<{{name}}> rows)
+                    {
+                        WriteToBuilder(builder, rows);
                     }
                     internal static void WriteToBuilder(CFITS.FitsDocumentBuilder builder, System.Collections.Generic.IReadOnlyList<{{name}}> rows)
                     {
@@ -507,7 +515,7 @@ public sealed class FitsContextGenerator : IIncrementalGenerator
                 DocumentMemberRole.Table =>
                     $"{member.Property.Name} = {member.Child!.InfoName}.ReadDocument(document, {mappedArgument}),",
                 DocumentMemberRole.Unknown =>
-                    $"{member.Property.Name} = document.SnapshotHdus().Where(hdu => !mapped.Contains(hdu.Index)).ToArray(),",
+                    $"{member.Property.Name} = document.SnapshotHdus().Where(hdu => !mapped![hdu.Index]).ToArray(),",
                 DocumentMemberRole.SpecialRecords =>
                     $"{member.Property.Name} = document.SnapshotSpecialRecords(),",
                 _ => throw new InvalidOperationException(),
@@ -518,7 +526,7 @@ public sealed class FitsContextGenerator : IIncrementalGenerator
             .Where(static member => member.Child is not null)
             .Select(member => member.Child!.Table ? EmitTable(member.Child) : EmitImage(member.Child)));
         string unknownUse = hasUnknown
-            ? "            var mapped = new System.Collections.Generic.HashSet<int>();"
+            ? "            var mapped = new bool[document.Hdus.Count];"
             : "";
         string writes = string.Join(NewLine, document.Members
             .Where(static member => member.Child is not null)

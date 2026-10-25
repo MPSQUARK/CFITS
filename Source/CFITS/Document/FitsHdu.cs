@@ -36,6 +36,8 @@ public sealed class FitsHdu
 
     private ReadOnlyMemory<byte> HeaderBytes { get; }
 
+    internal int HeaderBytesLength => HeaderBytes.Length;
+
     public FitsImage? Image { get; }
 
     public FitsTable? Table { get; }
@@ -44,7 +46,7 @@ public sealed class FitsHdu
 
     public FitsIntegrity Integrity { get; }
 
-    internal static FitsHdu Create(int index, FitsHeader header, ReadOnlyMemory<byte> raw, HduShape shape, FitsScaleMode mode, ReadOnlySpan<byte> headerBytes, ReadOnlySpan<byte> dataBytes)
+    internal static FitsHdu Create(int index, FitsHeader header, ReadOnlyMemory<byte> raw, HduShape shape, FitsScaleMode mode, ReadOnlyMemory<byte> headerBytes, ReadOnlyMemory<byte> dataBytes)
     {
         var kind = KindOf(shape);
         FitsImage? image = kind == FitsHduKind.Image ? FitsImage.Create(header, raw, shape, mode) : null;
@@ -62,8 +64,8 @@ public sealed class FitsHdu
         }
         FitsGroups? groups = kind == FitsHduKind.RandomGroups ? FitsGroups.Create(header, raw, shape, mode) : null;
         bool uncompressed = image is not null && header.TryGetCard("ZDATASUM", out _);
-        var integrity = FitsChecksum.Inspect(headerBytes, dataBytes, header, uncompressed ? image!.Stored.Span : default, uncompressed);
-        return new FitsHdu(index, kind, header, raw, headerBytes.ToArray(), image, table, groups, integrity);
+        var integrity = FitsChecksum.Inspect(headerBytes.Span, dataBytes.Span, header, uncompressed ? image!.Stored.Span : default, uncompressed);
+        return new FitsHdu(index, kind, header, raw, headerBytes, image, table, groups, integrity);
     }
 
     public FitsHduSnapshot Snapshot() => new(Index, Kind, HeaderBytes.Span, RawData.Span);

@@ -5,15 +5,26 @@ namespace CFITS;
 /// </summary>
 public sealed class FitsHduSnapshot
 {
-    private readonly byte[] _header;
-    private readonly byte[] _data;
+    private static readonly byte[] Padding = new byte[FitsBlock.Size];
+    private readonly byte[] _bytes;
+    private readonly int _headerLength;
 
     internal FitsHduSnapshot(int index, FitsHduKind kind, ReadOnlySpan<byte> header, ReadOnlySpan<byte> data)
     {
         Index = index;
         Kind = kind;
-        _header = header.ToArray();
-        _data = data.ToArray();
+        _headerLength = header.Length;
+        _bytes = new byte[header.Length + data.Length];
+        header.CopyTo(_bytes);
+        data.CopyTo(_bytes.AsSpan(header.Length));
+    }
+
+    private FitsHduSnapshot(int index, FitsHduKind kind, byte[] bytes, int headerLength)
+    {
+        Index = index;
+        Kind = kind;
+        _bytes = bytes;
+        _headerLength = headerLength;
     }
 
     public int Index { get; }
@@ -21,32 +32,23 @@ public sealed class FitsHduSnapshot
     public FitsHduKind Kind { get; }
 
     public FitsHduSnapshot WithIndex(int index) =>
-        new(index, Kind, _header, _data);
+        new(index, Kind, _bytes, _headerLength);
 
-    public ReadOnlyMemory<byte> HeaderBytes => _header;
+    public ReadOnlyMemory<byte> HeaderBytes => _bytes.AsMemory(0, _headerLength);
 
-    public ReadOnlyMemory<byte> DataBytes => _data;
+    public ReadOnlyMemory<byte> DataBytes => _bytes.AsMemory(_headerLength);
 
-    public ReadOnlyMemory<byte> RawBytes
-    {
-        get
-        {
-            var bytes = new byte[_header.Length + _data.Length];
-            _header.CopyTo(bytes, 0);
-            _data.CopyTo(bytes, _header.Length);
-            return bytes;
-        }
-    }
+    public ReadOnlyMemory<byte> RawBytes => _bytes;
 
     public void Write(Stream stream)
     {
         ArgumentNullException.ThrowIfNull(stream);
-        stream.Write(_header);
-        stream.Write(_data);
-        long padding = FitsBlock.Pad(_data.Length) - _data.Length;
+        stream.Write(_bytes.AsSpan(0, _headerLength));
+        stream.Write(_bytes.AsSpan(_headerLength));
+        long padding = FitsBlock.Pad(_bytes.Length - _headerLength) - (_bytes.Length - _headerLength);
         if (padding > 0)
         {
-            stream.Write(new byte[(int)padding]);
+            stream.Write(Padding.AsSpan(0, (int)padding));
         }
     }
 }

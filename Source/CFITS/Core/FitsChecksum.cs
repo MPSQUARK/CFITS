@@ -12,21 +12,43 @@ public static class FitsChecksum
     {
         ulong high = 0;
         ulong low = 0;
-        int aligned = bytes.Length - (bytes.Length % 4);
-        for (int index = 0; index < aligned; index += 4)
+        int index = 0;
+        int paired = bytes.Length - (bytes.Length % 8);
+        for (; index < paired; index += 8)
         {
-            uint word = BinaryPrimitives.ReadUInt32BigEndian(bytes[index..]);
+            uint word = BinaryPrimitives.ReadUInt32BigEndian(bytes.Slice(index, 4));
+            high += word >> 16;
+            low += word & 0xFFFF;
+            word = BinaryPrimitives.ReadUInt32BigEndian(bytes.Slice(index + 4, 4));
+            high += word >> 16;
+            low += word & 0xFFFF;
+        }
+
+        int aligned = bytes.Length & ~3;
+        for (; index < aligned; index += 4)
+        {
+            uint word = BinaryPrimitives.ReadUInt32BigEndian(bytes.Slice(index, 4));
             high += word >> 16;
             low += word & 0xFFFF;
         }
 
         if (aligned != bytes.Length)
         {
-            Span<byte> tail = stackalloc byte[4];
-            tail.Clear();
-            bytes[aligned..].CopyTo(tail);
-            high += (uint)((tail[0] << 8) | tail[1]);
-            low += (uint)((tail[2] << 8) | tail[3]);
+            int remaining = bytes.Length - aligned;
+            high += (uint)(bytes[aligned] << 8);
+            if (remaining > 1)
+            {
+                high += bytes[aligned + 1];
+            }
+
+            if (remaining > 2)
+            {
+                low += (uint)(bytes[aligned + 2] << 8);
+                if (remaining > 3)
+                {
+                    low += bytes[aligned + 3];
+                }
+            }
         }
 
         return Fold(high, low);
@@ -47,13 +69,13 @@ public static class FitsChecksum
         for (int byteIndex = 0; byteIndex < 4; byteIndex++)
         {
             int piece = (int)((value >> (24 - (8 * byteIndex))) & 0xFF);
-            int quotient = (piece / 4) + 0x30;
+            int quotient = (piece >> 2) + 0x30;
             for (int index = 0; index < 4; index++)
             {
                 encoded[index] = quotient;
             }
 
-            encoded[0] += piece % 4;
+            encoded[0] += piece & 3;
             int pending = 1;
             while (pending != 0)
             {
@@ -79,9 +101,11 @@ public static class FitsChecksum
         }
 
         Span<char> characters = stackalloc char[16];
+        int sourceIndex = 15;
         for (int index = 0; index < characters.Length; index++)
         {
-            characters[index] = assembled[(index + 15) % 16];
+            characters[index] = assembled[sourceIndex];
+            sourceIndex = (sourceIndex + 1) & 15;
         }
 
         return new string(characters);
@@ -190,7 +214,7 @@ public static class FitsChecksum
     {
         for (int offset = 0; offset + FitsBlock.CardSize <= hdu.Length; offset += FitsBlock.CardSize)
         {
-            if (hdu[offset] == (byte)'E' && hdu[offset + 1] == (byte)'N' && hdu[offset + 2] == (byte)'D' && hdu[offset + 3] == (byte)' ')
+            if (hdu.AsSpan(offset, 4).SequenceEqual("END "u8))
             {
                 return offset;
             }
@@ -201,19 +225,15 @@ public static class FitsChecksum
 
     private static int FindKeyword(byte[] hdu, int end, string keyword)
     {
+        ReadOnlySpan<byte> expected = keyword switch
+        {
+            "DATASUM " => "DATASUM "u8,
+            "CHECKSUM" => "CHECKSUM"u8,
+            _ => throw new FitsException($"Unsupported checksum keyword '{keyword}'.", new FitsLocation()),
+        };
         for (int offset = 0; offset < end; offset += FitsBlock.CardSize)
         {
-            bool match = true;
-            for (int index = 0; index < keyword.Length; index++)
-            {
-                if (hdu[offset + index] != (byte)keyword[index])
-                {
-                    match = false;
-                    break;
-                }
-            }
-
-            if (match)
+            if (hdu.AsSpan(offset, expected.Length).SequenceEqual(expected))
             {
                 return offset;
             }

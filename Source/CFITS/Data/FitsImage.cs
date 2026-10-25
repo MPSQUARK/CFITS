@@ -296,12 +296,12 @@ public sealed class FitsImage
             return stored;
         }
 
-        if (Scale != 1 || !Pixels.IsExactInteger(Zero))
+        if (Scale == 1 && Pixels.IsExactInteger(Zero))
         {
-            throw new FitsException("The physical pixel is not an integer translation of the stored value.", new FitsLocation(Keyword: "BZERO"));
+            return checked((Int128)stored + Pixels.ToInt128(Zero));
         }
 
-        return stored + Pixels.ToInt128(Zero);
+        return Pixels.ToInt128((Scale * stored) + Zero);
     }
 
     public double ReadPhysical(int index)

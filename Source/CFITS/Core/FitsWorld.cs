@@ -240,9 +240,21 @@ public sealed class FitsWorld
 
     public double[] WorldToPixel(ReadOnlySpan<double> world)
     {
+        var pixel = new double[Axes];
+        WorldToPixel(world, pixel);
+        return pixel;
+    }
+
+    public void WorldToPixel(ReadOnlySpan<double> world, Span<double> pixel)
+    {
         if (world.Length != Axes)
         {
             throw new FitsException("The world coordinate does not have one value per axis.", new FitsLocation());
+        }
+
+        if (pixel.Length < Axes)
+        {
+            throw new FitsException("The pixel coordinate destination is too short.", new FitsLocation());
         }
 
         Span<double> intermediate = stackalloc double[Axes];
@@ -271,14 +283,11 @@ public sealed class FitsWorld
             }
         }
 
-        var pixel = new double[Axes];
         Solve(_matrix, intermediate, pixel);
         for (int axis = 0; axis < Axes; axis++)
         {
             pixel[axis] += _referencePixel[axis];
         }
-
-        return pixel;
     }
 
     private static (double Phi, double Theta) Native(Projection projection, double x, double y)
@@ -316,10 +325,8 @@ public sealed class FitsWorld
         }
 
         double deltaLongitude = longitude - euler[0];
-        double sinLatitude = Math.Sin(double.DegreesToRadians(latitude));
-        double cosLatitude = Math.Cos(double.DegreesToRadians(latitude));
-        double sinLongitude = Math.Sin(double.DegreesToRadians(deltaLongitude));
-        double cosLongitude = Math.Cos(double.DegreesToRadians(deltaLongitude));
+        (double sinLatitude, double cosLatitude) = Math.SinCos(double.DegreesToRadians(latitude));
+        (double sinLongitude, double cosLongitude) = Math.SinCos(double.DegreesToRadians(deltaLongitude));
         double x = (sinLatitude * euler[4]) - (cosLatitude * euler[3] * cosLongitude);
         if (Math.Abs(x) < 1e-5)
         {
@@ -354,6 +361,7 @@ public sealed class FitsWorld
 
         double phiRadians = phi * RadiansPerDegree;
         double thetaRadians = theta * RadiansPerDegree;
+        (double sinPhi, double cosPhi) = Math.SinCos(phiRadians);
         double radius = projection switch
         {
             Projection.Tan => Math.Abs(theta - 90) < 1e-12 ? 0 : DegreesPerRadian / Math.Tan(thetaRadians),
@@ -363,7 +371,7 @@ public sealed class FitsWorld
             Projection.Zea => 2 * DegreesPerRadian * Math.Sin((Math.PI / 2 - thetaRadians) / 2),
             _ => throw new FitsException("Projection is not implemented.", new FitsLocation()),
         };
-        return (radius * Math.Sin(phiRadians), -radius * Math.Cos(phiRadians));
+        return (radius * sinPhi, -radius * cosPhi);
     }
 
     private static void Solve(ReadOnlySpan<double> matrix, ReadOnlySpan<double> value, Span<double> solution)

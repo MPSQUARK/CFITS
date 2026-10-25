@@ -48,6 +48,7 @@ internal static class TileCompression
         }
 
         int width = Pixels.Width(bitpix);
+        bool rice = algorithm is "RICE_1" or "RICE_ONE";
         var raw = new byte[checked(pixels * width)];
         var counts = new int[axesCount];
         for (int axis = 0; axis < axesCount; axis++)
@@ -65,7 +66,7 @@ internal static class TileCompression
         FitsColumn? scale = table.Columns.FirstOrDefault(column => column.Name.Equals("ZSCALE", StringComparison.OrdinalIgnoreCase));
         FitsColumn? zero = table.Columns.FirstOrDefault(column => column.Name.Equals("ZZERO", StringComparison.OrdinalIgnoreCase));
         int blockSize = Setting(header, "BLOCKSIZE", 32);
-        int bytePix = Setting(header, "BYTEPIX", 4);
+        int bytePix = Setting(header, "BYTEPIX", rice ? 4 : width);
         int smooth = Setting(header, "SMOOTH", 0);
         string quantize = header.TryGetCard("ZQUANTIZ", out var quantizeCard) ? quantizeCard.GetString() ?? "NO_DITHER" : "NO_DITHER";
         int ditherSeed = header.TryGetCard("ZDITHER0", out var seedCard) ? checked((int)seedCard.GetInt64()) : 0;
@@ -97,28 +98,6 @@ internal static class TileCompression
             bool losslessGzip = compressed.Length == 0 && gzip is not null;
             double rowScale = losslessGzip ? 1 : scale?.ReadReal(row) ?? 1;
             double rowZero = losslessGzip ? 0 : zero?.ReadReal(row) ?? 0;
-            if (!losslessGzip
-                && algorithm is "GZIP_1" or "GZIP_2"
-                && rowScale == 1
-                && rowZero == 0
-                && bytePix == width
-                && !quantize.Contains("SUBTRACTIVE", StringComparison.OrdinalIgnoreCase)
-                && TryContiguous(axes, origin, span, out int start, out int count)
-                && count == tilePixels)
-            {
-                var target = raw.AsSpan(checked(start * width), checked(tilePixels * width));
-                if (algorithm == "GZIP_1")
-                {
-                    GunzipInto(compressed, target);
-                }
-                else
-                {
-                    Unshuffle(GunzipExact(compressed, target.Length), bytePix, target);
-                }
-
-                continue;
-            }
-
             var decoded = losslessGzip
                 ? new TileBytes(RequireLength(Gunzip(gzip!.ReadVariableBytes(row)), checked(tilePixels * width)), width)
                 : Decode(algorithm, compressed, tilePixels, bytePix, blockSize, width, smooth);
@@ -136,8 +115,14 @@ internal static class TileCompression
         if (algorithm is "GZIP_1" or "GZIP_2")
         {
             byte[] decoded = Gunzip(compressed);
-            byte[] plain = algorithm == "GZIP_2" ? Unshuffle(decoded, bytePix) : decoded;
-            return new TileBytes(RequireLength(plain, checked(pixels * bytePix)), bytePix);
+            if (pixels <= 0 || decoded.Length % pixels != 0)
+            {
+                throw new FitsException("A GZIP tile does not contain a whole number of encoded pixels.", new FitsLocation());
+            }
+
+            int encodedWidth = decoded.Length / pixels;
+            byte[] plain = algorithm == "GZIP_2" ? Unshuffle(decoded, encodedWidth) : decoded;
+            return new TileBytes(plain, encodedWidth);
         }
 
         if (algorithm is "RICE_1" or "RICE_ONE")
@@ -150,9 +135,11 @@ internal static class TileCompression
         {
             int[] values = Plio.Decompress(compressed, pixels);
             var bytes = new byte[pixels * bytePix];
+            int offset = 0;
             for (int index = 0; index < pixels; index++)
             {
-                WriteInteger(bytes.AsSpan(index * bytePix, bytePix), values[index]);
+                WriteInteger(bytes.AsSpan(offset, bytePix), values[index]);
+                offset += bytePix;
             }
 
             return new TileBytes(bytes, bytePix);
@@ -167,9 +154,11 @@ internal static class TileCompression
             }
 
             var bytes = new byte[pixels * 4];
+            int offset = 0;
             for (int index = 0; index < pixels; index++)
             {
-                WriteInteger(bytes.AsSpan(index * 4, 4), values[index]);
+                WriteInteger(bytes.AsSpan(offset, 4), values[index]);
+                offset += 4;
             }
 
             return new TileBytes(bytes, 4);
@@ -186,9 +175,11 @@ internal static class TileCompression
     private static byte[] Pack(uint[] values, int pixels, int bytePix)
     {
         var bytes = new byte[pixels * bytePix];
+        int offset = 0;
         for (int index = 0; index < pixels; index++)
         {
-            WriteInteger(bytes.AsSpan(index * bytePix, bytePix), values[index]);
+            WriteInteger(bytes.AsSpan(offset, bytePix), values[index]);
+            offset += bytePix;
         }
 
         return bytes;
@@ -222,20 +213,18 @@ internal static class TileCompression
         }
 
         int cursor = 0;
+        int address = 0;
+        int stride = 1;
+        for (int axis = 0; axis < axes.Length; axis++)
+        {
+            address += origin[axis] * stride;
+            origin[axis] = 0;
+            stride *= axes[axis];
+        }
+        int destinationOffset = address * width;
 
         for (int tileIndex = 0; tileIndex < tilePixels; tileIndex++)
         {
-            int address = 0;
-            int stride = 1;
-            int remaining = tileIndex;
-            for (int axis = 0; axis < axes.Length; axis++)
-            {
-                int coordinate = remaining % span[axis];
-                remaining /= span[axis];
-                address += (origin[axis] + coordinate) * stride;
-                stride *= axes[axis];
-            }
-
             double value;
             if (!floating)
             {
@@ -268,7 +257,12 @@ internal static class TileCompression
                     ditherIndex++;
                     if (ditherIndex == 500)
                     {
-                        sequence = (sequence + 1) % 10000;
+                        sequence++;
+                        if (sequence == 10000)
+                        {
+                            sequence = 0;
+                        }
+
                         ditherIndex = (int)(Dither[sequence] * 500);
                     }
                 }
@@ -278,18 +272,33 @@ internal static class TileCompression
                 }
             }
 
-            int offset = address * width;
             if (bitpix > 0)
             {
-                WriteInteger(destination.AsSpan(offset, width), (long)value);
+                WriteInteger(destination.AsSpan(destinationOffset, width), (long)value);
             }
             else if (bitpix == -32)
             {
-                System.Buffers.Binary.BinaryPrimitives.WriteSingleBigEndian(destination.AsSpan(offset, 4), (float)value);
+                System.Buffers.Binary.BinaryPrimitives.WriteSingleBigEndian(destination.AsSpan(destinationOffset, 4), (float)value);
             }
             else
             {
-                System.Buffers.Binary.BinaryPrimitives.WriteDoubleBigEndian(destination.AsSpan(offset, 8), value);
+                System.Buffers.Binary.BinaryPrimitives.WriteDoubleBigEndian(destination.AsSpan(destinationOffset, 8), value);
+            }
+
+            int coordinateStride = 1;
+            for (int axis = 0; axis < axes.Length; axis++)
+            {
+                origin[axis]++;
+                int byteStride = coordinateStride * width;
+                destinationOffset += byteStride;
+                if (origin[axis] < span[axis])
+                {
+                    break;
+                }
+
+                origin[axis] = 0;
+                destinationOffset -= span[axis] * byteStride;
+                coordinateStride *= axes[axis];
             }
         }
     }
@@ -304,35 +313,6 @@ internal static class TileCompression
         }
 
         return output.ToArray();
-    }
-
-    private static byte[] GunzipExact(byte[] compressed, int length)
-    {
-        var output = new byte[length];
-        GunzipInto(compressed, output);
-        return output;
-    }
-
-    private static void GunzipInto(byte[] compressed, Span<byte> destination)
-    {
-        using var input = new MemoryStream(compressed, writable: false);
-        using var gzip = new GZipStream(input, CompressionMode.Decompress);
-        int read = 0;
-        while (read < destination.Length)
-        {
-            int count = gzip.Read(destination[read..]);
-            if (count == 0)
-            {
-                throw new FitsException($"Decoded tile has {read} bytes; expected {destination.Length}.", new FitsLocation());
-            }
-
-            read += count;
-        }
-
-        if (gzip.ReadByte() >= 0)
-        {
-            throw new FitsException($"Decoded tile is longer than the expected {destination.Length} bytes.", new FitsLocation());
-        }
     }
 
     private static bool TryContiguous(int[] axes, int[] origin, int[] span, out int start, out int count)
@@ -371,15 +351,16 @@ internal static class TileCompression
 
         int count = shuffled.Length / width;
         int sourceOffset = 0;
+        int destinationOffset = 0;
         for (int item = 0; item < count; item++)
         {
-            int destinationOffset = item * width;
             for (int byteIndex = 0; byteIndex < width; byteIndex++)
             {
                 destination[destinationOffset + byteIndex] = shuffled[sourceOffset];
                 sourceOffset += count;
             }
 
+            destinationOffset += width;
             sourceOffset = item + 1;
         }
     }
@@ -399,15 +380,16 @@ internal static class TileCompression
         int count = shuffled.Length / width;
         var bytes = new byte[shuffled.Length];
         int sourceOffset = 0;
+        int destinationOffset = 0;
         for (int item = 0; item < count; item++)
         {
-            int destinationOffset = item * width;
             for (int byteIndex = 0; byteIndex < width; byteIndex++)
             {
                 bytes[destinationOffset + byteIndex] = shuffled[sourceOffset];
                 sourceOffset += count;
             }
 
+            destinationOffset += width;
             sourceOffset = item + 1;
         }
 

@@ -55,14 +55,22 @@ public sealed class FitsColumnBulkTests
         using var document = Open(
             new BinaryTableBuilder()
                 .Add("I", new short[] { 3, 4 })
+                .Add("J", new[] { 5, 6 })
+                .Add("B", new byte[] { 7, 8 })
                 .Add("E", new[] { 1f, 2f }));
         FitsTable table = document.Hdus[1].Table!;
 
         var integers = new short[2];
+        var intValues = new int[2];
+        var byteValues = new byte[2];
         var reals = new float[2];
         Assert.True(table.Column("I").TryCopyInteger(integers));
+        Assert.True(table.Column("J").TryCopyInteger(intValues));
+        Assert.True(table.Column("B").TryCopyInteger(byteValues));
         Assert.True(table.Column("E").TryCopyReal(reals));
         Assert.Equal(new short[] { 3, 4 }, integers);
+        Assert.Equal(new[] { 5, 6 }, intValues);
+        Assert.Equal(new byte[] { 7, 8 }, byteValues);
         Assert.Equal(new[] { 1f, 2f }, reals);
     }
 

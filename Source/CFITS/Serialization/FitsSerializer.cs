@@ -21,6 +21,9 @@ public static class FitsSerializer
 
     public static void Write<T>(Stream stream, T value, FitsTypeInfo<T> type) => type.Write(stream, value);
 
+    public static void Write<T>(FitsDocumentBuilder builder, T value, FitsTypeInfo<T> type) =>
+        type.Write(builder, value);
+
     public static void Write<T>(string path, T value, FitsTypeInfo<T> type)
     {
         using var stream = File.Create(path);
@@ -45,6 +48,9 @@ public static class FitsSerializer
     }
 
     public static void Write<T>(Stream stream, IReadOnlyList<T> rows, FitsTableTypeInfo<T> type) => type.Write(stream, rows);
+
+    public static void Write<T>(FitsDocumentBuilder builder, IReadOnlyList<T> rows, FitsTableTypeInfo<T> type) =>
+        type.Write(builder, rows);
 
     public static void Write<T>(string path, IReadOnlyList<T> rows, FitsTableTypeInfo<T> type)
     {

@@ -41,37 +41,73 @@ public sealed class BinaryTableBuilder
     public BinaryTableBuilder Add(string name, ReadOnlySpan<byte> values)
     {
         var copy = values.ToArray();
-        return AddRaw(name, "B", 1, copy.Length, (row, destination) => destination[0] = copy[row]);
+        _columns.Add(new BinaryColumn(name, "B", 1, copy.Length, copy));
+        return this;
     }
 
     public BinaryTableBuilder Add(string name, ReadOnlySpan<short> values)
     {
         var copy = values.ToArray();
-        return AddRaw(name, "I", 2, copy.Length, (row, destination) => BinaryPrimitives.WriteInt16BigEndian(destination, copy[row]));
+        var cells = new byte[checked(copy.Length * 2)];
+        for (int row = 0; row < copy.Length; row++)
+        {
+            BinaryPrimitives.WriteInt16BigEndian(cells.AsSpan(row * 2, 2), copy[row]);
+        }
+
+        _columns.Add(new BinaryColumn(name, "I", 2, copy.Length, cells));
+        return this;
     }
 
     public BinaryTableBuilder Add(string name, ReadOnlySpan<int> values)
     {
         var copy = values.ToArray();
-        return AddRaw(name, "J", 4, copy.Length, (row, destination) => BinaryPrimitives.WriteInt32BigEndian(destination, copy[row]));
+        var cells = new byte[checked(copy.Length * 4)];
+        for (int row = 0; row < copy.Length; row++)
+        {
+            BinaryPrimitives.WriteInt32BigEndian(cells.AsSpan(row * 4, 4), copy[row]);
+        }
+
+        _columns.Add(new BinaryColumn(name, "J", 4, copy.Length, cells));
+        return this;
     }
 
     public BinaryTableBuilder Add(string name, ReadOnlySpan<long> values)
     {
         var copy = values.ToArray();
-        return AddRaw(name, "K", 8, copy.Length, (row, destination) => BinaryPrimitives.WriteInt64BigEndian(destination, copy[row]));
+        var cells = new byte[checked(copy.Length * 8)];
+        for (int row = 0; row < copy.Length; row++)
+        {
+            BinaryPrimitives.WriteInt64BigEndian(cells.AsSpan(row * 8, 8), copy[row]);
+        }
+
+        _columns.Add(new BinaryColumn(name, "K", 8, copy.Length, cells));
+        return this;
     }
 
     public BinaryTableBuilder Add(string name, ReadOnlySpan<float> values)
     {
         var copy = values.ToArray();
-        return AddRaw(name, "E", 4, copy.Length, (row, destination) => BinaryPrimitives.WriteSingleBigEndian(destination, copy[row]));
+        var cells = new byte[checked(copy.Length * 4)];
+        for (int row = 0; row < copy.Length; row++)
+        {
+            BinaryPrimitives.WriteSingleBigEndian(cells.AsSpan(row * 4, 4), copy[row]);
+        }
+
+        _columns.Add(new BinaryColumn(name, "E", 4, copy.Length, cells));
+        return this;
     }
 
     public BinaryTableBuilder Add(string name, ReadOnlySpan<double> values)
     {
         var copy = values.ToArray();
-        return AddRaw(name, "D", 8, copy.Length, (row, destination) => BinaryPrimitives.WriteDoubleBigEndian(destination, copy[row]));
+        var cells = new byte[checked(copy.Length * 8)];
+        for (int row = 0; row < copy.Length; row++)
+        {
+            BinaryPrimitives.WriteDoubleBigEndian(cells.AsSpan(row * 8, 8), copy[row]);
+        }
+
+        _columns.Add(new BinaryColumn(name, "D", 8, copy.Length, cells));
+        return this;
     }
 
     public BinaryTableBuilder AddText(string name, int width, IReadOnlyList<string[]> rows)
@@ -170,18 +206,23 @@ public sealed class BinaryTableBuilder
 
         int rows = values.Length / repeat;
         var copy = values.ToArray();
-        var added = AddRaw(name, $"{repeat}J", repeat * 4, rows, (row, destination) =>
+        int width = checked(repeat * 4);
+        var cells = new byte[checked(rows * width)];
+        for (int row = 0; row < rows; row++)
         {
             for (int index = 0; index < repeat; index++)
             {
-                BinaryPrimitives.WriteInt32BigEndian(destination[(index * 4)..], copy[(row * repeat) + index]);
+                BinaryPrimitives.WriteInt32BigEndian(
+                    cells.AsSpan((row * width) + (index * 4), 4),
+                    copy[(row * repeat) + index]);
             }
-        });
-        _columns[^1] = new BinaryColumn(name, $"{repeat}J", repeat * 4, rows, _columns[^1].Cells)
+        }
+
+        _columns.Add(new BinaryColumn(name, $"{repeat}J", width, rows, cells)
         {
             Dimensions = "(" + string.Join(',', dimensions) + ")",
-        };
-        return added;
+        });
+        return this;
     }
 
     public BinaryTableBuilder AddVector(string name, int repeat, ReadOnlySpan<float> values, int[] dimensions)
@@ -190,18 +231,23 @@ public sealed class BinaryTableBuilder
 
         int rows = values.Length / repeat;
         var copy = values.ToArray();
-        var added = AddRaw(name, $"{repeat}E", repeat * 4, rows, (row, destination) =>
+        int width = checked(repeat * 4);
+        var cells = new byte[checked(rows * width)];
+        for (int row = 0; row < rows; row++)
         {
             for (int index = 0; index < repeat; index++)
             {
-                BinaryPrimitives.WriteSingleBigEndian(destination[(index * 4)..], copy[(row * repeat) + index]);
+                BinaryPrimitives.WriteSingleBigEndian(
+                    cells.AsSpan((row * width) + (index * 4), 4),
+                    copy[(row * repeat) + index]);
             }
-        });
-        _columns[^1] = new BinaryColumn(name, $"{repeat}E", repeat * 4, rows, _columns[^1].Cells)
+        }
+
+        _columns.Add(new BinaryColumn(name, $"{repeat}E", width, rows, cells)
         {
             Dimensions = "(" + string.Join(',', dimensions) + ")",
-        };
-        return added;
+        });
+        return this;
     }
 
     public BinaryTableBuilder AddVector(string name, int repeat, ReadOnlySpan<double> values, int[] dimensions)
@@ -210,48 +256,68 @@ public sealed class BinaryTableBuilder
 
         int rows = values.Length / repeat;
         var copy = values.ToArray();
-        var added = AddRaw(name, $"{repeat}D", repeat * 8, rows, (row, destination) =>
+        int width = checked(repeat * 8);
+        var cells = new byte[checked(rows * width)];
+        for (int row = 0; row < rows; row++)
         {
             for (int index = 0; index < repeat; index++)
             {
-                BinaryPrimitives.WriteDoubleBigEndian(destination[(index * 8)..], copy[(row * repeat) + index]);
+                BinaryPrimitives.WriteDoubleBigEndian(
+                    cells.AsSpan((row * width) + (index * 8), 8),
+                    copy[(row * repeat) + index]);
             }
-        });
-        _columns[^1] = new BinaryColumn(name, $"{repeat}D", repeat * 8, rows, _columns[^1].Cells)
+        }
+
+        _columns.Add(new BinaryColumn(name, $"{repeat}D", width, rows, cells)
         {
             Dimensions = "(" + string.Join(',', dimensions) + ")",
-        };
-        return added;
+        });
+        return this;
     }
 
     public BinaryTableBuilder AddComplex(string name, ReadOnlySpan<FitsComplex> values)
     {
         var copy = values.ToArray();
-        return AddRaw(name, "M", 16, copy.Length, (row, destination) =>
+        var cells = new byte[checked(copy.Length * 16)];
+        for (int row = 0; row < copy.Length; row++)
         {
-            BinaryPrimitives.WriteDoubleBigEndian(destination, copy[row].Real);
-            BinaryPrimitives.WriteDoubleBigEndian(destination[8..], copy[row].Imaginary);
-        });
+            int offset = row * 16;
+            BinaryPrimitives.WriteDoubleBigEndian(cells.AsSpan(offset, 8), copy[row].Real);
+            BinaryPrimitives.WriteDoubleBigEndian(cells.AsSpan(offset + 8, 8), copy[row].Imaginary);
+        }
+
+        _columns.Add(new BinaryColumn(name, "M", 16, copy.Length, cells));
+        return this;
     }
 
     public BinaryTableBuilder AddComplexValues(string name, ReadOnlySpan<Complex> values)
     {
         var copy = values.ToArray();
-        return AddRaw(name, "M", 16, copy.Length, (row, destination) =>
+        var cells = new byte[checked(copy.Length * 16)];
+        for (int row = 0; row < copy.Length; row++)
         {
-            BinaryPrimitives.WriteDoubleBigEndian(destination, copy[row].Real);
-            BinaryPrimitives.WriteDoubleBigEndian(destination[8..], copy[row].Imaginary);
-        });
+            int offset = row * 16;
+            BinaryPrimitives.WriteDoubleBigEndian(cells.AsSpan(offset, 8), copy[row].Real);
+            BinaryPrimitives.WriteDoubleBigEndian(cells.AsSpan(offset + 8, 8), copy[row].Imaginary);
+        }
+
+        _columns.Add(new BinaryColumn(name, "M", 16, copy.Length, cells));
+        return this;
     }
 
     public BinaryTableBuilder AddSingleComplex(string name, ReadOnlySpan<FitsComplex> values)
     {
         var copy = values.ToArray();
-        return AddRaw(name, "C", 8, copy.Length, (row, destination) =>
+        var cells = new byte[checked(copy.Length * 8)];
+        for (int row = 0; row < copy.Length; row++)
         {
-            BinaryPrimitives.WriteSingleBigEndian(destination, (float)copy[row].Real);
-            BinaryPrimitives.WriteSingleBigEndian(destination[4..], (float)copy[row].Imaginary);
-        });
+            int offset = row * 8;
+            BinaryPrimitives.WriteSingleBigEndian(cells.AsSpan(offset, 4), (float)copy[row].Real);
+            BinaryPrimitives.WriteSingleBigEndian(cells.AsSpan(offset + 4, 4), (float)copy[row].Imaginary);
+        }
+
+        _columns.Add(new BinaryColumn(name, "C", 8, copy.Length, cells));
+        return this;
     }
 
     public BinaryTableBuilder AddBits(string name, int bitCount, IReadOnlyList<bool[]> rows)
@@ -282,23 +348,34 @@ public sealed class BinaryTableBuilder
             }
 
             int destination = row * width;
-            byte packed = 0;
-            for (int bit = 0; bit < bitCount; bit++)
+            int bit = 0;
+            for (; bit + 8 <= bitCount; bit += 8)
             {
-                if (rows[row][bit])
+                byte packed = 0;
+                bool[] source = rows[row];
+                for (int offset = 0; offset < 8; offset++)
                 {
-                    packed |= (byte)(1 << (7 - (bit & 7)));
+                    if (source[bit + offset])
+                    {
+                        packed |= (byte)(0x80 >> offset);
+                    }
                 }
 
-                if ((bit & 7) == 7)
-                {
-                    cells[destination++] = packed;
-                    packed = 0;
-                }
+                cells[destination++] = packed;
             }
 
-            if ((bitCount & 7) != 0)
+            if (bit < bitCount)
             {
+                byte packed = 0;
+                bool[] source = rows[row];
+                for (int offset = 0; bit + offset < bitCount; offset++)
+                {
+                    if (source[bit + offset])
+                    {
+                        packed |= (byte)(0x80 >> offset);
+                    }
+                }
+
                 cells[destination] = packed;
             }
         }
@@ -331,11 +408,45 @@ public sealed class BinaryTableBuilder
         }
     }
 
-    public BinaryTableBuilder AddVariable(string name, IReadOnlyList<int[]> rows) =>
-        AddVariable(name, "PJ", 'P', 4, rows.Count, rows.Select(static row => row.Length).ToArray(), (row, index, destination) => BinaryPrimitives.WriteInt32BigEndian(destination, rows[row][index]));
+    public BinaryTableBuilder AddVariable(string name, IReadOnlyList<int[]> rows)
+    {
+        var counts = rows.Select(static row => row.Length).ToArray();
+        var lengths = GetVariableLengths(counts, 4);
+        var heap = new byte[GetHeapSize(lengths)];
+        int cursor = 0;
+        for (int row = 0; row < rows.Count; row++)
+        {
+            int[] source = rows[row];
+            for (int index = 0; index < source.Length; index++)
+            {
+                BinaryPrimitives.WriteInt32BigEndian(heap.AsSpan(cursor + (index * 4), 4), source[index]);
+            }
 
-    public BinaryTableBuilder AddVariable(string name, IReadOnlyList<double[]> rows) =>
-        AddVariable(name, "QD", 'Q', 8, rows.Count, rows.Select(static row => row.Length).ToArray(), (row, index, destination) => BinaryPrimitives.WriteDoubleBigEndian(destination, rows[row][index]));
+            cursor += lengths[row];
+        }
+
+        return AddVariableColumn(name, "PJ", false, rows.Count, heap, counts, lengths);
+    }
+
+    public BinaryTableBuilder AddVariable(string name, IReadOnlyList<double[]> rows)
+    {
+        var counts = rows.Select(static row => row.Length).ToArray();
+        var lengths = GetVariableLengths(counts, 8);
+        var heap = new byte[GetHeapSize(lengths)];
+        int cursor = 0;
+        for (int row = 0; row < rows.Count; row++)
+        {
+            double[] source = rows[row];
+            for (int index = 0; index < source.Length; index++)
+            {
+                BinaryPrimitives.WriteDoubleBigEndian(heap.AsSpan(cursor + (index * 8), 8), source[index]);
+            }
+
+            cursor += lengths[row];
+        }
+
+        return AddVariableColumn(name, "QD", true, rows.Count, heap, counts, lengths);
+    }
 
     public BinaryTableBuilder AddVariable(string name, IReadOnlyList<string> rows)
     {
@@ -445,14 +556,8 @@ public sealed class BinaryTableBuilder
 
     private BinaryTableBuilder AddVariable(string name, string format, char descriptor, int elementWidth, int rows, int[] counts, Action<int, int, Span<byte>> writeElement, IReadOnlyList<bool[]>? packBits = null)
     {
-        var lengths = new int[rows];
-        int heapBytes = 0;
-        for (int row = 0; row < rows; row++)
-        {
-            lengths[row] = elementWidth == 0 ? (counts[row] + 7) / 8 : counts[row] * elementWidth;
-            heapBytes += lengths[row];
-        }
-
+        var lengths = GetVariableLengths(counts, elementWidth);
+        int heapBytes = GetHeapSize(lengths);
         var heap = new byte[heapBytes];
         int cursor = 0;
         for (int row = 0; row < rows; row++)
@@ -460,23 +565,33 @@ public sealed class BinaryTableBuilder
             if (packBits is not null)
             {
                 int destination = cursor;
-                byte packed = 0;
-                for (int bit = 0; bit < counts[row]; bit++)
+                bool[] source = packBits[row];
+                int bit = 0;
+                for (; bit + 8 <= counts[row]; bit += 8)
                 {
-                    if (packBits[row][bit])
+                    byte packed = 0;
+                    for (int offset = 0; offset < 8; offset++)
                     {
-                        packed |= (byte)(1 << (7 - (bit & 7)));
+                        if (source[bit + offset])
+                        {
+                            packed |= (byte)(0x80 >> offset);
+                        }
                     }
 
-                    if ((bit & 7) == 7)
-                    {
-                        heap[destination++] = packed;
-                        packed = 0;
-                    }
+                    heap[destination++] = packed;
                 }
 
-                if ((counts[row] & 7) != 0)
+                if (bit < counts[row])
                 {
+                    byte packed = 0;
+                    for (int offset = 0; bit + offset < counts[row]; offset++)
+                    {
+                        if (source[bit + offset])
+                        {
+                            packed |= (byte)(0x80 >> offset);
+                        }
+                    }
+
                     heap[destination] = packed;
                 }
             }
@@ -491,16 +606,51 @@ public sealed class BinaryTableBuilder
             cursor += lengths[row];
         }
 
-        int width = descriptor == 'Q' ? 16 : 8;
-        _columns.Add(new BinaryColumn(name, format, width, rows, [])
+        return AddVariableColumn(name, format, descriptor == 'Q', rows, heap, counts, lengths);
+    }
+
+    private BinaryTableBuilder AddVariableColumn(
+        string name,
+        string format,
+        bool wideDescriptor,
+        int rows,
+        byte[] heap,
+        int[] counts,
+        int[] lengths)
+    {
+        _columns.Add(new BinaryColumn(name, format, wideDescriptor ? 16 : 8, rows, [])
         {
             Variable = true,
-            WideDescriptor = descriptor == 'Q',
+            WideDescriptor = wideDescriptor,
             Heap = heap,
             Counts = counts,
             HeapRowLengths = lengths,
         });
         return this;
+    }
+
+    private static int[] GetVariableLengths(int[] counts, int elementWidth)
+    {
+        var lengths = new int[counts.Length];
+        for (int row = 0; row < counts.Length; row++)
+        {
+            lengths[row] = elementWidth == 0
+                ? checked((counts[row] + 7) / 8)
+                : checked(counts[row] * elementWidth);
+        }
+
+        return lengths;
+    }
+
+    private static int GetHeapSize(int[] lengths)
+    {
+        int total = 0;
+        for (int row = 0; row < lengths.Length; row++)
+        {
+            total = checked(total + lengths[row]);
+        }
+
+        return total;
     }
 
     private BinaryTableBuilder AddRaw(string name, string format, int width, int rows, Action<int, Span<byte>> write)

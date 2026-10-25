@@ -306,9 +306,11 @@ internal static class Pixels
 
     public static void WriteInt16BigEndian(ReadOnlySpan<short> values, Span<byte> destination)
     {
+        int offset = 0;
         for (int index = 0; index < values.Length; index++)
         {
-            BinaryPrimitives.WriteInt16BigEndian(destination.Slice(index * sizeof(short), sizeof(short)), values[index]);
+            BinaryPrimitives.WriteInt16BigEndian(destination.Slice(offset, sizeof(short)), values[index]);
+            offset += sizeof(short);
         }
     }
 

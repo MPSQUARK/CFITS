@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Collections.Frozen;
 
 namespace CFITS;
 
@@ -17,6 +18,17 @@ public sealed class FitsClock
     private const double BarycentricRate = 1.550519768e-8;
     private const double DynamicalOriginJulianDate = 2443144.5003725;
     private const double DynamicalOffsetSeconds = -6.55e-5;
+    private static readonly FrozenDictionary<string, double> FixedUnitDays =
+        new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["S"] = 1d / 86400d,
+            ["MIN"] = 1d / 1440d,
+            ["H"] = 1d / 24d,
+            ["D"] = 1,
+            ["A"] = 365.25,
+            ["YR"] = 365.25,
+            ["CY"] = 36525,
+        }.ToFrozenDictionary(StringComparer.OrdinalIgnoreCase);
 
     private FitsClock(string scale, double referenceModifiedJulianDate, double offsetDays, double unitDays, double resolution, double pixelReference, bool applyReference)
     {
@@ -27,6 +39,8 @@ public sealed class FitsClock
         Resolution = resolution;
         PixelReference = pixelReference;
         _applyReference = applyReference;
+        _baseModifiedJulianDate = applyReference ? referenceModifiedJulianDate + offsetDays : 0;
+        _pixelOffset = (pixelReference - 0.5) * resolution;
     }
 
     public string Scale { get; }
@@ -42,6 +56,8 @@ public sealed class FitsClock
     public double PixelReference { get; }
 
     private readonly bool _applyReference;
+    private readonly double _baseModifiedJulianDate;
+    private readonly double _pixelOffset;
 
     public static FitsClock FromHeader(FitsHeader header)
     {
@@ -59,7 +75,7 @@ public sealed class FitsClock
     public double ToModifiedJulianDate(double time)
     {
         double elapsed = time * UnitDays;
-        return _applyReference ? ReferenceModifiedJulianDate + OffsetDays + elapsed : elapsed;
+        return _applyReference ? _baseModifiedJulianDate + elapsed : elapsed;
     }
 
     public double ToModifiedJulianDate(double time, string scale) =>
@@ -71,7 +87,7 @@ public sealed class FitsClock
         return DateTimeOffset.UnixEpoch.AddSeconds(seconds);
     }
 
-    public double AtPixelReference(double centeredTime) => centeredTime + ((PixelReference - 0.5) * Resolution);
+    public double AtPixelReference(double centeredTime) => centeredTime + _pixelOffset;
 
     public static double ModifiedJulianDate(ReadOnlySpan<char> iso) => ModifiedJulianDate(Parse(iso));
 
@@ -222,16 +238,18 @@ public sealed class FitsClock
         return 0;
     }
 
-    private static double DaysPerUnit(string unit, double referenceModifiedJulianDate) => unit.ToUpperInvariant() switch
+    private static double DaysPerUnit(string unit, double referenceModifiedJulianDate)
     {
-        "S" => 1d / 86400d,
-        "MIN" => 1d / 1440d,
-        "H" => 1d / 24d,
-        "D" => 1,
-        "A" or "YR" => 365.25,
-        "CY" => 36525,
-        "TA" => TropicalYearInDays((referenceModifiedJulianDate - 51544.5) / 36525d),
-        "BA" => BesselianYearInDays((referenceModifiedJulianDate - 15019.5) / 36525d),
-        _ => throw new FitsException($"TIMEUNIT '{unit}' is not a recognized time unit.", new FitsLocation(Keyword: "TIMEUNIT")),
-    };
+        if (FixedUnitDays.TryGetValue(unit, out double days))
+        {
+            return days;
+        }
+
+        return unit.ToUpperInvariant() switch
+        {
+            "TA" => TropicalYearInDays((referenceModifiedJulianDate - 51544.5) / 36525d),
+            "BA" => BesselianYearInDays((referenceModifiedJulianDate - 15019.5) / 36525d),
+            _ => throw new FitsException($"TIMEUNIT '{unit}' is not a recognized time unit.", new FitsLocation(Keyword: "TIMEUNIT")),
+        };
+    }
 }

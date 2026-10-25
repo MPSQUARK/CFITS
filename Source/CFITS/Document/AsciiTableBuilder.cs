@@ -16,7 +16,7 @@ public sealed class AsciiTableBuilder
     public AsciiTableBuilder AddInteger(string name, ReadOnlySpan<long> values, int width)
     {
         var copy = values.ToArray();
-        return Add(name, $"I{width}", width, copy.Length, row => copy[row].ToString(CultureInfo.InvariantCulture).PadLeft(width));
+        return Add(name, $"I{width}", width, copy.Length, row => FormatInteger(copy[row], width));
     }
 
     public AsciiTableBuilder AddReal(string name, ReadOnlySpan<double> values, int width, int decimals, char form)
@@ -81,10 +81,10 @@ public sealed class AsciiTableBuilder
     {
         if (form == 'F')
         {
-            return Fit(value.ToString($"F{decimals}", CultureInfo.InvariantCulture), width);
+            return Fit(TryFormat(value, $"F{decimals}"), width);
         }
 
-        var text = value.ToString($"E{decimals}", CultureInfo.InvariantCulture);
+        var text = TryFormat(value, $"E{decimals}");
         int mark = text.IndexOf('E');
         if (mark > 0)
         {
@@ -103,6 +103,28 @@ public sealed class AsciiTableBuilder
         }
 
         return Fit(text, width);
+    }
+
+    private static string FormatInteger(long value, int width)
+    {
+        Span<char> buffer = stackalloc char[64];
+        if (value.TryFormat(buffer, out int written, ReadOnlySpan<char>.Empty, CultureInfo.InvariantCulture))
+        {
+            return Fit(new string(buffer[..written]), width);
+        }
+
+        return Fit(value.ToString(CultureInfo.InvariantCulture), width);
+    }
+
+    private static string TryFormat(double value, string format)
+    {
+        Span<char> buffer = stackalloc char[128];
+        if (value.TryFormat(buffer, out int written, format, CultureInfo.InvariantCulture))
+        {
+            return new string(buffer[..written]);
+        }
+
+        return value.ToString(format, CultureInfo.InvariantCulture);
     }
 
     private static string Fit(string text, int width) => text.Length > width ? text[^width..] : text.PadLeft(width);

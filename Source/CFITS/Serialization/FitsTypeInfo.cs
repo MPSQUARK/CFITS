@@ -15,4 +15,10 @@ public abstract class FitsTypeInfo<T>
     }
 
     public abstract void Write(Stream stream, T value);
+
+    public virtual void Write(FitsDocumentBuilder builder, T value)
+    {
+        ArgumentNullException.ThrowIfNull(builder);
+        throw new NotSupportedException("This serializer does not support writing into an existing FITS document builder.");
+    }
 }

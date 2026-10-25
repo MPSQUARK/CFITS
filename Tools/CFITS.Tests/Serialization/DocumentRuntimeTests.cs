@@ -17,6 +17,44 @@ public sealed class DocumentRuntimeTests
     }
 
     [Fact]
+    public void SnapshotWithIndexRetainsOwnedBytes()
+    {
+        using var document = FitsDocumentBuilder.Create().Image([2], new byte[] { 3, 4 }).Build();
+        FitsHduSnapshot original = document.SnapshotHdus()[0];
+
+        FitsHduSnapshot renamed = original.WithIndex(7);
+
+        Assert.Equal(7, renamed.Index);
+        Assert.Equal(original.HeaderBytes.ToArray(), renamed.HeaderBytes.ToArray());
+        Assert.Equal(original.DataBytes.ToArray(), renamed.DataBytes.ToArray());
+    }
+
+    [Fact]
+    public void ParseOwnsInputMemory()
+    {
+        byte[] bytes = FitsDocumentBuilder.Create().Image([1], new byte[] { 9 }).Build().ToArray();
+        using var document = FitsDocument.Parse(bytes);
+        Array.Fill(bytes, (byte)0);
+
+        Assert.Equal(9, document.Hdus[0].Image!.ReadInteger(0));
+    }
+
+    [Fact]
+    public void BuilderBuildCanBeWrittenAfterBuilderScopeEnds()
+    {
+        FitsDocument document;
+        {
+            var builder = FitsDocumentBuilder.Create().Image([1], new byte[] { 5 });
+            document = builder.Build();
+        }
+
+        using (document)
+        {
+            Assert.Equal(new byte[] { 5 }, document.Hdus[0].RawData.ToArray());
+        }
+    }
+
+    [Fact]
     public void DocumentTypeInfoOpensWithRequestedOptions()
     {
         using var stream = new MemoryStream(

@@ -31,13 +31,19 @@ public sealed class FitsDocument : IDisposable
     public IReadOnlyList<FitsHduSnapshot> SnapshotHdus()
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
-        return _hdus.Select(static hdu => hdu.Snapshot()).ToArray();
+        var snapshots = new FitsHduSnapshot[_hdus.Count];
+        for (int index = 0; index < snapshots.Length; index++)
+        {
+            snapshots[index] = _hdus[index].Snapshot();
+        }
+
+        return snapshots;
     }
 
     public ReadOnlyMemory<byte> SnapshotSpecialRecords()
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
-        return SpecialRecords.ToArray();
+        return SpecialRecords.IsEmpty ? ReadOnlyMemory<byte>.Empty : SpecialRecords.ToArray();
     }
 
     public static FitsDocument Open(string path, FitsOpenOptions? options = null) =>
@@ -78,8 +84,9 @@ public sealed class FitsDocument : IDisposable
         return ParseOwned(data.ToArray(), options);
     }
 
-    private static FitsDocument ParseOwned(byte[] owned, FitsOpenOptions options)
+    internal static FitsDocument ParseOwned(byte[] owned, FitsOpenOptions? options = null)
     {
+        options ??= new FitsOpenOptions();
         var hdus = new List<FitsHdu>();
         var physical = new List<CardRecord>();
         ReadOnlyMemory<byte> special = ReadOnlyMemory<byte>.Empty;
@@ -103,7 +110,14 @@ public sealed class FitsDocument : IDisposable
                     int available = owned.Length - (int)reader.DataOffset;
                     int dataBytes = (int)Math.Min(padded, Math.Max(0, available));
                     var raw = owned.AsMemory((int)reader.DataOffset, (int)reader.DataLength);
-                    var hdu = FitsHdu.Create(reader.HduIndex, header, raw, reader.Shape, options.ScaleMode, owned.AsSpan(headerOffset, headerLength), owned.AsSpan((int)reader.DataOffset, dataBytes));
+                    var hdu = FitsHdu.Create(
+                        reader.HduIndex,
+                        header,
+                        raw,
+                        reader.Shape,
+                        options.ScaleMode,
+                        owned.AsMemory(headerOffset, headerLength),
+                        owned.AsMemory((int)reader.DataOffset, dataBytes));
                     if (options.VerifyChecksum && !hdu.Integrity.IsValid)
                     {
                         throw new FitsException("The HDU checksum does not match.", new FitsLocation(reader.HduIndex));
@@ -149,7 +163,8 @@ public sealed class FitsDocument : IDisposable
 
     public byte[] ToArray()
     {
-        using var stream = new MemoryStream();
+        long estimated = EstimatedLength();
+        using var stream = new MemoryStream(estimated <= int.MaxValue ? (int)estimated : 0);
         Write(stream);
         return stream.ToArray();
     }
@@ -165,5 +180,16 @@ public sealed class FitsDocument : IDisposable
             stream.Write(zeros[..size]);
             count -= size;
         }
+    }
+
+    private long EstimatedLength()
+    {
+        long length = SpecialRecords.Length;
+        foreach (var hdu in _hdus)
+        {
+            length += hdu.HeaderBytesLength + FitsBlock.Pad(hdu.RawData.Length);
+        }
+
+        return length <= int.MaxValue ? length : 0;
     }
 }

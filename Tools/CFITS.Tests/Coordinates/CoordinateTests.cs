@@ -35,6 +35,27 @@ public sealed class CoordinateTests
         Assert.Throws<FitsException>(() => world.WorldToPixel([1, 1]));
     }
 
+    [Fact]
+    public void WorldToPixelWritesIntoDestinationSpan()
+    {
+        var world = FitsWorld.FromHeader(FitsHeader.Builder()
+            .Integer("WCSAXES", 2)
+            .Real("CRPIX1", 2)
+            .Real("CRPIX2", 3)
+            .Real("CRVAL1", 10)
+            .Real("CRVAL2", 20)
+            .Real("CDELT1", 2)
+            .Real("CDELT2", 4)
+            .Build());
+        Span<double> pixel = stackalloc double[3];
+
+        world.WorldToPixel([14, 28], pixel);
+
+        Assert.Equal(3, pixel.Length);
+        Assert.Equal(4, pixel[0]);
+        Assert.Equal(5, pixel[1]);
+    }
+
     [Theory]
     [InlineData(-1)]
     [InlineData(1000)]

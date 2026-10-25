@@ -5,6 +5,7 @@ namespace CFITS;
 
 public sealed class FitsDocumentBuilder
 {
+    private static readonly byte[] Padding = new byte[FitsBlock.Size];
     private readonly List<Action<Stream>> _writers = [];
     private bool _hasPrimary;
     private bool _checksum;
@@ -336,7 +337,7 @@ public sealed class FitsDocumentBuilder
         int pad = (int)(FitsBlock.Pad(data.Length) - data.Length);
         if (pad > 0)
         {
-            stream.Write(new byte[pad]);
+            stream.Write(Padding.AsSpan(0, pad));
         }
     }
 

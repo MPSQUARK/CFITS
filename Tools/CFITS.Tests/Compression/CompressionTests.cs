@@ -67,6 +67,8 @@ public sealed class CompressionTests
             comp.writeto(f'{directory}/hcomp-smooth.fits', overwrite=True)
             with fits.open(f'{directory}/hcomp-smooth.fits') as hdul:
                 np.savetxt(f'{directory}/hcomp-smooth.txt', hdul[1].data.reshape(-1), fmt='%d')
+            tiled = np.arange(35, dtype=np.int16).reshape(5, 7)
+            fits.CompImageHDU(data=tiled, compression_type='GZIP_1', tile_shape=(3, 2)).writeto(f'{directory}/tiled.fits', overwrite=True)
             """;
         var generator = Path.Combine(directory, "compress.py");
         File.WriteAllText(generator, script.Replace("{directory}", directory.Replace("\\", "/")));
@@ -117,6 +119,9 @@ public sealed class CompressionTests
         Assert.True(double.IsNaN(values[1]));
         Assert.Equal(-2.25, values[2]);
         Assert.Equal(4, values[3]);
+
+        using var tiled = FitsDocument.Open(Path.Combine(directory, "tiled.fits"));
+        Assert.Equal(Enumerable.Range(0, 35).Select(static value => (double)value).ToArray(), tiled.Hdus[1].Image!.ReadPhysical());
     }
 
     [Fact]

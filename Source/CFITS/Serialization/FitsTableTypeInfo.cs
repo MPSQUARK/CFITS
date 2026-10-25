@@ -15,4 +15,10 @@ public abstract class FitsTableTypeInfo<T>
     }
 
     public abstract void Write(Stream stream, IReadOnlyList<T> rows);
+
+    public virtual void Write(FitsDocumentBuilder builder, IReadOnlyList<T> rows)
+    {
+        ArgumentNullException.ThrowIfNull(builder);
+        throw new NotSupportedException("This serializer does not support writing into an existing FITS document builder.");
+    }
 }
