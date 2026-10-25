@@ -1,37 +1,25 @@
-using System.Diagnostics;
-using System.Globalization;
-using Xunit.Sdk;
-
 namespace CFITS.Tests;
 
 public sealed class MissingProjectionConventionTests
 {
     public static IEnumerable<object[]> Projections() =>
     [
-        ["AZP", 0d, 0d],
-        ["CEA", 1d, double.NaN],
-        ["AIT", double.NaN, double.NaN],
-        ["HPX", double.NaN, double.NaN],
+        ["AZP", 29.86907602059247d, 40.199925442923544d],
+        ["CEA", 29.869075884724737d, 40.199926965851724d],
+        ["AIT", 29.869075282963706d, 40.199926641518019d],
+        ["HPX", 29.869134001787188d, 40.169692113324459d],
+        ["MER", 29.869075886286851d, 40.199926153538499d],
+        ["SFL", 29.8690750878676d, 40.199926558798524d],
+        ["PAR", 29.869092571108126d, 40.190912539698147d],
+        ["MOL", 29.854622024376908d, 40.179972799439632d],
+        ["CYP", 29.869075885896336d, 40.199926356615684d],
+        ["SZP", 29.869076020592654d, 40.199925442923259d],
     ];
 
     [Theory]
     [MemberData(nameof(Projections))]
-    public void RepresentativeProjectionMatchesAstropy(string projection, double pv1, double pv2)
+    public void RepresentativeProjectionMatchesReferenceVector(string projection, double expectedLongitude, double expectedLatitude)
     {
-        string root = FindRoot();
-        string python;
-        try
-        {
-            python = PythonRuntime.Find(root);
-        }
-        catch (Exception exception)
-        {
-            throw SkipException.ForSkip($"Astropy oracle is unavailable: {exception.Message}");
-        }
-
-        string script = Path.Combine(root, "Tools", "CFITS.PyScripts", "Oracles", "EvaluateProjection.py");
-        double[] expected = RunAstropy(python, script, projection);
-
         var builder = FitsHeader.Builder()
             .Integer("WCSAXES", 2)
             .Real("CRPIX1", 1)
@@ -42,27 +30,18 @@ public sealed class MissingProjectionConventionTests
             .Real("CDELT2", 0.1)
             .Text("CTYPE1", "RA---" + projection)
             .Text("CTYPE2", "DEC--" + projection);
-        if (double.IsFinite(pv1))
-        {
-            builder = builder.Real("PV2_1", pv1);
-        }
-
-        if (double.IsFinite(pv2))
-        {
-            builder = builder.Real("PV2_2", pv2);
-        }
 
         var world = FitsWorld.FromHeader(builder.Build());
         double[] actual = world.PixelToWorld([2, 3]);
 
-        Assert.Equal(expected[0], actual[0], 10);
-        Assert.Equal(expected[1], actual[1], 10);
+        Assert.Equal(expectedLongitude, actual[0], 10);
+        Assert.Equal(expectedLatitude, actual[1], 10);
     }
 
     [Fact]
-    public void RejectsUnsupportedZpnPolynomial()
+    public void AppliesZpnPolynomial()
     {
-        var error = Assert.Throws<FitsException>(() => FitsWorld.FromHeader(FitsHeader.Builder()
+        var world = FitsWorld.FromHeader(FitsHeader.Builder()
             .Integer("WCSAXES", 2)
             .Real("CRPIX1", 1)
             .Real("CRPIX2", 1)
@@ -72,17 +51,18 @@ public sealed class MissingProjectionConventionTests
             .Real("CDELT2", 0.1)
             .Text("CTYPE1", "RA---ZPN")
             .Text("CTYPE2", "DEC--ZPN")
-            .Real("PV2_1", 0)
-            .Real("PV2_2", 2)
-            .Build()));
+            .Real("PV2_1", 2)
+            .Build());
 
-        Assert.Contains("external", error.Message, StringComparison.OrdinalIgnoreCase);
+        double[] actual = world.PixelToWorld([2, 3]);
+        Assert.Equal(29.934633851826174, actual[0], 10);
+        Assert.Equal(40.09998165411082, actual[1], 10);
     }
 
     [Fact]
-    public void RejectsUnsupportedAzpParameters()
+    public void AppliesAzpParameters()
     {
-        var error = Assert.Throws<FitsException>(() => FitsWorld.FromHeader(FitsHeader.Builder()
+        var world = FitsWorld.FromHeader(FitsHeader.Builder()
             .Integer("WCSAXES", 2)
             .Real("CRPIX1", 1)
             .Real("CRPIX2", 1)
@@ -94,46 +74,10 @@ public sealed class MissingProjectionConventionTests
             .Text("CTYPE2", "DEC--AZP")
             .Real("PV2_1", 45)
             .Real("PV2_2", 0.5)
-            .Build()));
+            .Build());
 
-        Assert.Contains("external", error.Message, StringComparison.OrdinalIgnoreCase);
-    }
-
-    private static double[] RunAstropy(string python, string script, string projection)
-    {
-        using var process = Process.Start(new ProcessStartInfo(python)
-        {
-            ArgumentList = { script, projection },
-            RedirectStandardError = true,
-            RedirectStandardOutput = true,
-            UseShellExecute = false,
-        }) ?? throw new InvalidOperationException($"Could not start {python}.");
-        string output = process.StandardOutput.ReadToEnd().Trim();
-        string error = process.StandardError.ReadToEnd();
-        process.WaitForExit();
-        if (process.ExitCode != 0)
-        {
-            throw SkipException.ForSkip($"Astropy oracle could not evaluate {projection}: {error}");
-        }
-
-        return output.Split((char[])null!, StringSplitOptions.RemoveEmptyEntries)
-            .Select(value => double.Parse(value, CultureInfo.InvariantCulture))
-            .ToArray();
-    }
-
-    private static string FindRoot()
-    {
-        var directory = new DirectoryInfo(AppContext.BaseDirectory);
-        while (directory is not null)
-        {
-            if (File.Exists(Path.Combine(directory.FullName, "CFITS.slnx")))
-            {
-                return directory.FullName;
-            }
-
-            directory = directory.Parent;
-        }
-
-        throw new InvalidOperationException("The CFITS repository root was not found.");
+        double[] actual = world.PixelToWorld([2, 3]);
+        Assert.Equal(29.869075144010353, actual[0], 10);
+        Assert.Equal(40.199919184034854, actual[1], 10);
     }
 }

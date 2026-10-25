@@ -20,14 +20,17 @@ def table(path, algorithm, payload, form="1J", descriptors=False):
     heap = bytearray()
     if descriptors:
         chunks = [gzip.compress(struct.pack(">2i", 10, 20)), gzip.compress(struct.pack(">1i", 30))]
-        bundle = bytearray()
         heap = bytearray()
+        compressed_descriptors = bytearray()
+        original_descriptors = bytearray()
+        original_width = width
         for index, chunk in enumerate(chunks):
-            bundle.extend(len(chunk).to_bytes(width // 2, "big"))
-            bundle.extend(len(heap).to_bytes(width // 2, "big"))
+            compressed_descriptors.extend(len(chunk).to_bytes(8, "big"))
+            compressed_descriptors.extend(len(heap).to_bytes(8, "big"))
             heap.extend(chunk)
-            bundle.extend((2 if index == 0 else 1).to_bytes(width // 2, "big"))
-            bundle.extend((0 if index == 0 else 8).to_bytes(width // 2, "big"))
+            original_descriptors.extend((2 if index == 0 else 1).to_bytes(original_width // 2, "big"))
+            original_descriptors.extend((0 if index == 0 else 8).to_bytes(original_width // 2, "big"))
+        bundle = compressed_descriptors + original_descriptors
         compressed_bundle = gzip.compress(bytes(bundle))
         body.extend(len(compressed_bundle).to_bytes(8, "big") + len(heap).to_bytes(8, "big"))
         heap.extend(compressed_bundle)

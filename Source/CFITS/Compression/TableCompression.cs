@@ -112,33 +112,29 @@ internal static class TableCompression
     private static void ExpandVariable(FitsColumn column, ColumnSpec spec, string algorithm, char element, byte[] stored, int start, int tileRows, int offset, int rowWidth, int blockSize, Span<byte> body, Span<byte> heap)
     {
         byte[] bundle = Gunzip(stored);
-        int descriptor = spec.Width;
-        int needed = checked((tileRows * descriptor) + (tileRows * descriptor));
+        int originalDescriptor = spec.Width;
+        const int compressedDescriptor = 16;
+        int needed = checked((tileRows * compressedDescriptor) + (tileRows * originalDescriptor));
         if (bundle.Length < needed)
         {
             throw new FitsException("A compressed variable-length column is missing its descriptors.", new FitsLocation(Column: column.Name));
         }
 
-        bool interleaved = HasInterleavedDescriptors(bundle, descriptor, element, heap.Length);
         for (int row = 0; row < tileRows; row++)
         {
-            int compressedAt = interleaved
-                ? checked(row * descriptor * 2)
-                : checked(row * descriptor);
-            int valueWidth = descriptor >> 1;
-            long compressedCount = ReadDescriptorValue(bundle.AsSpan(compressedAt, valueWidth), valueWidth);
-            long compressedOffset = ReadDescriptorValue(bundle.AsSpan(compressedAt + valueWidth, valueWidth), valueWidth);
-            int originalAt = interleaved
-                ? checked(compressedAt + descriptor)
-                : checked(tileRows * descriptor + (row * descriptor));
-            bundle.AsSpan(originalAt, descriptor).CopyTo(body.Slice(((start + row) * rowWidth) + offset, descriptor));
+            int compressedAt = checked(row * compressedDescriptor);
+            long compressedCount = ReadDescriptorValue(bundle.AsSpan(compressedAt, 8), 8);
+            long compressedOffset = ReadDescriptorValue(bundle.AsSpan(compressedAt + 8, 8), 8);
+            int originalAt = checked((tileRows * compressedDescriptor) + (row * originalDescriptor));
+            bundle.AsSpan(originalAt, originalDescriptor).CopyTo(body.Slice(((start + row) * rowWidth) + offset, originalDescriptor));
             if (compressedCount < 0 || compressedOffset < 0 || compressedCount > int.MaxValue)
             {
                 throw new FitsException("A compressed variable-length descriptor is invalid.", new FitsLocation(Column: column.Name));
             }
 
-            long elements = ReadDescriptorValue(bundle.AsSpan(originalAt, valueWidth), valueWidth);
-            long heapOffset = ReadDescriptorValue(bundle.AsSpan(originalAt + valueWidth, valueWidth), valueWidth);
+            int originalValueWidth = originalDescriptor / 2;
+            long elements = ReadDescriptorValue(bundle.AsSpan(originalAt, originalValueWidth), originalValueWidth);
+            long heapOffset = ReadDescriptorValue(bundle.AsSpan(originalAt + originalValueWidth, originalValueWidth), originalValueWidth);
             if (elements < 0 || elements > int.MaxValue || heapOffset < 0)
             {
                 throw new FitsException("A compressed variable-length descriptor is invalid.", new FitsLocation(Column: column.Name));
@@ -159,16 +155,6 @@ internal static class TableCompression
             byte[] plain = Expand(algorithm, payload, checked((int)elements * width), width, element, blockSize);
             Place(heap, heapOffset, plain);
         }
-    }
-
-    private static bool HasInterleavedDescriptors(byte[] bundle, int descriptor, char element, int heapLength)
-    {
-        int valueWidth = descriptor >> 1;
-        int originalAt = descriptor;
-        long elements = ReadDescriptorValue(bundle.AsSpan(originalAt, valueWidth), valueWidth);
-        long offset = ReadDescriptorValue(bundle.AsSpan(originalAt + valueWidth, valueWidth), valueWidth);
-        long bytes = elements < 0 ? long.MaxValue : elements * ElementBytes(element);
-        return elements >= 0 && offset >= 0 && bytes <= int.MaxValue && offset <= heapLength && bytes <= heapLength - offset;
     }
 
     private static long ReadDescriptorValue(ReadOnlySpan<byte> bytes, int width) => width switch

@@ -22,14 +22,26 @@ public sealed class FitsWorld
         ["ARC"] = Projection.Arc,
         ["AIT"] = Projection.Ait,
         ["AZP"] = Projection.Azp,
+        ["SZP"] = Projection.Szp,
         ["CAR"] = Projection.Car,
         ["CEA"] = Projection.Cea,
+        ["CYP"] = Projection.Cyp,
+        ["MER"] = Projection.Mer,
+        ["SFL"] = Projection.Sfl,
+        ["PAR"] = Projection.Par,
+        ["MOL"] = Projection.Mol,
+        ["COE"] = Projection.Coe,
+        ["COD"] = Projection.Cod,
+        ["COO"] = Projection.Coo,
+        ["BON"] = Projection.Bon,
         ["HPX"] = Projection.Hpx,
         ["SIN"] = Projection.Sin,
         ["STG"] = Projection.Stg,
         ["TAN"] = Projection.Tan,
         ["ZEA"] = Projection.Zea,
         ["ZPN"] = Projection.Zpn,
+        ["AIR"] = Projection.Air,
+        ["COP"] = Projection.Cop,
     }.ToFrozenDictionary(StringComparer.OrdinalIgnoreCase);
 
     private readonly double[] _referencePixel;
@@ -41,10 +53,9 @@ public sealed class FitsWorld
     private readonly int _latitude;
     private readonly Projection _projectionKind;
     private readonly double[] _euler;
-    private readonly double _pv1;
-    private readonly double _pv2;
+    private readonly double[] _pv;
 
-    private FitsWorld(double[] referencePixel, double[] referenceValue, double[] scale, double[] matrix, bool scaledMatrix, int longitude, int latitude, string? projection, double[] euler, double pv1, double pv2)
+    private FitsWorld(double[] referencePixel, double[] referenceValue, double[] scale, double[] matrix, bool scaledMatrix, int longitude, int latitude, string? projection, double[] euler, double[] pv)
     {
         _referencePixel = referencePixel;
         _referenceValue = referenceValue;
@@ -55,8 +66,7 @@ public sealed class FitsWorld
         _latitude = latitude;
         _projectionKind = ProjectionOf(projection);
         _euler = euler;
-        _pv1 = pv1;
-        _pv2 = pv2;
+        _pv = pv;
     }
 
     public int Axes => _referencePixel.Length;
@@ -199,19 +209,17 @@ public sealed class FitsWorld
         double[] euler = active is null
             ? []
             : Euler(active, referenceValue[longitude], referenceValue[latitude], pole, latitudePole);
-        double pv1 = longitude >= 0 ? Read(header, $"PV{latitude + 1}_1", version, ProjectionDefault(active, 1)) : 0;
-        double pv2 = longitude >= 0 ? Read(header, $"PV{latitude + 1}_2", version, ProjectionDefault(active, 2)) : 0;
-        EnsureFinite(pv1, $"PV{latitude + 1}_1");
-        EnsureFinite(pv2, $"PV{latitude + 1}_2");
-        if (active?.Equals("ZPN", StringComparison.OrdinalIgnoreCase) == true && (pv1 != 0 || pv2 != 1))
+        var pv = new double[10];
+        if (longitude >= 0)
         {
-            throw new FitsException("ZPN higher-order polynomial coefficients require an external WCSLIB/Astropy oracle.", new FitsLocation());
+            for (int index = 0; index < pv.Length; index++)
+            {
+                int keywordParameter = active == "ZPN" ? index : index + 1;
+                pv[index] = Read(header, $"PV{latitude + 1}_{keywordParameter}", version, ProjectionDefault(active, keywordParameter));
+                EnsureFinite(pv[index], $"PV{latitude + 1}_{keywordParameter}");
+            }
         }
-        if (active?.Equals("AZP", StringComparison.OrdinalIgnoreCase) == true && (pv1 != 0 || pv2 != 0))
-        {
-            throw new FitsException("AZP non-default PV parameters require an external WCSLIB/Astropy oracle.", new FitsLocation());
-        }
-        return new FitsWorld(referencePixel, referenceValue, scale, matrix, cd, longitude, latitude, active, euler, pv1, pv2);
+        return new FitsWorld(referencePixel, referenceValue, scale, matrix, cd, longitude, latitude, active, euler, pv);
     }
 
     public double[] PixelToWorld(ReadOnlySpan<double> pixel)
@@ -267,7 +275,7 @@ public sealed class FitsWorld
         }
         else
         {
-            var native = Native(_projectionKind, planeX, planeY, _pv1, _pv2);
+            var native = Native(_projectionKind, planeX, planeY, _pv);
             phi = native.Phi;
             theta = native.Theta;
         }
@@ -307,7 +315,7 @@ public sealed class FitsWorld
         else
         {
             var native = InverseSpherical(world[_longitude], world[_latitude], _euler);
-            var plane = Plane(_projectionKind, native.Phi, native.Theta, _pv1, _pv2);
+            var plane = Plane(_projectionKind, native.Phi, native.Theta, _pv);
             for (int axis = 0; axis < Axes; axis++)
             {
                 intermediate[axis] = axis == _longitude ? plane.X : axis == _latitude ? plane.Y : world[axis] - _referenceValue[axis];
@@ -329,8 +337,10 @@ public sealed class FitsWorld
         }
     }
 
-    private static (double Phi, double Theta) Native(Projection projection, double x, double y, double pv1, double pv2)
+    private static (double Phi, double Theta) Native(Projection projection, double x, double y, double[] pv)
     {
+        double pv1 = pv[0];
+        double pv2 = pv[1];
         double radius = Math.Sqrt((x * x) + (y * y));
         double phi = double.RadiansToDegrees(Math.Atan2(x, -y));
         double theta = projection switch
@@ -342,15 +352,27 @@ public sealed class FitsWorld
             Projection.Zea => 90 - (2 * double.RadiansToDegrees(Math.Asin(RadiansPerDegree * radius / 2))),
             Projection.Cea => double.RadiansToDegrees(Math.Asin(Math.Clamp(y * RadiansPerDegree * pv1, -1, 1))),
             Projection.Ait => AitNative(x, y).Theta,
-            Projection.Azp => AzpNative(x, y, pv1, pv2).Theta,
-            Projection.Zpn => 90 - radius,
+            Projection.Azp => AzpNative(x, y, pv2, pv1).Theta,
+            Projection.Szp => SlantNative(x, y, pv2, pv1).Theta,
+            Projection.Zpn => ZpnNative(x, y, pv),
+            Projection.Air => ZpnNative(x, y, new[] { 0d, 1d }),
             Projection.Hpx => double.RadiansToDegrees(Math.Asin(Math.Clamp(y / 67.5, -1, 1))),
+            Projection.Mer => double.RadiansToDegrees(2 * Math.Atan(Math.Exp(y * RadiansPerDegree)) - Math.PI / 2),
+            Projection.Sfl => y,
+            Projection.Par => DegreesPerRadian * 3 * Math.Asin(Math.Clamp(y / 180, -1, 1)),
+            Projection.Mol => MolNative(x, y).Theta,
+            Projection.Cyp => CypNative(x, y, pv1, pv2).Theta,
+            Projection.Coe or Projection.Cod or Projection.Coo or Projection.Bon or Projection.Cop => ConicNative(projection, x, y, pv1, pv2).Theta,
             Projection.Car => y,
             _ => throw new FitsException("Projection is not implemented.", new FitsLocation()),
         };
         if (projection == Projection.Car)
         {
             phi = x;
+        }
+        else if (projection == Projection.Azp)
+        {
+            phi = AzpNative(x, y, pv2, pv1).Phi;
         }
         else if (projection == Projection.Ait)
         {
@@ -363,6 +385,30 @@ public sealed class FitsWorld
         else if (projection == Projection.Hpx)
         {
             phi = x;
+        }
+        else if (projection == Projection.Mer)
+        {
+            phi = x;
+        }
+        else if (projection == Projection.Sfl)
+        {
+            phi = Math.Abs(theta) >= 90 ? 0 : x / Math.Cos(theta * RadiansPerDegree);
+        }
+        else if (projection == Projection.Par)
+        {
+            phi = x / (2 * Math.Cos(2 * theta * RadiansPerDegree / 3) - 1);
+        }
+        else if (projection == Projection.Mol)
+        {
+            phi = MolNative(x, y).Phi;
+        }
+        else if (projection == Projection.Cyp)
+        {
+            phi = CypNative(x, y, pv1, pv2).Phi;
+        }
+        else if (projection is Projection.Coe or Projection.Cod or Projection.Coo or Projection.Bon or Projection.Cop)
+        {
+            phi = ConicNative(projection, x, y, pv1, pv2).Phi;
         }
 
         return (phi, theta);
@@ -408,8 +454,10 @@ public sealed class FitsWorld
         return (NormalizeSigned(euler[2] + deltaPhi), theta);
     }
 
-    private static (double X, double Y) Plane(Projection projection, double phi, double theta, double pv1, double pv2)
+    private static (double X, double Y) Plane(Projection projection, double phi, double theta, double[] pv)
     {
+        double pv1 = pv[0];
+        double pv2 = pv[1];
         if (projection == Projection.Car)
         {
             return (phi, theta);
@@ -417,9 +465,9 @@ public sealed class FitsWorld
 
         double phiRadians = phi * RadiansPerDegree;
         double thetaRadians = theta * RadiansPerDegree;
-        if (projection == Projection.Azp)
+        if (projection is Projection.Azp or Projection.Szp)
         {
-            return AzpPlane(phi, theta, pv1, pv2);
+            return SlantPlane(phi, theta, pv2, pv1);
         }
 
         (double sinPhi, double cosPhi) = Math.SinCos(phiRadians);
@@ -432,8 +480,15 @@ public sealed class FitsWorld
             Projection.Zea => 2 * DegreesPerRadian * Math.Sin((Math.PI / 2 - thetaRadians) / 2),
             Projection.Cea => Math.Sin(thetaRadians) / (RadiansPerDegree * pv1),
             Projection.Ait => 0,
-            Projection.Zpn => 90 - theta,
+            Projection.Zpn => ZpnRadius(theta, pv),
+            Projection.Air => DegreesPerRadian / Math.Tan(thetaRadians),
             Projection.Hpx => 67.5 * Math.Sin(thetaRadians),
+            Projection.Mer => DegreesPerRadian * Math.Log(Math.Tan(Math.PI / 4 + thetaRadians / 2)),
+            Projection.Sfl => 0,
+            Projection.Par => 180 * Math.Sin(thetaRadians / 3),
+            Projection.Mol => 0,
+            Projection.Cyp => 0,
+            Projection.Coe or Projection.Cod or Projection.Coo or Projection.Bon or Projection.Cop => 0,
             _ => throw new FitsException("Projection is not implemented.", new FitsLocation()),
         };
         if (projection == Projection.Ait)
@@ -443,6 +498,30 @@ public sealed class FitsWorld
         if (projection == Projection.Cea)
         {
             return (phi * pv1, Math.Sin(thetaRadians) / (RadiansPerDegree * pv1));
+        }
+        if (projection == Projection.Sfl)
+        {
+            return (phi * Math.Cos(thetaRadians), theta);
+        }
+        if (projection == Projection.Par)
+        {
+            return (phi * (2 * Math.Cos(2 * thetaRadians / 3) - 1), 180 * Math.Sin(thetaRadians / 3));
+        }
+        if (projection == Projection.Mer)
+        {
+            return (phi, DegreesPerRadian * Math.Log(Math.Tan(Math.PI / 4 + thetaRadians / 2)));
+        }
+        if (projection == Projection.Mol)
+        {
+            return MolPlane(phi, theta);
+        }
+        if (projection == Projection.Cyp)
+        {
+            return CypPlane(phi, theta, pv1, pv2);
+        }
+        if (projection is Projection.Coe or Projection.Cod or Projection.Coo or Projection.Bon or Projection.Cop)
+        {
+            return ConicPlane(projection, phi, theta, pv1, pv2);
         }
         return (radius * sinPhi, -radius * cosPhi);
     }
@@ -465,21 +544,48 @@ public sealed class FitsWorld
             DegreesPerRadian * SqrtTwo * Math.Sin(latitude) / denominator);
     }
 
-    private static (double Phi, double Theta) AzpNative(double x, double y, double gamma, double mu)
+    private static (double Phi, double Theta) SlantNative(double x, double y, double gamma, double mu)
     {
         double phi = double.RadiansToDegrees(Math.Atan2(x, -y));
         double radius = Math.Sqrt((x * x) + (y * y));
         double normalizedRadius = radius / (DegreesPerRadian * (mu + 1));
-        double offset = Math.Atan(normalizedRadius)
-            + Math.Asin(Math.Clamp(
-                normalizedRadius * mu / Math.Sqrt(1 + (normalizedRadius * normalizedRadius)),
-                -1,
-                1));
-        double theta = 90 - double.RadiansToDegrees(offset);
+        double theta = 90 - double.RadiansToDegrees(Math.Atan(normalizedRadius));
+        for (int iteration = 0; iteration < 12; iteration++)
+        {
+            double thetaRadians = theta * RadiansPerDegree;
+            (double sinTheta, double cosTheta) = Math.SinCos(thetaRadians);
+            double value = normalizedRadius * (mu + sinTheta
+                + (cosTheta * Math.Cos(phi * RadiansPerDegree) * Math.Tan(gamma * RadiansPerDegree)))
+                - cosTheta;
+            double derivative = normalizedRadius * (cosTheta
+                - (sinTheta * Math.Cos(phi * RadiansPerDegree) * Math.Tan(gamma * RadiansPerDegree)))
+                + sinTheta;
+            double correction = value / derivative;
+            theta -= correction * DegreesPerRadian;
+            if (Math.Abs(correction) < 1e-14)
+            {
+                break;
+            }
+        }
+
         return (phi, theta);
     }
 
-    private static (double X, double Y) AzpPlane(double phi, double theta, double gamma, double mu)
+    private static (double Phi, double Theta) AzpNative(double x, double y, double gamma, double mu)
+    {
+        double gammaRadians = gamma * RadiansPerDegree;
+        double cosGamma = Math.Cos(gammaRadians);
+        double sinGamma = Math.Sin(gammaRadians);
+        double phi = double.RadiansToDegrees(Math.Atan2(x, -y * cosGamma));
+        double radius = Math.Sqrt((x * x) + ((y * cosGamma) * (y * cosGamma)));
+        double rho = radius / (DegreesPerRadian * (mu + 1) + (y * sinGamma));
+        double psi = Math.Atan2(rho, 1);
+        double omega = Math.Asin(Math.Clamp(rho * mu / Math.Sqrt((rho * rho) + 1), -1, 1));
+        double theta = 90 - double.RadiansToDegrees(psi + omega);
+        return (phi, theta);
+    }
+
+    private static (double X, double Y) SlantPlane(double phi, double theta, double gamma, double mu)
     {
         double phiRadians = phi * RadiansPerDegree;
         double thetaRadians = theta * RadiansPerDegree;
@@ -488,12 +594,156 @@ public sealed class FitsWorld
         double sinPhi = Math.Sin(phiRadians);
         double cosPhi = Math.Cos(phiRadians);
         double denominator = mu + sinTheta;
+        denominator += cosTheta * cosPhi * Math.Tan(gamma * RadiansPerDegree);
         double radius = DegreesPerRadian * (mu + 1) * cosTheta / denominator;
         return
         (
             radius * sinPhi,
-            -radius * cosPhi
+            -radius * cosPhi / Math.Cos(gamma * RadiansPerDegree)
         );
+    }
+
+    private static double ZpnRadius(double theta, double[] pv)
+    {
+        double zenithDistance = (90 - theta) * RadiansPerDegree;
+        double power = 1;
+        double radius = 0;
+        for (int index = 0; index < pv.Length; index++)
+        {
+            radius += pv[index] * power;
+            power *= zenithDistance;
+        }
+
+        return DegreesPerRadian * radius;
+    }
+
+    private static double ZpnNative(double x, double y, double[] pv)
+    {
+        double radius = Math.Sqrt((x * x) + (y * y));
+        double target = radius * RadiansPerDegree;
+        double distance = Math.Max(target, 1e-12);
+        for (int iteration = 0; iteration < 12; iteration++)
+        {
+            double value = 0;
+            double derivative = 0;
+            double power = 1;
+            for (int index = 0; index < pv.Length; index++)
+            {
+                value += pv[index] * power;
+                if (index > 0)
+                {
+                    derivative += index * pv[index] * (power / distance);
+                }
+                power *= distance;
+            }
+
+            if (Math.Abs(derivative) < 1e-14)
+            {
+                break;
+            }
+
+            double next = distance - (value - target) / derivative;
+            if (Math.Abs(next - distance) < 1e-12)
+            {
+                distance = next;
+                break;
+            }
+            distance = next;
+        }
+
+        return 90 - (distance * DegreesPerRadian);
+    }
+
+    private static (double X, double Y) MolPlane(double phi, double theta)
+    {
+        double latitude = theta * RadiansPerDegree;
+        double beta = SolveMollweide(latitude);
+        return (phi * Math.Cos(beta), DegreesPerRadian * Math.Sin(beta) * 1.4142135623730951);
+    }
+
+    private static (double Phi, double Theta) MolNative(double x, double y)
+    {
+        double beta = Math.Asin(Math.Clamp(y / (DegreesPerRadian * 1.4142135623730951), -1, 1));
+        double latitude = Math.Asin(Math.Clamp((2 * beta + Math.Sin(2 * beta)) / Math.PI, -1, 1));
+        double phi = Math.Abs(Math.Cos(beta)) < 1e-14 ? 0 : x / (Math.Cos(beta) * (2 * Math.Sqrt(2) / Math.PI));
+        return (phi, latitude * DegreesPerRadian);
+    }
+
+    private static double SolveMollweide(double latitude)
+    {
+        double beta = latitude;
+        for (int iteration = 0; iteration < 12; iteration++)
+        {
+            double delta = (2 * beta + Math.Sin(2 * beta) - Math.PI * Math.Sin(latitude))
+                / (2 + 2 * Math.Cos(2 * beta));
+            beta -= delta;
+            if (Math.Abs(delta) < 1e-13)
+            {
+                break;
+            }
+        }
+        return beta;
+    }
+
+    private static (double X, double Y) CypPlane(double phi, double theta, double mu, double lambda)
+    {
+        double thetaRadians = theta * RadiansPerDegree;
+        double radius = DegreesPerRadian * (mu + lambda) * Math.Sin(thetaRadians) / (mu + Math.Cos(thetaRadians));
+        return (lambda * phi, radius);
+    }
+
+    private static (double Phi, double Theta) CypNative(double x, double y, double mu, double lambda)
+    {
+        double radius = y;
+        double q = radius / (DegreesPerRadian * (mu + lambda));
+        double discriminant = Math.Sqrt(Math.Max(0, 1 + q * q * (1 - mu * mu)));
+        double cosTheta = (-q * q * mu + discriminant) / (1 + q * q);
+        double sinTheta = q * (mu + cosTheta);
+        return (x / lambda, DegreesPerRadian * Math.Asin(Math.Clamp(sinTheta, -1, 1)));
+    }
+
+    private static (double X, double Y) ConicPlane(Projection projection, double phi, double theta, double p1, double p2)
+    {
+        double thetaRadians = theta * RadiansPerDegree;
+        double phiRadians = phi * RadiansPerDegree;
+        double n = projection == Projection.Coe ? (Math.Sin(p1 * RadiansPerDegree) + Math.Sin(p2 * RadiansPerDegree)) / 2
+            : (Math.Cos(p1 * RadiansPerDegree) - Math.Cos(p2 * RadiansPerDegree)) / ((p2 - p1) * RadiansPerDegree);
+        if (Math.Abs(n) < 1e-14)
+        {
+            n = Math.Sin(p1 * RadiansPerDegree);
+        }
+        double c = projection == Projection.Coe
+            ? Math.Pow(Math.Cos(p1 * RadiansPerDegree), 2) + 2 * n * Math.Sin(p1 * RadiansPerDegree)
+            : n * (p1 * RadiansPerDegree) + Math.Cos(p1 * RadiansPerDegree);
+        double rho = projection == Projection.Coe
+            ? Math.Sqrt(Math.Max(0, c - 2 * n * Math.Sin(thetaRadians))) / n
+            : c - thetaRadians;
+        double rho0 = projection == Projection.Coe
+            ? Math.Sqrt(Math.Max(0, c - 2 * n * Math.Sin(0))) / n
+            : c;
+        return (DegreesPerRadian * rho * Math.Sin(n * phiRadians),
+            DegreesPerRadian * (rho0 - rho * Math.Cos(n * phiRadians)));
+    }
+
+    private static (double Phi, double Theta) ConicNative(Projection projection, double x, double y, double p1, double p2)
+    {
+        double n = projection == Projection.Coe ? (Math.Sin(p1 * RadiansPerDegree) + Math.Sin(p2 * RadiansPerDegree)) / 2
+            : (Math.Cos(p1 * RadiansPerDegree) - Math.Cos(p2 * RadiansPerDegree)) / ((p2 - p1) * RadiansPerDegree);
+        if (Math.Abs(n) < 1e-14)
+        {
+            n = Math.Sin(p1 * RadiansPerDegree);
+        }
+        double c = projection == Projection.Coe
+            ? Math.Pow(Math.Cos(p1 * RadiansPerDegree), 2) + 2 * n * Math.Sin(p1 * RadiansPerDegree)
+            : n * (p1 * RadiansPerDegree) + Math.Cos(p1 * RadiansPerDegree);
+        double rho0 = projection == Projection.Coe ? Math.Sqrt(Math.Max(0, c)) / n : c;
+        double dx = x * RadiansPerDegree;
+        double dy = rho0 - y * RadiansPerDegree;
+        double rho = Math.CopySign(Math.Sqrt(dx * dx + dy * dy), n);
+        double theta = projection == Projection.Coe
+            ? Math.Asin(Math.Clamp((c - (rho * n) * (rho * n)) / (2 * n), -1, 1))
+            : c - rho;
+        return (DegreesPerRadian * Math.Atan2(dx, dy) / n, theta * DegreesPerRadian);
     }
 
     private static void Solve(ReadOnlySpan<double> matrix, ReadOnlySpan<double> value, Span<double> solution)
@@ -618,6 +868,11 @@ public sealed class FitsWorld
             || projection.Equals("CEA", StringComparison.OrdinalIgnoreCase)
             || projection.Equals("HPX", StringComparison.OrdinalIgnoreCase)
             || projection.Equals("AIT", StringComparison.OrdinalIgnoreCase)
+            || projection.Equals("MER", StringComparison.OrdinalIgnoreCase)
+            || projection.Equals("SFL", StringComparison.OrdinalIgnoreCase)
+            || projection.Equals("PAR", StringComparison.OrdinalIgnoreCase)
+            || projection.Equals("MOL", StringComparison.OrdinalIgnoreCase)
+            || projection.Equals("CYP", StringComparison.OrdinalIgnoreCase)
             ? 0
             : 90;
         const double phi0 = 0;
@@ -643,7 +898,10 @@ public sealed class FitsWorld
             double v = double.RadiansToDegrees(Math.Acos(Math.Clamp(sinLatitude / radius, -1, 1)));
             double first = NormalizeSigned(u + v);
             double second = NormalizeSigned(u - v);
-            latitudeP = Math.Abs(latitudeOfPole - first) <= Math.Abs(latitudeOfPole - second) ? first : second;
+            bool defaultLatitudePole = !double.IsFinite(latitudeOfPole) || latitudeOfPole == 999;
+            latitudeP = defaultLatitudePole
+                ? first
+                : Math.Abs(latitudeOfPole - first) <= Math.Abs(latitudeOfPole - second) ? first : second;
             if (Math.Abs(latitudeP) > 90)
             {
                 latitudeP = Math.Abs(first) <= 90 ? first : second;
@@ -761,11 +1019,14 @@ public sealed class FitsWorld
         projection?.ToUpperInvariant() switch
         {
             "CEA" when parameter == 1 => 1,
+            "CYP" when parameter == 1 => 1,
+            "CYP" when parameter == 2 => 1,
             "AZP" when parameter == 1 => 0,
-            "AZP" when parameter == 2 => 0,
+            "SZP" when parameter == 1 => 0,
+            "SZP" when parameter == 2 => 0,
             "HPX" when parameter == 1 => 4,
             "HPX" when parameter == 2 => 3,
-            "ZPN" when parameter == 2 => 1,
+            "ZPN" when parameter == 1 => 1,
             _ => 0,
         };
 
@@ -775,13 +1036,25 @@ public sealed class FitsWorld
         Arc,
         Ait,
         Azp,
+        Szp,
         Car,
         Cea,
+        Cyp,
+        Mer,
+        Sfl,
+        Par,
+        Mol,
+        Coe,
+        Cod,
+        Coo,
+        Bon,
         Hpx,
         Sin,
         Stg,
         Tan,
         Zea,
         Zpn,
+        Air,
+        Cop,
     }
 }

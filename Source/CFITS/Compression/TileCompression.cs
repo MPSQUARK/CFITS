@@ -68,6 +68,11 @@ internal static class TileCompression
 
         var data = table.Column("COMPRESSED_DATA");
         FitsColumn? gzip = table.Columns.FirstOrDefault(column => column.Name.Equals("GZIP_COMPRESSED_DATA", StringComparison.OrdinalIgnoreCase));
+        FitsColumn? uncompressed = table.Columns.FirstOrDefault(column => column.Name.Equals("UNCOMPRESSED_DATA", StringComparison.OrdinalIgnoreCase));
+        if (gzip is not null && uncompressed is not null)
+        {
+            throw new FitsException("A compressed image cannot contain both GZIP_COMPRESSED_DATA and UNCOMPRESSED_DATA.", new FitsLocation());
+        }
         FitsColumn? scale = table.Columns.FirstOrDefault(column => column.Name.Equals("ZSCALE", StringComparison.OrdinalIgnoreCase));
         FitsColumn? zero = table.Columns.FirstOrDefault(column => column.Name.Equals("ZZERO", StringComparison.OrdinalIgnoreCase));
         int blockSize = Setting(header, "BLOCKSIZE", 32);
@@ -100,11 +105,24 @@ internal static class TileCompression
             }
 
             byte[] compressed = data.ReadVariableBytes(row);
-            bool losslessGzip = algorithm is "GZIP_1" or "GZIP_2" && gzip is not null;
-            double rowScale = losslessGzip ? 1 : scale?.ReadReal(row) ?? 1;
-            double rowZero = losslessGzip ? 0 : zero?.ReadReal(row) ?? 0;
+            byte[]? fallback = null;
+            bool losslessGzip = algorithm is "GZIP_1" or "GZIP_2" && gzip is not null && compressed.Length == 0;
+            bool losslessRaw = uncompressed is not null && compressed.Length == 0;
+            if (losslessGzip)
+            {
+                fallback = gzip!.ReadVariableBytes(row);
+            }
+            else if (losslessRaw)
+            {
+                fallback = uncompressed!.ReadVariableBytes(row);
+            }
+
+            double rowScale = losslessGzip || losslessRaw ? 1 : scale?.ReadReal(row) ?? 1;
+            double rowZero = losslessGzip || losslessRaw ? 0 : zero?.ReadReal(row) ?? 0;
             var decoded = losslessGzip
-                ? new TileBytes(RequireLength(Gunzip(gzip!.ReadVariableBytes(row)), checked(tilePixels * width)), width)
+                ? new TileBytes(RequireLength(Gunzip(fallback!), checked(tilePixels * width)), width)
+                : losslessRaw
+                ? new TileBytes(RequireLength(fallback!, checked(tilePixels * width)), width)
                 : Decode(algorithm, compressed, tilePixels, bytePix, blockSize, width, smooth);
             WriteTile(raw, axes, origin, span, bitpix, decoded.Bytes, decoded.Width, quantize, ditherSeed, row + 1, rowScale, rowZero, blank);
         }
@@ -233,7 +251,7 @@ internal static class TileCompression
             double value;
             if (!floating)
             {
-                value = ReadInteger(decoded, cursor, bytePix);
+                value = ReadInteger(decoded, cursor, bytePix, bitpix != 8);
                 cursor += bytePix;
             }
             else if (scale == 1 && zero == 0 && !dither)
@@ -245,7 +263,7 @@ internal static class TileCompression
             }
             else
             {
-                long quantized = ReadInteger(decoded, cursor, bytePix);
+                long quantized = ReadInteger(decoded, cursor, bytePix, signed: true);
                 cursor += bytePix;
                 if (blank is long marker && quantized == marker)
                 {
@@ -465,7 +483,7 @@ internal static class TileCompression
         }
     }
 
-    private static long ReadInteger(byte[] bytes, int offset, int width)
+    private static long ReadInteger(byte[] bytes, int offset, int width, bool signed)
     {
         long value = 0;
         for (int index = 0; index < width; index++)
@@ -473,8 +491,12 @@ internal static class TileCompression
             value = (value << 8) | bytes[offset + index];
         }
 
-        int shift = (sizeof(long) - width) * 8;
-        value = (value << shift) >> shift;
+        if (signed)
+        {
+            int shift = (sizeof(long) - width) * 8;
+            value = (value << shift) >> shift;
+        }
+
         return value;
     }
 
