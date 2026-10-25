@@ -1,8 +1,18 @@
+using System.Collections.Frozen;
+
 namespace CFITS;
 
 /// <summary>One header-and-data unit.</summary>
 public sealed class FitsHdu
 {
+    private static readonly FrozenDictionary<string, FitsHduKind> ExtensionKinds =
+        new Dictionary<string, FitsHduKind>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["IMAGE"] = FitsHduKind.Image,
+            ["TABLE"] = FitsHduKind.AsciiTable,
+            ["BINTABLE"] = FitsHduKind.BinaryTable,
+        }.ToFrozenDictionary(StringComparer.OrdinalIgnoreCase);
+
     private FitsHdu(int index, FitsHduKind kind, FitsHeader header, ReadOnlyMemory<byte> raw, FitsImage? image, FitsTable? table, FitsGroups? groups, FitsIntegrity integrity)
     {
         Index = index;
@@ -65,12 +75,8 @@ public sealed class FitsHdu
             return FitsHduKind.Image;
         }
 
-        return shape.Extension.Trim() switch
-        {
-            "IMAGE" => FitsHduKind.Image,
-            "TABLE" => FitsHduKind.AsciiTable,
-            "BINTABLE" => FitsHduKind.BinaryTable,
-            _ => FitsHduKind.Unknown,
-        };
+        return ExtensionKinds.TryGetValue(shape.Extension.Trim(), out FitsHduKind kind)
+            ? kind
+            : FitsHduKind.Unknown;
     }
 }

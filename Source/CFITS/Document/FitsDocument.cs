@@ -33,9 +33,31 @@ public sealed class FitsDocument : IDisposable
 
     public static FitsDocument Open(Stream stream, FitsOpenOptions? options = null)
     {
-        using var buffer = new MemoryStream();
-        stream.CopyTo(buffer);
-        return ParseOwned(buffer.ToArray(), options ?? new FitsOpenOptions());
+        MemoryStream buffer;
+        try
+        {
+            long remaining = stream.CanSeek ? stream.Length - stream.Position : 0;
+            int capacity = remaining is >= 0 and <= int.MaxValue ? (int)remaining : 0;
+            buffer = new MemoryStream(capacity);
+        }
+        catch (NotSupportedException)
+        {
+            buffer = new MemoryStream();
+        }
+
+        using (buffer)
+        {
+            stream.CopyTo(buffer);
+            if (buffer.TryGetBuffer(out ArraySegment<byte> segment)
+                && segment.Array is byte[] owned
+                && segment.Offset == 0
+                && segment.Count == buffer.Length)
+            {
+                return ParseOwned(owned, options ?? new FitsOpenOptions());
+            }
+
+            return ParseOwned(buffer.ToArray(), options ?? new FitsOpenOptions());
+        }
     }
 
     public static FitsDocument Parse(ReadOnlyMemory<byte> data, FitsOpenOptions? options = null)
@@ -65,12 +87,11 @@ public sealed class FitsDocument : IDisposable
                 case FitsToken.EndHeader:
                     var header = FitsHeader.FromPhysical(physical, reader.HduIndex);
                     int headerLength = (int)reader.DataOffset - headerOffset;
-                    var shape = DataLayout.Measure(owned.AsSpan(headerOffset, headerLength), reader.HduIndex);
                     long padded = FitsBlock.Pad(reader.DataLength);
                     int available = owned.Length - (int)reader.DataOffset;
                     int dataBytes = (int)Math.Min(padded, Math.Max(0, available));
                     var raw = owned.AsMemory((int)reader.DataOffset, (int)reader.DataLength);
-                    var hdu = FitsHdu.Create(reader.HduIndex, header, raw, shape, options.ScaleMode, owned.AsSpan(headerOffset, headerLength), owned.AsSpan((int)reader.DataOffset, dataBytes));
+                    var hdu = FitsHdu.Create(reader.HduIndex, header, raw, reader.Shape, options.ScaleMode, owned.AsSpan(headerOffset, headerLength), owned.AsSpan((int)reader.DataOffset, dataBytes));
                     if (options.VerifyChecksum && !hdu.Integrity.IsValid)
                     {
                         throw new FitsException("The HDU checksum does not match.", new FitsLocation(reader.HduIndex));

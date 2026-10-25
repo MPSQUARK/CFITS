@@ -307,12 +307,17 @@ internal static class TableCompression
 
         int count = shuffled.Length / width;
         var bytes = new byte[shuffled.Length];
+        int sourceOffset = 0;
         for (int item = 0; item < count; item++)
         {
+            int destinationOffset = item * width;
             for (int byteIndex = 0; byteIndex < width; byteIndex++)
             {
-                bytes[(item * width) + byteIndex] = shuffled[(byteIndex * count) + item];
+                bytes[destinationOffset + byteIndex] = shuffled[sourceOffset];
+                sourceOffset += count;
             }
+
+            sourceOffset = item + 1;
         }
 
         return bytes;

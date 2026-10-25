@@ -192,9 +192,7 @@ public sealed class FitsContextGenerator : IIncrementalGenerator
         {
             dimensions = $$"""
                         int n1 = pixels.Length;
-                        var stored = new {{element}}[n1];
-                        for (int x = 0; x < n1; x++) stored[x] = pixels[x];
-                        var built = CFITS.FitsDocumentBuilder.Create().Image(new int[] { n1 }, stored, header =>
+                        var built = CFITS.FitsDocumentBuilder.Create().Image(new int[] { n1 }, pixels, header =>
                 """;
         }
         else if (array.Rank == 2)

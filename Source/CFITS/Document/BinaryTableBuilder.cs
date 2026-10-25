@@ -10,18 +10,32 @@ public sealed class BinaryTableBuilder
     public BinaryTableBuilder Add(string name, ReadOnlySpan<bool> values)
     {
         var copy = values.ToArray();
-        return AddRaw(name, "L", 1, copy.Length, (row, destination) => destination[0] = copy[row] ? (byte)'T' : (byte)'F');
+        var cells = new byte[copy.Length];
+        for (int index = 0; index < copy.Length; index++)
+        {
+            cells[index] = copy[index] ? (byte)'T' : (byte)'F';
+        }
+
+        _columns.Add(new BinaryColumn(name, "L", 1, copy.Length, cells));
+        return this;
     }
 
     public BinaryTableBuilder Add(string name, ReadOnlySpan<bool?> values)
     {
         var copy = values.ToArray();
-        return AddRaw(name, "L", 1, copy.Length, (row, destination) => destination[0] = copy[row] switch
+        var cells = new byte[copy.Length];
+        for (int index = 0; index < copy.Length; index++)
         {
-            true => (byte)'T',
-            false => (byte)'F',
-            _ => (byte)' ',
-        });
+            cells[index] = copy[index] switch
+            {
+                true => (byte)'T',
+                false => (byte)'F',
+                _ => (byte)' ',
+            };
+        }
+
+        _columns.Add(new BinaryColumn(name, "L", 1, copy.Length, cells));
+        return this;
     }
 
     public BinaryTableBuilder Add(string name, ReadOnlySpan<byte> values)
@@ -153,10 +167,6 @@ public sealed class BinaryTableBuilder
     public BinaryTableBuilder AddVector(string name, int repeat, ReadOnlySpan<int> values, int[] dimensions)
     {
         ValidateVector(name, repeat, values.Length, dimensions);
-        if (values.Length % repeat != 0)
-        {
-            throw new FitsException("A fixed-length column does not divide into whole rows.", new FitsLocation(Column: name));
-        }
 
         int rows = values.Length / repeat;
         var copy = values.ToArray();
@@ -177,10 +187,6 @@ public sealed class BinaryTableBuilder
     public BinaryTableBuilder AddVector(string name, int repeat, ReadOnlySpan<float> values, int[] dimensions)
     {
         ValidateVector(name, repeat, values.Length, dimensions);
-        if (values.Length % repeat != 0)
-        {
-            throw new FitsException("A fixed-length column does not divide into whole rows.", new FitsLocation(Column: name));
-        }
 
         int rows = values.Length / repeat;
         var copy = values.ToArray();
@@ -201,10 +207,6 @@ public sealed class BinaryTableBuilder
     public BinaryTableBuilder AddVector(string name, int repeat, ReadOnlySpan<double> values, int[] dimensions)
     {
         ValidateVector(name, repeat, values.Length, dimensions);
-        if (values.Length % repeat != 0)
-        {
-            throw new FitsException("A fixed-length column does not divide into whole rows.", new FitsLocation(Column: name));
-        }
 
         int rows = values.Length / repeat;
         var copy = values.ToArray();
@@ -279,12 +281,25 @@ public sealed class BinaryTableBuilder
                 throw new FitsException("Bit-column rows must match the declared bit count.", new FitsLocation(Column: name));
             }
 
+            int destination = row * width;
+            byte packed = 0;
             for (int bit = 0; bit < bitCount; bit++)
             {
                 if (rows[row][bit])
                 {
-                    cells[(row * width) + (bit / 8)] |= (byte)(1 << (7 - (bit % 8)));
+                    packed |= (byte)(1 << (7 - (bit & 7)));
                 }
+
+                if ((bit & 7) == 7)
+                {
+                    cells[destination++] = packed;
+                    packed = 0;
+                }
+            }
+
+            if ((bitCount & 7) != 0)
+            {
+                cells[destination] = packed;
             }
         }
 
@@ -377,17 +392,20 @@ public sealed class BinaryTableBuilder
             }
             if (!column.Variable)
             {
+                int rowOffset = offset;
                 for (int row = 0; row < rows; row++)
                 {
-                    column.Cells.AsSpan(row * column.Width, column.Width).CopyTo(data.AsSpan((row * stride) + offset, column.Width));
+                    column.Cells.AsSpan(row * column.Width, column.Width).CopyTo(data.AsSpan(rowOffset, column.Width));
+                    rowOffset += stride;
                 }
             }
             else
             {
                 int local = 0;
+                int rowOffset = offset;
                 for (int row = 0; row < rows; row++)
                 {
-                    int descriptor = (row * stride) + offset;
+                    int descriptor = rowOffset;
                     int byteOffset = heapCursor + local;
                     if (column.WideDescriptor)
                     {
@@ -401,6 +419,7 @@ public sealed class BinaryTableBuilder
                     }
 
                     local += column.HeapRowLengths[row];
+                    rowOffset += stride;
                 }
 
                 column.Heap.CopyTo(data.AsSpan((stride * rows) + heapCursor));
@@ -429,12 +448,25 @@ public sealed class BinaryTableBuilder
         {
             if (packBits is not null)
             {
+                int destination = cursor;
+                byte packed = 0;
                 for (int bit = 0; bit < counts[row]; bit++)
                 {
                     if (packBits[row][bit])
                     {
-                        heap[cursor + (bit / 8)] |= (byte)(1 << (7 - (bit % 8)));
+                        packed |= (byte)(1 << (7 - (bit & 7)));
                     }
+
+                    if ((bit & 7) == 7)
+                    {
+                        heap[destination++] = packed;
+                        packed = 0;
+                    }
+                }
+
+                if ((counts[row] & 7) != 0)
+                {
+                    heap[destination] = packed;
                 }
             }
             else
@@ -472,28 +504,4 @@ public sealed class BinaryTableBuilder
         return this;
     }
 
-    private sealed class BinaryColumn(string name, string format, int width, int rows, byte[] cells)
-    {
-        public string Name { get; } = name;
-
-        public string Format { get; } = format;
-
-        public int Width { get; } = width;
-
-        public int Rows { get; } = rows;
-
-        public byte[] Cells { get; } = cells;
-
-        public bool Variable { get; init; }
-
-        public bool WideDescriptor { get; init; }
-
-        public byte[] Heap { get; init; } = [];
-
-        public int[] Counts { get; init; } = [];
-
-        public int[] HeapRowLengths { get; init; } = [];
-
-        public string? Dimensions { get; init; }
-    }
 }

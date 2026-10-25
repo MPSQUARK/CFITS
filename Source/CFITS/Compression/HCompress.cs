@@ -8,7 +8,7 @@ internal static class HCompress
 {
     public static int[] Decompress(ReadOnlySpan<byte> source, int smooth)
     {
-        var cursor = new Cursor(source.ToArray());
+        var cursor = new Cursor(source);
         if (cursor.Take() != 0xDD || cursor.Take() != 0x99)
         {
             throw new FitsException("An H-compress tile does not start with the expected marker.", new FitsLocation());
@@ -29,10 +29,14 @@ internal static class HCompress
         var pixels = new int[width * height];
         int slowHalf = (width + 1) / 2;
         int fastHalf = (height + 1) / 2;
-        DecodeQuadrant(cursor, pixels, 0, height, slowHalf, fastHalf, plane0);
-        DecodeQuadrant(cursor, pixels, fastHalf, height, slowHalf, height / 2, plane1);
-        DecodeQuadrant(cursor, pixels, height * slowHalf, height, width / 2, fastHalf, plane1);
-        DecodeQuadrant(cursor, pixels, (height * slowHalf) + fastHalf, height, width / 2, height / 2, plane2);
+        int maxRows = Math.Max(slowHalf, width / 2);
+        int maxColumns = Math.Max(fastHalf, height / 2);
+        var codes = new byte[((maxRows + 1) / 2) * ((maxColumns + 1) / 2)];
+        var expanded = new byte[maxRows * maxColumns];
+        DecodeQuadrant(ref cursor, pixels, 0, height, slowHalf, fastHalf, plane0, codes, expanded);
+        DecodeQuadrant(ref cursor, pixels, fastHalf, height, slowHalf, height / 2, plane1, codes, expanded);
+        DecodeQuadrant(ref cursor, pixels, height * slowHalf, height, width / 2, fastHalf, plane1, codes, expanded);
+        DecodeQuadrant(ref cursor, pixels, (height * slowHalf) + fastHalf, height, width / 2, height / 2, plane2, codes, expanded);
         if (cursor.Nybble() != 0)
         {
             throw new FitsException("An H-compress tile ended before its bit planes were complete.", new FitsLocation());
@@ -60,7 +64,7 @@ internal static class HCompress
         return pixels;
     }
 
-    private static void DecodeQuadrant(Cursor cursor, int[] pixels, int offset, int stride, int rows, int columns, int planes)
+    private static void DecodeQuadrant(ref Cursor cursor, int[] pixels, int offset, int stride, int rows, int columns, int planes, byte[] codesScratch, byte[] expandedScratch)
     {
         if (rows <= 0 || columns <= 0 || planes <= 0)
         {
@@ -74,7 +78,9 @@ internal static class HCompress
             depth++;
         }
 
-        var codes = new byte[((rows + 1) / 2) * ((columns + 1) / 2)];
+        int codeLength = ((rows + 1) / 2) * ((columns + 1) / 2);
+        Span<byte> codes = codesScratch.AsSpan(0, codeLength);
+        Span<byte> expanded = expandedScratch.AsSpan(0, rows * columns);
         for (int bit = planes - 1; bit >= 0; bit--)
         {
             int format = cursor.Nybble();
@@ -91,7 +97,7 @@ internal static class HCompress
             }
             else
             {
-                Array.Clear(codes);
+                codes.Clear();
                 codes[0] = (byte)cursor.Huffman();
                 int rowCount = 1;
                 int columnCount = 1;
@@ -121,7 +127,7 @@ internal static class HCompress
                         columnRemainder -= step;
                     }
 
-                    Expand(cursor, codes, rowCount, columnCount);
+                    Expand(ref cursor, codes, expanded, rowCount, columnCount);
                 }
             }
 
@@ -129,11 +135,11 @@ internal static class HCompress
         }
     }
 
-    private static void Expand(Cursor cursor, byte[] codes, int rows, int columns)
+    private static void Expand(ref Cursor cursor, Span<byte> codes, Span<byte> expanded, int rows, int columns)
     {
-        var expanded = new byte[rows * columns];
         Scatter(codes, rows, columns, expanded);
-        for (int index = expanded.Length - 1; index >= 0; index--)
+        int length = rows * columns;
+        for (int index = length - 1; index >= 0; index--)
         {
             if (expanded[index] != 0)
             {
@@ -141,10 +147,10 @@ internal static class HCompress
             }
         }
 
-        expanded.CopyTo(codes, 0);
+        expanded[..length].CopyTo(codes);
     }
 
-    private static void Scatter(byte[] source, int rows, int columns, byte[] destination)
+    private static void Scatter(ReadOnlySpan<byte> source, int rows, int columns, Span<byte> destination)
     {
         int halfRows = (rows + 1) / 2;
         int halfColumns = (columns + 1) / 2;
@@ -206,7 +212,7 @@ internal static class HCompress
         }
     }
 
-    private static void InsertPlane(byte[] codes, int rows, int columns, int[] pixels, int offset, int stride, int bit)
+    private static void InsertPlane(ReadOnlySpan<byte> codes, int rows, int columns, int[] pixels, int offset, int stride, int bit)
     {
         int plane = 1 << bit;
         int codeIndex = 0;
@@ -525,22 +531,31 @@ internal static class HCompress
         }
     }
 
-    private sealed class Cursor(byte[] source)
+    private ref struct Cursor
     {
+        private readonly ReadOnlySpan<byte> _source;
         private int _next;
         private int _buffer;
         private int _bits;
+
+        public Cursor(ReadOnlySpan<byte> source)
+        {
+            _source = source;
+            _next = 0;
+            _buffer = 0;
+            _bits = 0;
+        }
 
         public void Align() => _bits = 0;
 
         public int Take()
         {
-            if (_next >= source.Length)
+            if (_next >= _source.Length)
             {
                 throw new FitsException("An H-compress tile ended early.", new FitsLocation());
             }
 
-            return source[_next++];
+            return _source[_next++];
         }
 
         public int Int32()

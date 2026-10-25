@@ -119,13 +119,12 @@ internal static class Pixels
 
     private static int WidthFromBitpix(int bitpix)
     {
-        int width = (bitpix & int.MaxValue) >> 3;
-        if (width is 1 or 2 or 4 or 8)
+        if (bitpix is not (8 or 16 or 32 or 64 or -32 or -64))
         {
-            return width;
+            throw new FitsException($"BITPIX {bitpix} is not a legal FITS value.", new FitsLocation(Keyword: "BITPIX"));
         }
 
-        throw new FitsException($"BITPIX {bitpix} is not a legal FITS value.", new FitsLocation(Keyword: "BITPIX"));
+        return (bitpix < 0 ? -bitpix : bitpix) >> 3;
     }
 
     private static PixelFormat CreateInteger<T>(WriteValue write)
@@ -185,19 +184,50 @@ internal static class Pixels
     private static void CopyInteger<T>(ReadOnlySpan<byte> raw, int length, double scale, double zero, long? blank, Span<double> destination)
         where T : unmanaged, IBinaryInteger<T>
     {
+        int width = Unsafe.SizeOf<T>();
+        if (scale == 1 && zero == 0 && blank is null)
+        {
+            int offset = 0;
+            for (int index = 0; index < length; index++)
+            {
+                destination[index] = double.CreateChecked(ReadBigEndian<T>(raw, offset, width));
+                offset += width;
+            }
+
+            return;
+        }
+
+        if (blank is null)
+        {
+            int offset = 0;
+            for (int index = 0; index < length; index++)
+            {
+                long stored = long.CreateChecked(ReadBigEndian<T>(raw, offset, width));
+                destination[index] = zero + (scale * stored);
+                offset += width;
+            }
+
+            return;
+        }
+
+        int position = 0;
         for (int index = 0; index < length; index++)
         {
-            long stored = long.CreateChecked(ReadBigEndian<T>(raw, index));
+            long stored = long.CreateChecked(ReadBigEndian<T>(raw, position, width));
             destination[index] = blank == stored ? double.NaN : zero + (scale * stored);
+            position += width;
         }
     }
 
     private static void CopyReal<T>(ReadOnlySpan<byte> raw, int length, double scale, double zero, long? blank, Span<double> destination)
         where T : unmanaged, IFloatingPointIeee754<T>
     {
+        int width = Unsafe.SizeOf<T>();
+        int offset = 0;
         for (int index = 0; index < length; index++)
         {
-            destination[index] = zero + (scale * double.CreateChecked(ReadBigEndian<T>(raw, index)));
+            destination[index] = zero + (scale * double.CreateChecked(ReadBigEndian<T>(raw, offset, width)));
+            offset += width;
         }
     }
 
@@ -205,13 +235,42 @@ internal static class Pixels
         where T : unmanaged, IBinaryInteger<T>
     {
         double sum = 0;
+        int width = Unsafe.SizeOf<T>();
+        if (scale == 1 && zero == 0 && blank is null)
+        {
+            int offset = 0;
+            for (int index = 0; index < length; index++)
+            {
+                sum += double.CreateChecked(ReadBigEndian<T>(raw, offset, width));
+                offset += width;
+            }
+
+            return sum;
+        }
+
+        if (blank is null)
+        {
+            int offset = 0;
+            for (int index = 0; index < length; index++)
+            {
+                long stored = long.CreateChecked(ReadBigEndian<T>(raw, offset, width));
+                sum += zero + (scale * stored);
+                offset += width;
+            }
+
+            return sum;
+        }
+
+        int position = 0;
         for (int index = 0; index < length; index++)
         {
-            long stored = long.CreateChecked(ReadBigEndian<T>(raw, index));
+            long stored = long.CreateChecked(ReadBigEndian<T>(raw, position, width));
             if (blank != stored)
             {
                 sum += zero + (scale * stored);
             }
+
+            position += width;
         }
 
         return sum;
@@ -221,23 +280,30 @@ internal static class Pixels
         where T : unmanaged, IFloatingPointIeee754<T>
     {
         var total = new Float64NeumaierState();
+        int width = Unsafe.SizeOf<T>();
+        int offset = 0;
         for (int index = 0; index < length; index++)
         {
-            T stored = ReadBigEndian<T>(raw, index);
+            T stored = ReadBigEndian<T>(raw, offset, width);
             if (!T.IsNaN(stored))
             {
                 total.Add(zero + (scale * double.CreateChecked(stored)));
             }
+
+            offset += width;
         }
 
         return total.Sum + total.Compensation;
     }
 
-    private static T ReadBigEndian<T>(ReadOnlySpan<byte> raw, int index)
+    private static T ReadBigEndian<T>(ReadOnlySpan<byte> raw, int offset) where T : unmanaged =>
+        ReadBigEndian<T>(raw, offset, Unsafe.SizeOf<T>());
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static T ReadBigEndian<T>(ReadOnlySpan<byte> raw, int offset, int width)
         where T : unmanaged
     {
-        int width = Unsafe.SizeOf<T>();
-        ReadOnlySpan<byte> source = raw.Slice(index * width, width);
+        ReadOnlySpan<byte> source = raw.Slice(offset, width);
         if (!BitConverter.IsLittleEndian || width == sizeof(byte))
         {
             return MemoryMarshal.Read<T>(source);

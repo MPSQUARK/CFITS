@@ -1,3 +1,4 @@
+using System.Buffers.Text;
 using System.Globalization;
 
 namespace CFITS;
@@ -376,7 +377,7 @@ public readonly ref struct FitsCardView
         }
 
         var token = card[start..index];
-        if (!dot && !exponent && long.TryParse(Ascii(token), NumberStyles.AllowLeadingSign, CultureInfo.InvariantCulture, out long integer))
+        if (!dot && !exponent && Utf8Parser.TryParse(token, out long integer, out int consumed) && consumed == token.Length)
         {
             return new NumberToken { IsInteger = true, Integer = integer, Real = integer, Next = index };
         }

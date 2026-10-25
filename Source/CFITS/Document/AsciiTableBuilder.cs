@@ -53,9 +53,11 @@ public sealed class AsciiTableBuilder
             header.Text($"TTYPE{field + 1}", column.Name);
             header.Text($"TFORM{field + 1}", column.Format);
             header.Integer($"TBCOL{field + 1}", starts[field] + 1);
+            int rowOffset = starts[field];
             for (int row = 0; row < rows; row++)
             {
-                Encoding.ASCII.GetBytes(column.Cells[row], data.AsSpan((row * stride) + starts[field]));
+                Encoding.ASCII.GetBytes(column.Cells[row], data.AsSpan(rowOffset));
+                rowOffset += stride;
             }
         }
 
@@ -107,16 +109,4 @@ public sealed class AsciiTableBuilder
 
     private static string Pad(string text, int width) => text.Length > width ? text[..width] : text.PadRight(width);
 
-    private sealed class AsciiColumn(string name, string format, int width, int rows, string[] cells)
-    {
-        public string Name { get; } = name;
-
-        public string Format { get; } = format;
-
-        public int Width { get; } = width;
-
-        public int Rows { get; } = rows;
-
-        public string[] Cells { get; } = cells;
-    }
 }

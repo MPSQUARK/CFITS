@@ -1,3 +1,5 @@
+using System.Collections.Frozen;
+
 namespace CFITS;
 
 /// <summary>An ASCII or binary table. Cells are addressed by row and element.</summary>
@@ -8,7 +10,16 @@ public sealed class FitsTable
         IsAscii = ascii;
         RowCount = rows;
         Columns = columns;
+        var lookup = new Dictionary<string, FitsColumn>(StringComparer.OrdinalIgnoreCase);
+        foreach (var column in columns)
+        {
+            lookup.TryAdd(column.Name, column);
+        }
+
+        _lookup = lookup.ToFrozenDictionary(StringComparer.OrdinalIgnoreCase);
     }
+
+    private readonly FrozenDictionary<string, FitsColumn> _lookup;
 
     public bool IsAscii { get; }
 
@@ -18,12 +29,14 @@ public sealed class FitsTable
 
     public FitsColumn Column(string name)
     {
-        foreach (var column in Columns)
+        if (name is null)
         {
-            if (column.Name.Equals(name, StringComparison.OrdinalIgnoreCase))
-            {
-                return column;
-            }
+            throw new FitsException("Column name cannot be null.", new FitsLocation());
+        }
+
+        if (_lookup.TryGetValue(name, out FitsColumn? column))
+        {
+            return column;
         }
 
         throw new FitsException($"Column '{name}' was not found.", new FitsLocation(Column: name));

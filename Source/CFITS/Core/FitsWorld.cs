@@ -1,3 +1,5 @@
+using System.Collections.Frozen;
+
 namespace CFITS;
 
 /// <summary>
@@ -10,23 +12,31 @@ public sealed class FitsWorld
     private const int MaximumAxes = 999;
     private const int StackWorkspaceLimit = 64;
     private const double SingularMatrixTolerance = 1e-12;
+    private const double DegreesPerRadian = 180 / Math.PI;
+    private const double RadiansPerDegree = Math.PI / 180;
 
-    private static readonly HashSet<string> SupportedProjections = new(StringComparer.OrdinalIgnoreCase)
+    private static readonly FrozenDictionary<string, Projection> ProjectionKinds =
+        new Dictionary<string, Projection>(StringComparer.OrdinalIgnoreCase)
     {
-        "ARC", "CAR", "SIN", "STG", "TAN", "ZEA",
-    };
+        ["ARC"] = Projection.Arc,
+        ["CAR"] = Projection.Car,
+        ["SIN"] = Projection.Sin,
+        ["STG"] = Projection.Stg,
+        ["TAN"] = Projection.Tan,
+        ["ZEA"] = Projection.Zea,
+    }.ToFrozenDictionary(StringComparer.OrdinalIgnoreCase);
 
     private readonly double[] _referencePixel;
     private readonly double[] _referenceValue;
     private readonly double[] _scale;
-    private readonly double[,] _matrix;
+    private readonly double[] _matrix;
     private readonly bool _scaledMatrix;
     private readonly int _longitude;
     private readonly int _latitude;
-    private readonly string? _projection;
+    private readonly Projection _projectionKind;
     private readonly double[] _euler;
 
-    private FitsWorld(double[] referencePixel, double[] referenceValue, double[] scale, double[,] matrix, bool scaledMatrix, int longitude, int latitude, string? projection, double[] euler)
+    private FitsWorld(double[] referencePixel, double[] referenceValue, double[] scale, double[] matrix, bool scaledMatrix, int longitude, int latitude, string? projection, double[] euler)
     {
         _referencePixel = referencePixel;
         _referenceValue = referenceValue;
@@ -35,7 +45,7 @@ public sealed class FitsWorld
         _scaledMatrix = scaledMatrix;
         _longitude = longitude;
         _latitude = latitude;
-        _projection = projection;
+        _projectionKind = ProjectionOf(projection);
         _euler = euler;
     }
 
@@ -79,14 +89,14 @@ public sealed class FitsWorld
             throw new FitsException("CDi_j and PCi_j must not appear in the same header.", new FitsLocation());
         }
 
-        var matrix = new double[count, count];
+        var matrix = new double[count * count];
         for (int axis = 0; axis < count; axis++)
         {
             for (int other = 0; other < count; other++)
             {
                 string keyword = cd ? $"CD{axis + 1}_{other + 1}" : $"PC{axis + 1}_{other + 1}";
                 double fallback = !cd && axis == other ? 1 : 0;
-                matrix[axis, other] = Read(header, keyword, version, fallback);
+                matrix[(axis * count) + other] = Read(header, keyword, version, fallback);
             }
         }
 
@@ -95,11 +105,11 @@ public sealed class FitsWorld
             double rotation = Read(header, "CROTA2", version, 0);
             if (count >= 2 && rotation != 0)
             {
-                double radians = rotation * Math.PI / 180;
-                matrix[0, 0] = Math.Cos(radians);
-                matrix[0, 1] = -Math.Sin(radians);
-                matrix[1, 0] = Math.Sin(radians);
-                matrix[1, 1] = Math.Cos(radians);
+                double radians = rotation * RadiansPerDegree;
+                matrix[0] = Math.Cos(radians);
+                matrix[1] = -Math.Sin(radians);
+                matrix[count] = Math.Sin(radians);
+                matrix[count + 1] = Math.Cos(radians);
             }
         }
 
@@ -124,7 +134,7 @@ public sealed class FitsWorld
 
             if (IsLongitude(coordinate))
             {
-                if (!SupportedProjections.Contains(algorithm))
+                if (!ProjectionKinds.ContainsKey(algorithm))
                 {
                     throw new FitsException($"Projection '{algorithm}' is not implemented.", new FitsLocation());
                 }
@@ -138,7 +148,7 @@ public sealed class FitsWorld
             }
             else if (IsLatitude(coordinate))
             {
-                if (!SupportedProjections.Contains(algorithm))
+                if (!ProjectionKinds.ContainsKey(algorithm))
                 {
                     throw new FitsException($"Projection '{algorithm}' is not implemented.", new FitsLocation());
                 }
@@ -191,7 +201,7 @@ public sealed class FitsWorld
             double intermediate = 0;
             for (int other = 0; other < Axes; other++)
             {
-                intermediate += _matrix[axis, other] * (source[other] - _referencePixel[other]);
+                intermediate += _matrix[(axis * Axes) + other] * (source[other] - _referencePixel[other]);
             }
 
             if (!_scaledMatrix)
@@ -202,7 +212,7 @@ public sealed class FitsWorld
             world[axis] = _referenceValue[axis] + intermediate;
         }
 
-        if (_projection is null)
+        if (_projectionKind == Projection.None)
         {
             return;
         }
@@ -211,14 +221,14 @@ public sealed class FitsWorld
         double planeY = world[_latitude] - _referenceValue[_latitude];
         double phi;
         double theta;
-        if (_projection.Equals("CAR", StringComparison.OrdinalIgnoreCase))
+        if (_projectionKind == Projection.Car)
         {
             phi = planeX;
             theta = planeY;
         }
         else
         {
-            var native = Native(_projection, planeX, planeY);
+            var native = Native(_projectionKind, planeX, planeY);
             phi = native.Phi;
             theta = native.Theta;
         }
@@ -236,7 +246,7 @@ public sealed class FitsWorld
         }
 
         Span<double> intermediate = stackalloc double[Axes];
-        if (_projection is null)
+        if (_projectionKind == Projection.None)
         {
             for (int axis = 0; axis < Axes; axis++)
             {
@@ -246,7 +256,7 @@ public sealed class FitsWorld
         else
         {
             var native = InverseSpherical(world[_longitude], world[_latitude], _euler);
-            var plane = Plane(_projection, native.Phi, native.Theta);
+            var plane = Plane(_projectionKind, native.Phi, native.Theta);
             for (int axis = 0; axis < Axes; axis++)
             {
                 intermediate[axis] = axis == _longitude ? plane.X : axis == _latitude ? plane.Y : world[axis] - _referenceValue[axis];
@@ -271,21 +281,21 @@ public sealed class FitsWorld
         return pixel;
     }
 
-    private static (double Phi, double Theta) Native(string projection, double x, double y)
+    private static (double Phi, double Theta) Native(Projection projection, double x, double y)
     {
         double radius = Math.Sqrt((x * x) + (y * y));
         double phi = double.RadiansToDegrees(Math.Atan2(x, -y));
-        double theta = projection.ToUpperInvariant() switch
+        double theta = projection switch
         {
-            "TAN" => radius == 0 ? 90 : double.RadiansToDegrees(Math.Atan((180 / Math.PI) / radius)),
-            "SIN" => radius * Math.PI / 180 > 1 ? double.NaN : double.RadiansToDegrees(Math.Acos(radius * Math.PI / 180)),
-            "ARC" => 90 - radius,
-            "STG" => 90 - (2 * double.RadiansToDegrees(Math.Atan((Math.PI / 180) * radius / 2))),
-            "ZEA" => 90 - (2 * double.RadiansToDegrees(Math.Asin((Math.PI / 180) * radius / 2))),
-            "CAR" => y,
-            _ => throw new FitsException($"Projection '{projection}' is not implemented.", new FitsLocation()),
+            Projection.Tan => radius == 0 ? 90 : double.RadiansToDegrees(Math.Atan(DegreesPerRadian / radius)),
+            Projection.Sin => radius * RadiansPerDegree > 1 ? double.NaN : double.RadiansToDegrees(Math.Acos(radius * RadiansPerDegree)),
+            Projection.Arc => 90 - radius,
+            Projection.Stg => 90 - (2 * double.RadiansToDegrees(Math.Atan(RadiansPerDegree * radius / 2))),
+            Projection.Zea => 90 - (2 * double.RadiansToDegrees(Math.Asin(RadiansPerDegree * radius / 2))),
+            Projection.Car => y,
+            _ => throw new FitsException("Projection is not implemented.", new FitsLocation()),
         };
-        if (projection.Equals("CAR", StringComparison.OrdinalIgnoreCase))
+        if (projection == Projection.Car)
         {
             phi = x;
         }
@@ -335,28 +345,28 @@ public sealed class FitsWorld
         return (NormalizeSigned(euler[2] + deltaPhi), theta);
     }
 
-    private static (double X, double Y) Plane(string projection, double phi, double theta)
+    private static (double X, double Y) Plane(Projection projection, double phi, double theta)
     {
-        if (projection.Equals("CAR", StringComparison.OrdinalIgnoreCase))
+        if (projection == Projection.Car)
         {
             return (phi, theta);
         }
 
-        double phiRadians = double.DegreesToRadians(phi);
-        double thetaRadians = double.DegreesToRadians(theta);
-        double radius = projection.ToUpperInvariant() switch
+        double phiRadians = phi * RadiansPerDegree;
+        double thetaRadians = theta * RadiansPerDegree;
+        double radius = projection switch
         {
-            "TAN" => Math.Abs(theta - 90) < 1e-12 ? 0 : (180 / Math.PI) / Math.Tan(thetaRadians),
-            "SIN" => (180 / Math.PI) * Math.Cos(thetaRadians),
-            "ARC" => 90 - theta,
-            "STG" => 2 * (180 / Math.PI) * Math.Tan((Math.PI / 2 - thetaRadians) / 2),
-            "ZEA" => 2 * (180 / Math.PI) * Math.Sin((Math.PI / 2 - thetaRadians) / 2),
-            _ => throw new FitsException($"Projection '{projection}' is not implemented.", new FitsLocation()),
+            Projection.Tan => Math.Abs(theta - 90) < 1e-12 ? 0 : DegreesPerRadian / Math.Tan(thetaRadians),
+            Projection.Sin => DegreesPerRadian * Math.Cos(thetaRadians),
+            Projection.Arc => 90 - theta,
+            Projection.Stg => 2 * DegreesPerRadian * Math.Tan((Math.PI / 2 - thetaRadians) / 2),
+            Projection.Zea => 2 * DegreesPerRadian * Math.Sin((Math.PI / 2 - thetaRadians) / 2),
+            _ => throw new FitsException("Projection is not implemented.", new FitsLocation()),
         };
         return (radius * Math.Sin(phiRadians), -radius * Math.Cos(phiRadians));
     }
 
-    private static void Solve(double[,] matrix, ReadOnlySpan<double> value, Span<double> solution)
+    private static void Solve(ReadOnlySpan<double> matrix, ReadOnlySpan<double> value, Span<double> solution)
     {
         int size = value.Length;
         double matrixScale = 0;
@@ -364,7 +374,7 @@ public sealed class FitsWorld
         {
             for (int j = 0; j < size; j++)
             {
-                matrixScale = Math.Max(matrixScale, Math.Abs(matrix[i, j]));
+                matrixScale = Math.Max(matrixScale, Math.Abs(matrix[(i * size) + j]));
             }
         }
 
@@ -375,7 +385,7 @@ public sealed class FitsWorld
         {
             for (int j = 0; j < size; j++)
             {
-                row[(i * (size + 1)) + j] = matrix[i, j];
+                row[(i * (size + 1)) + j] = matrix[(i * size) + j];
             }
 
             row[(i * (size + 1)) + size] = value[i];
@@ -598,4 +608,20 @@ public sealed class FitsWorld
     }
 
     private static string Name(string keyword, char version) => version == ' ' ? keyword : keyword + version;
+
+    private static Projection ProjectionOf(string? projection) =>
+        projection is not null && ProjectionKinds.TryGetValue(projection, out Projection kind)
+            ? kind
+            : Projection.None;
+
+    private enum Projection
+    {
+        None,
+        Arc,
+        Car,
+        Sin,
+        Stg,
+        Tan,
+        Zea,
+    }
 }

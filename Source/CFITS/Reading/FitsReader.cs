@@ -9,6 +9,7 @@ public ref struct FitsReader
     private State _state;
     private long _dataOffset;
     private long _dataLength;
+    private HduShape _shape;
     private FitsCardView _card;
 
     public FitsReader(ReadOnlySpan<byte> source)
@@ -29,6 +30,8 @@ public ref struct FitsReader
     public readonly long DataOffset => _dataOffset;
 
     public readonly long DataLength => _dataLength;
+
+    internal readonly HduShape Shape => _shape;
 
     public long SpecialOffset { get; private set; }
 
@@ -115,7 +118,8 @@ public ref struct FitsReader
             }
 
             var header = _source.Slice(_hduStart, (int)Math.Min(_dataOffset, _source.Length) - _hduStart);
-            _dataLength = DataLayout.Measure(header, _hduIndex).DataBytes;
+            _shape = DataLayout.Measure(header, _hduIndex);
+            _dataLength = _shape.DataBytes;
             long available = _source.Length - _dataOffset;
             if (available < _dataLength)
             {
