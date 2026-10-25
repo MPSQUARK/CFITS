@@ -27,6 +27,12 @@ public static class Program
             return;
         }
 
+        if (args.Contains("--targeted"))
+        {
+            TargetedBenchmarks.Run();
+            return;
+        }
+
         var job = Job.Default
             .WithWarmupCount(2)
             .WithIterationCount(6)

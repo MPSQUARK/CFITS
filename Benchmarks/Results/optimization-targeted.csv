@@ -1,0 +1,14 @@
+scenario,family,warmups,iterations,mean_ns,stddev_ns,allocated_bytes,stddev_allocated_bytes,status,notes
+pixel_sum,pixels,3,8,208612.5,10353.941623500546,140424,0,available,CFITS-only representative measurement
+pixel_shuffle_decode,pixels,3,8,640750,17375.105343976644,585064,0,available,CFITS-only representative measurement
+gzip_decode,compression,3,8,580825,10546.326374619743,568552,0,available,CFITS-only representative measurement
+rice_decode,compression,3,8,930600,35572.782533038611,195200,0,available,CFITS-only representative measurement
+hcompress_decode,compression,3,8,2593237.5,108857.1270388065,225544,0,available,CFITS-only representative measurement
+table_bit_packing,tables,3,8,155237.5,9387.215850749968,149920,0,available,CFITS-only representative measurement
+table_ascii_writer,tables,3,8,789487.5,226320.76123123505,797592,0,available,CFITS-only representative measurement
+table_direct_writer,tables,3,8,259862.5,117217.80627167042,282824,0,available,CFITS-only representative measurement
+parse_open,parse-open-header,3,8,68800,755.92894601845444,10824,0,available,CFITS-only representative measurement
+header_lookup,parse-open-header,3,8,70737.5,3280.2166740280177,10824,0,available,CFITS-only representative measurement
+wcs_projection,wcs,3,8,13853450,2058290.9706841742,9104,397.477762181196,available,CFITS-only representative measurement
+write_allocation,write-read-allocations,3,8,408812.5,49726.14826656667,1498680,0,available,CFITS-only representative measurement
+read_allocation,write-read-allocations,3,8,204637.5,10526.556552697699,140424,0,available,CFITS-only representative measurement

@@ -1,0 +1,51 @@
+id,category,candidate,status,baseline_mean_ns,after_mean_ns,delta_percent,baseline_alloc_bytes,after_alloc_bytes,correctness,decision,notes
+P01,pixels,Shuffle running offsets,retained,,,,,verified,,Implemented elsewhere; targeted shuffle decode improved 17.32% in repeated family comparison.
+P02,pixels,Unshuffle running offsets,retained,,,,,verified,,Implemented in compression/table paths; targeted shuffle decode improved 17.32% in repeated family comparison.
+P03,pixels,Validated BITPIX width shift,retained,238350,194725,-18.31%,140560,139848,passed,retain,Pixel sum targeted comparison; attribution is family-level.
+P04,pixels,Cache pixel width and decoder,retained,238350,194725,-18.31%,140560,139848,passed,retain,Pixel sum targeted comparison; attribution is family-level.
+P05,pixels,Specialized big-endian reads,retained,238350,194725,-18.31%,140560,139848,passed,retain,Pixel sum targeted comparison; attribution is family-level.
+P06,pixels,Identity-scale fast path,retained,238350,194725,-18.31%,140560,139848,passed,retain,Pixel sum targeted comparison; attribution is family-level.
+P07,pixels,Blank-aware specialized path,retained,238350,194725,-18.31%,140560,139848,passed,retain,Pixel sum targeted comparison; attribution is family-level.
+P08,pixels,Hoist scale arithmetic,retained,238350,194725,-18.31%,140560,139848,passed,retain,Pixel sum targeted comparison; attribution is family-level.
+P09,pixels,Reduce pixel span slicing,retained,238350,194725,-18.31%,140560,139848,passed,retain,Pixel sum targeted comparison; attribution is family-level.
+P10,pixels,Portable Vector float path,not-applicable,,,,,not-tested,omit,Not safe to change without changing floating-point semantics; portable scalar path retained.
+C01,compression,Direct GZIP destination decode,already-present,,,,,passed,retain,Present at baseline; gzip targeted comparison improved 23.47% in repeated sample.
+C02,compression,Remove GZIP MemoryStream copy,already-present,,,,,passed,retain,Present at baseline; no isolated attribution.
+C03,compression,Pool GZIP buffers,not-tested,,,,,not-tested,omit,Requires lifetime/ownership redesign; not safe to benchmark as an isolated source change.
+C04,compression,Optimize GZIP shuffle offsets,retained,650325,486962,-25.12%,564184,562296,passed,retain,GZIP targeted comparison; attribution is family-level.
+C05,compression,Wider Rice bit accumulator,not-tested,,,,,not-tested,omit,No safe equivalent was identified without changing decoder invariants.
+C06,compression,BitOperations Rice unary decode,not-tested,,,,,not-tested,omit,No safe equivalent was identified without changing malformed-stream behavior.
+C07,compression,Rice fixed-width specialization,not-tested,,,,,not-tested,omit,No safe equivalent was identified without duplicating format-specific decoder logic.
+C08,compression,Precompute Rice masks,not-tested,,,,,not-tested,omit,No material safe candidate isolated.
+C09,compression,Remove HCOMPRESS source copy,retained,2668112.5,2520812,-6.09%,296248,218528,passed,retain,HCOMPRESS repeated comparison improved speed and allocation.
+C10,compression,Reuse HCOMPRESS scratch buffers,retained,2668112.5,2520812,-6.09%,296248,218528,passed,retain,HCOMPRESS repeated comparison improved speed and allocation.
+T01,tables,Byte-at-a-time AddBits packing,retained,156575,134375,-14.18%,143976,143096,passed,retain,Bit packing targeted comparison improved speed and allocation.
+T02,tables,Typed AddRaw writers,rejected,,,,,passed,revert,Repeated table direct-writer samples regressed 24.59%; typed pre-encoding was reverted.
+T03,tables,Remove AddRaw delegate overhead,rejected,,,,,passed,revert,Repeated table direct-writer samples regressed 24.59%; delegate removal was reverted.
+T04,tables,Validate vector dimensions once,retained,,,,,passed,retain,Validation consolidation passed focused table tests; no isolated timing.
+T05,tables,Moving vector destination offsets,rejected,282738,352250,24.59%,275896,274768,passed,revert,Family sample regressed; the vector-specific change was not retained.
+T06,tables,Precompute table row bases,retained,,,,,passed,retain,Applied to table encoding; no isolated timing.
+T07,tables,Row-major table interleaving,not-tested,,,,,not-tested,omit,Would require changing column-major intermediate layout and API behavior.
+T08,tables,Direct ASCII byte encoding,rejected,,,,,passed,revert,Repeated ASCII writer samples regressed 18.80%; Encoding.ASCII path restored.
+T09,tables,Store ASCII cells as bytes,not-tested,,,,,not-tested,omit,Requires public/internal storage representation change.
+T10,tables,Typed column read plans,not-tested,,,,,not-tested,omit,Requires broader reader abstraction change.
+I01,io,Single-pass header/layout parsing,retained,74050,66725,-17.23%,10904,10248,passed,retain,Parse/open repeated comparison improved speed and allocation.
+I02,io,Reduce Open stream copies,retained,74050,66725,-17.23%,10904,10248,passed,retain,Parse/open repeated comparison improved speed and allocation.
+I03,io,Span integer header parsing,retained,,,,,passed,retain,Focused tests passed; no isolated timing.
+I04,io,Header lookup cache layout,already-present,,,,,passed,retain,Existing baseline behavior; no isolated attribution.
+I05,io,Array-based NAXIS parsing,not-tested,,,,,not-tested,omit,No separate implementation was safe to retain.
+I06,io,Column dictionary lookup,retained,79750,67088,-17.37%,10904,10248,passed,retain,Header lookup repeated comparison improved speed and allocation.
+I07,io,Sequential fixed-column row cache,not-tested,,,,,not-tested,omit,Requires larger reader redesign.
+I08,io,Sequential variable descriptor cache,already-present,,,,,passed,retain,Existing baseline behavior; no isolated attribution.
+I09,io,Batch stream writes,not-tested,,,,,not-tested,omit,No safe isolated change retained.
+I10,io,Generated serializer buffer reduction,retained,,,,,passed,retain,Generated output tests passed; no isolated timing.
+W01,wcs,Flatten WCS matrix,retained,15076750,13126150,-12.94%,6768,6552,passed,retain,WCS repeated comparison improved speed and allocation.
+W02,wcs,Cache projection enum,retained,15076750,13126150,-12.94%,6768,6552,passed,retain,WCS repeated comparison improved speed and allocation.
+W03,wcs,Cache projection constants,retained,15076750,13126150,-12.94%,6768,6552,passed,retain,WCS repeated comparison improved speed and allocation.
+W04,wcs,Specialize 2-axis WCS,not-tested,,,,,not-tested,omit,Would require separate specialized implementation and broad correctness coverage.
+W05,wcs,Cache inverse WCS factorization,not-tested,,,,,not-tested,omit,Would alter per-call inverse behavior and needs dedicated validation.
+W06,time,Cache time scale enums,not-tested,,,,,not-tested,omit,No time hot-path change was made in this campaign.
+W07,time,Cache time unit parsing,not-tested,,,,,not-tested,omit,No time hot-path change was made in this campaign.
+W08,benchmark,Match allocation repetition count,retained,,,,,passed,retain,Targeted runner measures timing and allocation on identical actions.
+W09,benchmark,Separate memory metric types,retained,,,,,passed,retain,Targeted CSV records allocation bytes and deviation separately.
+W10,benchmark,Reduce benchmark variance,retained,,,,,passed,retain,Repeated before/after samples and standard deviation are recorded.
