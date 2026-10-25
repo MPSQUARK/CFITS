@@ -50,6 +50,23 @@ public sealed class FitsColumnBulkTests
     }
 
     [Fact]
+    public void CopiesIntoTypedDestinationsWithoutWidening()
+    {
+        using var document = Open(
+            new BinaryTableBuilder()
+                .Add("I", new short[] { 3, 4 })
+                .Add("E", new[] { 1f, 2f }));
+        FitsTable table = document.Hdus[1].Table!;
+
+        var integers = new short[2];
+        var reals = new float[2];
+        Assert.True(table.Column("I").TryCopyInteger(integers));
+        Assert.True(table.Column("E").TryCopyReal(reals));
+        Assert.Equal(new short[] { 3, 4 }, integers);
+        Assert.Equal(new[] { 1f, 2f }, reals);
+    }
+
+    [Fact]
     public void ComparesInt64NullMarkersBeforeConvertingToReal()
     {
         long marker = (1L << 60) + 3;

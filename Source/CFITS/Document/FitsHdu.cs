@@ -13,12 +13,13 @@ public sealed class FitsHdu
             ["BINTABLE"] = FitsHduKind.BinaryTable,
         }.ToFrozenDictionary(StringComparer.OrdinalIgnoreCase);
 
-    private FitsHdu(int index, FitsHduKind kind, FitsHeader header, ReadOnlyMemory<byte> raw, FitsImage? image, FitsTable? table, FitsGroups? groups, FitsIntegrity integrity)
+    private FitsHdu(int index, FitsHduKind kind, FitsHeader header, ReadOnlyMemory<byte> raw, ReadOnlyMemory<byte> headerBytes, FitsImage? image, FitsTable? table, FitsGroups? groups, FitsIntegrity integrity)
     {
         Index = index;
         Kind = kind;
         Header = header;
         RawData = raw;
+        HeaderBytes = headerBytes;
         Image = image;
         Table = table;
         Groups = groups;
@@ -32,6 +33,8 @@ public sealed class FitsHdu
     public FitsHeader Header { get; }
 
     public ReadOnlyMemory<byte> RawData { get; }
+
+    private ReadOnlyMemory<byte> HeaderBytes { get; }
 
     public FitsImage? Image { get; }
 
@@ -60,8 +63,10 @@ public sealed class FitsHdu
         FitsGroups? groups = kind == FitsHduKind.RandomGroups ? FitsGroups.Create(header, raw, shape, mode) : null;
         bool uncompressed = image is not null && header.TryGetCard("ZDATASUM", out _);
         var integrity = FitsChecksum.Inspect(headerBytes, dataBytes, header, uncompressed ? image!.Stored.Span : default, uncompressed);
-        return new FitsHdu(index, kind, header, raw, image, table, groups, integrity);
+        return new FitsHdu(index, kind, header, raw, headerBytes.ToArray(), image, table, groups, integrity);
     }
+
+    public FitsHduSnapshot Snapshot() => new(Index, Kind, HeaderBytes.Span, RawData.Span);
 
     private static FitsHduKind KindOf(HduShape shape)
     {

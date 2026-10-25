@@ -90,6 +90,28 @@ public sealed class GeneratedSerializerTests
     }
 
     [Fact]
+    public void GeneratedImageSerializerPassesReadOptionsToDocument()
+    {
+        using var document = FitsDocumentBuilder.Create()
+            .Image([1], new[] { 1f }, header =>
+            {
+                header.Real("EXPTIME", 1);
+                header.Text("EXTNAME", "EXPOSURE");
+            })
+            .Checksum()
+            .Build();
+        byte[] corrupted = document.ToArray();
+        corrupted[^1] ^= 0x01;
+
+        using var stream = new MemoryStream(corrupted);
+        Assert.Throws<FitsException>(() =>
+            FitsSerializer.Read(
+                stream,
+                AppFitsContext.Default.Exposure,
+                new FitsOpenOptions { VerifyChecksum = true }));
+    }
+
+    [Fact]
     public void GeneratedImageSerializerRejectsAnImageWithTheWrongRank()
     {
         using var document = FitsDocumentBuilder.Create()
@@ -213,6 +235,30 @@ public sealed class GeneratedSerializerTests
     }
 
     [Fact]
+    public void GeneratedTableSerializerUsesBulkCapableColumnsIndependently()
+    {
+        var rows = Enumerable.Range(0, 8_192)
+            .Select(index => new MixedEventRow
+            {
+                Time = index + 0.5,
+                Label = $"row-{index}",
+                Channel = index,
+            })
+            .ToArray();
+
+        using var stream = new MemoryStream();
+        FitsSerializer.Write(stream, rows, AppFitsContext.Default.MixedEventRow);
+        stream.Position = 0;
+
+        IReadOnlyList<MixedEventRow> result = FitsSerializer.Read(stream, AppFitsContext.Default.MixedEventRow);
+
+        Assert.Equal(rows.Length, result.Count);
+        Assert.Equal(rows[0].Time, result[0].Time);
+        Assert.Equal(rows[rows.Length - 1].Channel, result[rows.Length - 1].Channel);
+        Assert.Equal(rows[rows.Length - 1].Label, result[rows.Length - 1].Label);
+    }
+
+    [Fact]
     public void GeneratedTableSerializerSelectsTheNamedExtension()
     {
         using var document = FitsDocumentBuilder.Create()
@@ -233,5 +279,111 @@ public sealed class GeneratedSerializerTests
         Assert.Single(result);
         Assert.Equal(1.5, result[0].Time);
         Assert.Equal(4, result[0].Channel);
+    }
+
+    [Fact]
+    public void GeneratedDocumentReadsAllTypedHdusWithOneDocumentOpen()
+    {
+        using var document = FitsDocumentBuilder.Create()
+            .Image([2, 2], new[] { 1f, 2f, 3f, 4f }, header =>
+            {
+                header.Real("EXPTIME", 12.5);
+            })
+            .BinaryTable(
+                new BinaryTableBuilder().Add("TIME", new[] { 1.5 }).Add("PHA", new[] { 4 }),
+                header => header.Text("EXTNAME", "EVENTS"))
+            .Image([1], new byte[] { 9 }, header => header.Text("EXTNAME", "UNKNOWN"))
+            .Build();
+
+        using var stream = new MemoryStream(document.ToArray());
+        MultiHduFile result = FitsSerializer.Read(stream, AppFitsContext.Default.MultiHduFile);
+
+        Assert.Equal(12.5, result.Primary.ExposureSeconds);
+        Assert.Equal(new[] { 1f, 2f, 3f, 4f }, result.Primary.Pixels!.Cast<float>());
+        Assert.Single(result.Events);
+        Assert.Equal(4, result.Events[0].Channel);
+        Assert.Single(result.Unknown);
+        Assert.Equal(2, result.Unknown[0].Index);
+    }
+
+    [Fact]
+    public void GeneratedDocumentRoundTripsMappedAndUnknownHdus()
+    {
+        using var source = FitsDocumentBuilder.Create()
+            .Image([2, 2], new[] { 1f, 2f, 3f, 4f }, header => header.Real("EXPTIME", 12.5))
+            .BinaryTable(
+                new BinaryTableBuilder().Add("TIME", new[] { 1.5 }).Add("PHA", new[] { 4 }),
+                header => header.Text("EXTNAME", "EVENTS"))
+            .Image([1], new byte[] { 9 }, header => header.Text("EXTNAME", "UNKNOWN"))
+            .Build();
+        MultiHduFile value;
+        using (var input = new MemoryStream(source.ToArray()))
+        {
+            value = FitsSerializer.Read(input, AppFitsContext.Default.MultiHduFile);
+        }
+
+        value.Primary.ExposureSeconds = 25;
+        value.Primary.Pixels![0, 0] = 8;
+        value.Events = [new EventRow { Time = 3.5, Channel = 7 }];
+
+        using var output = new MemoryStream();
+        FitsSerializer.Write(output, value, AppFitsContext.Default.MultiHduFile);
+        using var result = FitsDocument.Parse(output.ToArray());
+
+        Assert.Equal(3, result.Hdus.Count);
+        Assert.Equal(
+            new[] { FitsHduKind.Image, FitsHduKind.BinaryTable, FitsHduKind.Image },
+            result.Hdus.Select(hdu => hdu.Kind));
+        Assert.Equal(new byte[] { 9 }, result.Hdus[2].RawData.ToArray());
+        Assert.Equal(25, result.Hdus[0].Header.GetDouble("EXPTIME"));
+        Assert.Equal(8, result.Hdus[0].Image!.ReadPhysical(0));
+        Assert.Equal(7, result.Hdus[1].Table!.Column("PHA").ReadInteger(0));
+    }
+
+    [Fact]
+    public void GeneratedDocumentPreservesInterleavedHduOrder()
+    {
+        using var source = FitsDocumentBuilder.Create()
+            .Image([2, 2], new float[] { 1, 2, 3, 4 }, header => header.Real("EXPTIME", 1))
+            .Image([1], new byte[] { 2 }, header => header.Text("EXTNAME", "UNKNOWN"))
+            .BinaryTable(
+                new BinaryTableBuilder().Add("TIME", new[] { 1.5 }).Add("PHA", new[] { 4 }),
+                header => header.Text("EXTNAME", "EVENTS"))
+            .Build();
+
+        using var input = new MemoryStream(source.ToArray());
+        InterleavedHduFile value = FitsSerializer.Read(
+            input, AppFitsContext.Default.InterleavedHduFile);
+
+        using var output = new MemoryStream();
+        FitsSerializer.Write(output, value, AppFitsContext.Default.InterleavedHduFile);
+        using var result = FitsDocument.Parse(output.ToArray());
+
+        Assert.Equal(new[] { FitsHduKind.Image, FitsHduKind.Image, FitsHduKind.BinaryTable },
+            result.Hdus.Select(hdu => hdu.Kind));
+        Assert.Equal(new byte[] { 2 }, result.Hdus[1].RawData.ToArray());
+    }
+
+    [Fact]
+    public void GeneratedDocumentRoundTripsSpecialRecords()
+    {
+        byte[] records = new byte[2880];
+        "SPECIAL!"u8.CopyTo(records);
+        using var source = FitsDocumentBuilder.Create()
+            .Image([2, 2], new float[] { 1, 2, 3, 4 }, header => header.Real("EXPTIME", 1))
+            .BinaryTable(
+                new BinaryTableBuilder().Add("TIME", new[] { 1.5 }).Add("PHA", new[] { 4 }),
+                header => header.Text("EXTNAME", "EVENTS"))
+            .SpecialRecords(records)
+            .Build();
+
+        using var input = new MemoryStream(source.ToArray());
+        MultiHduFile value = FitsSerializer.Read(input, AppFitsContext.Default.MultiHduFile);
+
+        using var output = new MemoryStream();
+        FitsSerializer.Write(output, value, AppFitsContext.Default.MultiHduFile);
+        using var result = FitsDocument.Parse(output.ToArray());
+
+        Assert.Equal(records, result.SnapshotSpecialRecords().ToArray());
     }
 }

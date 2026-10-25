@@ -173,6 +173,72 @@ public sealed class FitsColumn
         return true;
     }
 
+    public bool TryCopyInteger(Span<int> destination)
+    {
+        EnsureBulkDestination(destination);
+        if (!IsFixedScalarInteger())
+        {
+            return false;
+        }
+
+        for (int row = 0; row < _rows; row++)
+        {
+            long stored = ReadStoredInteger(row, 0);
+            if (_null is long marker && stored == marker)
+            {
+                throw new FitsException($"Column '{Name}' row {row} is null.", new FitsLocation(_hduIndex, Column: Name));
+            }
+
+            destination[row] = (int)stored;
+        }
+
+        return true;
+    }
+
+    public bool TryCopyInteger(Span<short> destination)
+    {
+        EnsureBulkDestination(destination);
+        if (!IsFixedScalarInteger())
+        {
+            return false;
+        }
+
+        for (int row = 0; row < _rows; row++)
+        {
+            long stored = ReadStoredInteger(row, 0);
+            if (_null is long marker && stored == marker)
+            {
+                throw new FitsException($"Column '{Name}' row {row} is null.", new FitsLocation(_hduIndex, Column: Name));
+            }
+
+            destination[row] = (short)stored;
+        }
+
+        return true;
+    }
+
+    public bool TryCopyInteger(Span<byte> destination)
+    {
+        EnsureBulkDestination(destination);
+        if (!IsFixedScalarInteger())
+        {
+            return false;
+        }
+
+        for (int row = 0; row < _rows; row++)
+        {
+            long stored = ReadStoredInteger(row, 0);
+            if (_null is long marker && stored == marker)
+            {
+                throw new FitsException($"Column '{Name}' row {row} is null.", new FitsLocation(_hduIndex, Column: Name));
+            }
+
+            destination[row] = (byte)stored;
+        }
+
+        return true;
+    }
+
     public Int128 ReadExactInteger(int row, int element = 0)
     {
         long stored = ReadInteger(row, element);
@@ -265,6 +331,38 @@ public sealed class FitsColumn
             {
                 destination[row] = double.NaN;
             }
+        }
+
+        return true;
+    }
+
+    public bool TryCopyReal(Span<float> destination)
+    {
+        EnsureBulkDestination(destination);
+        if (!IsFixedScalarReal())
+        {
+            return false;
+        }
+
+        bool physical = _mode == FitsScaleMode.Physical;
+        for (int row = 0; row < _rows; row++)
+        {
+            long storedInteger = 0;
+            if (IsIntegerCode(_spec.Code))
+            {
+                storedInteger = ReadStoredInteger(row, 0);
+            }
+
+            double stored = IsIntegerCode(_spec.Code)
+                ? storedInteger
+                : ReadStoredReal(row, 0);
+            float value = (float)(physical ? _zero + (_scale * stored) : stored);
+            if (_null is long marker && IsIntegerCode(_spec.Code) && storedInteger == marker)
+            {
+                value = float.NaN;
+            }
+
+            destination[row] = value;
         }
 
         return true;

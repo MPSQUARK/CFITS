@@ -85,7 +85,7 @@ internal static class Comparison
             ("Decompress a Rice image", () => CfitsSum(files["rice"], 1), () => GeneratedSumCompressed(files["rice"]), null, "decompress_rice"),
             ("Decompress an H-compress image", () => CfitsSum(files["hcomp"], 1), () => GeneratedSumCompressed(files["hcomp"]), null, "decompress_hcomp"),
             ("Open a checksummed image", () => CfitsChecksum(files["checksum"]), () => GeneratedReadChecksum(files["checksum"]), null, "open_checksum"),
-            ("TAN coordinates, 100,000 pixels", () => CfitsWcs(world), () => CfitsWcs(world), null, "tan_wcs"),
+            ("TAN coordinates, 100,000 pixels", () => CfitsWcs(world), null, null, "tan_wcs"),
             ("Read an SDSS spectrum column", () => CfitsColumn(files["sdss"], "flux"), () => GeneratedSumFlux(files["sdss"]), () => SharpColumn(files["sdss"], "flux"), "read_sdss"),
         };
 
@@ -179,6 +179,35 @@ internal static class Comparison
         {
             using var document = FitsDocument.Open(file);
             GC.KeepAlive(document);
+        }
+    }
+
+    private static void GeneratedReadWhole(IReadOnlyList<string> files)
+    {
+        for (int index = 0; index < files.Count; index++)
+        {
+            using var stream = File.OpenRead(files[index]);
+            GeneratedWholeFile value = FitsSerializer.Read(
+                stream,
+                GeneratedBenchmarkContext.Default.GeneratedWholeFile);
+            GC.KeepAlive(value.Hdus.Count);
+        }
+    }
+
+    private static void GeneratedWriteWhole(IReadOnlyList<string> files)
+    {
+        for (int index = 0; index < files.Count; index++)
+        {
+            using var input = File.OpenRead(files[index]);
+            GeneratedWholeFile value = FitsSerializer.Read(
+                input,
+                GeneratedBenchmarkContext.Default.GeneratedWholeFile);
+            using var output = new MemoryStream();
+            FitsSerializer.Write(
+                output,
+                value,
+                GeneratedBenchmarkContext.Default.GeneratedWholeFile);
+            GC.KeepAlive(output.Length);
         }
     }
 
@@ -500,61 +529,6 @@ internal static class Comparison
         GeneratedReadShortImage(path);
     }
 
-    private static void GeneratedReadWhole(IReadOnlyList<string> files)
-    {
-        for (int index = 0; index < files.Count; index++)
-        {
-            string file = files[index];
-            if (file.Contains("sdss", StringComparison.OrdinalIgnoreCase))
-            {
-                using var stream = File.OpenRead(file);
-                _ = FitsSerializer.Read(
-                    stream,
-                    GeneratedBenchmarkContext.Default.GeneratedAnyRow);
-            }
-            else
-            {
-                GeneratedReadFloatImage(file);
-            }
-        }
-    }
-
-    private static void GeneratedWriteWhole(IReadOnlyList<string> files)
-    {
-        for (int index = 0; index < files.Count; index++)
-        {
-            string file = files[index];
-            if (file.Contains("sdss", StringComparison.OrdinalIgnoreCase))
-            {
-                using var input = File.OpenRead(file);
-                IReadOnlyList<GeneratedAnyRow> rows = FitsSerializer.Read(input, GeneratedBenchmarkContext.Default.GeneratedAnyRow);
-                using var output = new MemoryStream();
-                try
-                {
-                    FitsSerializer.Write(output, rows, GeneratedBenchmarkContext.Default.GeneratedAnyRow);
-                }
-                catch (FitsException)
-                {
-                    output.SetLength(0);
-                    var replacement = new[] { new GeneratedEventRow { Time = 0, Channel = 0 } };
-                    FitsSerializer.Write(output, replacement, GeneratedBenchmarkContext.Default.GeneratedEventRow);
-                }
-            }
-            else
-            {
-                using var input = File.OpenRead(file);
-                GeneratedFloatImage image = FitsSerializer.Read(
-                    input,
-                    GeneratedBenchmarkContext.Default.GeneratedFloatImage);
-                using var output = new MemoryStream();
-                FitsSerializer.Write(
-                    output,
-                    image,
-                    GeneratedBenchmarkContext.Default.GeneratedFloatImage);
-            }
-        }
-    }
-
     private static void GeneratedReadFloatImage(string path)
     {
         using var stream = File.OpenRead(path);
@@ -860,6 +834,7 @@ internal static class Comparison
         IReadOnlyList<Row> readWrite,
         string root)
     {
+        var allRows = rows.Concat(readWrite).ToArray();
         var series = new (string Name, Color Color, Func<Row, Sample?> Value)[]
         {
             ("CFITS", CfitsColor, row => row.Cfits),
@@ -870,13 +845,13 @@ internal static class Comparison
         string plots = Path.Combine(root, "Benchmarks", "Plots");
         Directory.CreateDirectory(plots);
         SaveComparison(
-            rows,
+            allRows,
             series,
             Path.Combine(plots, "fits-comparison.png"),
             row => row.Cfits.MeanMilliseconds,
             "Time (μs)");
         SaveComparison(
-            rows,
+            allRows,
             series,
             Path.Combine(plots, "fits-comparison-memory.png"),
             row => row.Cfits.MeanAllocatedBytes,
@@ -936,17 +911,16 @@ internal static class Comparison
 
     private static void SavePlot(string path, Action<string> save)
     {
+        string temporaryPath = path + ".tmp";
         try
         {
-            save(path);
+            File.Delete(temporaryPath);
+            save(temporaryPath);
+            File.Move(temporaryPath, path, overwrite: true);
         }
-        catch (IOException)
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
-            string fallback = Path.Combine(
-                Path.GetDirectoryName(path)!,
-                Path.GetFileNameWithoutExtension(path) + "-new.png");
-            save(fallback);
-            Console.WriteLine($"Existing plot was locked. Wrote {fallback}");
+            throw new IOException($"Could not replace benchmark plot '{path}'.", exception);
         }
     }
 

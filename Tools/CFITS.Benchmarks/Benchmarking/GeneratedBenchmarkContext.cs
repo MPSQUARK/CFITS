@@ -8,5 +8,5 @@ namespace CFITS.Benchmarks;
 [FitsSerializable(typeof(GeneratedAsciiRow))]
 [FitsSerializable(typeof(GeneratedVariableRow))]
 [FitsSerializable(typeof(GeneratedCompressedImage))]
-[FitsSerializable(typeof(GeneratedAnyRow))]
+[FitsSerializable(typeof(GeneratedWholeFile))]
 public sealed partial class GeneratedBenchmarkContext : FitsSerializerContext;

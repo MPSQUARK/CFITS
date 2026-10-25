@@ -108,6 +108,29 @@ public sealed class ImageTests
     }
 
     [Fact]
+    public void IntegerBulkCopiesPreserveExactValues()
+    {
+        using var document = FitsDocumentBuilder.Create()
+            .Image([3], new short[] { -2, 0, 7 })
+            .Build();
+        FitsImage image = document.Hdus[0].Image!;
+
+        var bytes = new byte[3];
+        var shorts = new short[3];
+        var integers = new int[3];
+        var longs = new long[3];
+        image.CopyInteger(bytes);
+        image.CopyInteger(shorts);
+        image.CopyInteger(integers);
+        image.CopyInteger(longs);
+
+        Assert.Equal(new byte[] { 254, 0, 7 }, bytes);
+        Assert.Equal(new short[] { -2, 0, 7 }, shorts);
+        Assert.Equal(new[] { -2, 0, 7 }, integers);
+        Assert.Equal(new long[] { -2, 0, 7 }, longs);
+    }
+
+    [Fact]
     public void RectangularFloatCopiesMatchScalarReadsAndAxisOrder()
     {
         using var document = FitsDocumentBuilder.Create()

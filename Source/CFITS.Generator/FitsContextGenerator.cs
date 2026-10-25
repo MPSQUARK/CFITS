@@ -34,6 +34,7 @@ public sealed class FitsContextGenerator : IIncrementalGenerator
         }
 
         var models = new List<TypeModel>();
+        var documents = new List<DocumentModel>();
         foreach (var attribute in symbol.GetAttributes())
         {
             if (attribute.AttributeClass?.Name != "FitsSerializableAttribute")
@@ -46,10 +47,17 @@ public sealed class FitsContextGenerator : IIncrementalGenerator
                 continue;
             }
 
-            models.Add(DescribeType(target));
+            if (target.GetAttributes().Any(static item => item.AttributeClass?.Name == "FitsDocumentModelAttribute"))
+            {
+                documents.Add(DescribeDocument(target));
+            }
+            else
+            {
+                models.Add(DescribeType(target));
+            }
         }
 
-        return models.Count == 0 ? null : new ContextModel(symbol, models);
+        return models.Count == 0 && documents.Count == 0 ? null : new ContextModel(symbol, models, documents);
     }
 
     private static bool InheritsContext(INamedTypeSymbol symbol)
@@ -110,6 +118,77 @@ public sealed class FitsContextGenerator : IIncrementalGenerator
         return new TypeModel(target, table, hduName, hduIndex, members);
     }
 
+    private static DocumentModel DescribeDocument(INamedTypeSymbol target)
+    {
+        var members = new List<DocumentMemberModel>();
+        foreach (var property in target.GetMembers().OfType<IPropertySymbol>())
+        {
+            AttributeData? image = property.GetAttributes().FirstOrDefault(
+                static item => item.AttributeClass?.Name == "FitsImageAttribute");
+            AttributeData? table = property.GetAttributes().FirstOrDefault(
+                static item => item.AttributeClass?.Name == "FitsTableAttribute");
+            bool unknown = property.GetAttributes().Any(
+                static item => item.AttributeClass?.Name == "FitsUnknownHdusAttribute");
+            bool special = property.GetAttributes().Any(
+                static item => item.AttributeClass?.Name == "FitsSpecialRecordsAttribute");
+            if (image is not null)
+            {
+                members.Add(new DocumentMemberModel(
+                    property,
+                    DescribeDocumentChild(target.Name, property, image, table: false),
+                    DocumentMemberRole.Image));
+            }
+            else if (table is not null)
+            {
+                members.Add(new DocumentMemberModel(
+                    property,
+                    DescribeDocumentChild(target.Name, property, table, table: true),
+                    DocumentMemberRole.Table));
+            }
+            else if (unknown)
+            {
+                members.Add(new DocumentMemberModel(property, null, DocumentMemberRole.Unknown));
+            }
+            else if (special)
+            {
+                members.Add(new DocumentMemberModel(property, null, DocumentMemberRole.SpecialRecords));
+            }
+        }
+
+        return new DocumentModel(target, members);
+    }
+
+    private static TypeModel DescribeDocumentChild(
+        string documentName,
+        IPropertySymbol property,
+        AttributeData attribute,
+        bool table)
+    {
+        ITypeSymbol child = property.Type;
+        if (table && child is INamedTypeSymbol list
+            && list.TypeArguments.Length == 1)
+        {
+            child = list.TypeArguments[0];
+        }
+
+        if (child is not INamedTypeSymbol named)
+        {
+            throw new InvalidOperationException(
+                $"The document property '{property.Name}' must use a named generated type.");
+        }
+
+        string? name = attribute.NamedArguments.FirstOrDefault(
+            static item => item.Key == "Name").Value.Value as string;
+        name ??= attribute.ConstructorArguments.FirstOrDefault().Value as string;
+        return new TypeModel(
+            named,
+            table,
+            name,
+            GetHduIndex(attribute),
+            DescribeType(named).Members,
+            $"{named.Name}_{property.Name}_{documentName}Info");
+    }
+
     private static int GetHduIndex(AttributeData attribute)
     {
         foreach (var argument in attribute.NamedArguments)
@@ -138,14 +217,19 @@ public sealed class FitsContextGenerator : IIncrementalGenerator
             string info = type.Table ? "CFITS.FitsTableTypeInfo" : "CFITS.FitsTypeInfo";
             return $"    public {info}<{type.Symbol.ToDisplayString()}> {property} {{ get; }} = new {property}Info();";
         }));
+        string documentProperties = string.Join(NewLine, model.Documents.Select(document =>
+            $"    public CFITS.FitsDocumentTypeInfo<{document.Symbol.ToDisplayString()}> {document.Symbol.Name} {{ get; }} = new {document.Symbol.Name}Info();"));
         string types = string.Join(NewLine, model.Types.Select(static type => type.Table ? EmitTable(type) : EmitImage(type)));
+        string documents = string.Join(NewLine, model.Documents.Select(document => EmitDocument(document, model.Types)));
         string code = $$"""
             #nullable enable
             {{namespaceDeclaration}}public partial class {{model.Symbol.Name}}
             {
                 public static {{model.Symbol.Name}} Default { get; } = new();
             {{properties}}
+            {{documentProperties}}
             {{types}}
+            {{documents}}
             }
             """;
 
@@ -179,18 +263,29 @@ public sealed class FitsContextGenerator : IIncrementalGenerator
         string write = data is not null && data.Symbol.Type is IArrayTypeSymbol written
             ? EmitImageWrite(type, written, data.Symbol.Name)
             : $$"""
-                        CFITS.FitsDocumentBuilder.Create().Image(System.ReadOnlySpan<int>.Empty, System.ReadOnlySpan<byte>.Empty, header =>
+                        builder.Image(System.ReadOnlySpan<int>.Empty, System.ReadOnlySpan<byte>.Empty, header =>
                         {
             {{EmitKeywordWrites(type, "value")}}
-                        }).Write(stream);
+                        });
             """;
         return $$"""
-                private sealed class {{type.Symbol.Name}}Info : CFITS.FitsTypeInfo<{{name}}>
+                private sealed class {{type.InfoName}} : CFITS.FitsTypeInfo<{{name}}>
                 {
                     public override {{name}} Read(System.IO.Stream stream)
                     {
-                        using var document = CFITS.FitsDocument.Open(stream);
+                        return Read(stream, new CFITS.FitsOpenOptions());
+                    }
+
+                    public override {{name}} Read(System.IO.Stream stream, CFITS.FitsOpenOptions options)
+                    {
+                        using var document = CFITS.FitsDocument.Open(stream, options);
+                        return ReadDocument(document);
+                    }
+
+                    internal static {{name}} ReadDocument(CFITS.FitsDocument document, System.Collections.Generic.HashSet<int>? mapped = null)
+                    {
             {{FindImage(type.HduName, type.HduIndex, "candidate.Kind == CFITS.FitsHduKind.Image")}}
+                        mapped?.Add(hdu.Index);
                         var image = hdu.Image ?? throw new CFITS.FitsException("The HDU is not an image.");
             {{dataAssignment}}
                         return new {{name}}
@@ -199,6 +294,12 @@ public sealed class FitsContextGenerator : IIncrementalGenerator
                         };
                     }
                     public override void Write(System.IO.Stream stream, {{name}} value)
+                    {
+                        var builder = CFITS.FitsDocumentBuilder.Create();
+                        WriteToBuilder(builder, value);
+                        builder.Write(stream);
+                    }
+                    internal static void WriteToBuilder(CFITS.FitsDocumentBuilder builder, {{name}} value)
                     {
             {{write}}
                     }
@@ -216,7 +317,7 @@ public sealed class FitsContextGenerator : IIncrementalGenerator
                 : $"Generated image serialization requires a supported array for [FitsData], but member '{member.Symbol.Name}' has type '{member.Symbol.Type.ToDisplayString()}'.";
         string literal = Literal(message);
         return $$"""
-                private sealed class {{type.Symbol.Name}}Info : CFITS.FitsTypeInfo<{{name}}>
+                private sealed class {{type.InfoName}} : CFITS.FitsTypeInfo<{{name}}>
                 {
                     public override {{name}} Read(System.IO.Stream stream)
                     {
@@ -246,7 +347,7 @@ public sealed class FitsContextGenerator : IIncrementalGenerator
         {
             dimensions = $$"""
                         int n1 = pixels.Length;
-                        CFITS.FitsDocumentBuilder.Create().Image(new int[] { n1 }, pixels, header =>
+                        builder.Image(new int[] { n1 }, pixels, header =>
                 """;
         }
         else if (array.Rank == 2)
@@ -256,7 +357,7 @@ public sealed class FitsContextGenerator : IIncrementalGenerator
                         int n1 = pixels.GetLength(1);
                         var stored = new {{element}}[n1 * n2];
                         for (int y = 0; y < n2; y++) for (int x = 0; x < n1; x++) stored[x + (y * n1)] = pixels[y, x];
-                        CFITS.FitsDocumentBuilder.Create().Image(new int[] { n1, n2 }, stored, header =>
+                        builder.Image(new int[] { n1, n2 }, stored, header =>
                 """;
         }
         else
@@ -267,7 +368,7 @@ public sealed class FitsContextGenerator : IIncrementalGenerator
                         int n1 = pixels.GetLength(2);
                         var stored = new {{element}}[n1 * n2 * n3];
                         for (int z = 0; z < n3; z++) for (int y = 0; y < n2; y++) for (int x = 0; x < n1; x++) stored[x + n1 * (y + (n2 * z))] = pixels[z, y, x];
-                        CFITS.FitsDocumentBuilder.Create().Image(new int[] { n1, n2, n3 }, stored, header =>
+                        builder.Image(new int[] { n1, n2, n3 }, stored, header =>
                 """;
         }
 
@@ -277,7 +378,7 @@ public sealed class FitsContextGenerator : IIncrementalGenerator
                     {
             {{EmitKeywordWrites(type, "value")}}
             {{extensionName}}
-                    }).Write(stream);
+                    });
             """;
     }
 
@@ -307,9 +408,6 @@ public sealed class FitsContextGenerator : IIncrementalGenerator
         string bulkColumnsRead = string.Join(NewLine, type.Members
             .Where(static member => member.Role == MemberRole.Column)
             .Select((member, index) => $"                    {member.Symbol.Name} = {ReadColumn(member, index, bulk: true)},"));
-        string bulkCondition = string.Join(" && ", columnMembers
-            .Select((member, index) => BulkCapability(member, index))
-            );
         string scalarLoop = string.Join(NewLine,
             "                            for (int row = 0; row < table.RowCount; row++)",
             "                            {",
@@ -326,17 +424,10 @@ public sealed class FitsContextGenerator : IIncrementalGenerator
             bulkColumnsRead,
             "                                };",
             "                            }");
-        string rowLoops = bulkCondition.Length == 0
-            ? string.Join(NewLine,
-                "                        for (int row = 0; row < table.RowCount; row++)",
-                "                        {",
-                $"                            rows[row] = new {name}",
-                "                            {",
-                scalarColumns,
-                "                            };",
-                "                        }")
+        string rowLoops = bulkCapabilities.Length == 0
+            ? scalarLoop
             : string.Join(NewLine,
-                $"                        if (table.RowCount >= {BulkReadRowThreshold} && {bulkCondition})",
+                $"                        if (table.RowCount >= {BulkReadRowThreshold})",
                 "                        {",
                 bulkBuffers,
                 bulkLoop,
@@ -353,13 +444,24 @@ public sealed class FitsContextGenerator : IIncrementalGenerator
             : $"                header.Text(\"EXTNAME\", {Literal(type.HduName!)});";
         string variableHelpers = EmitVariableColumnHelpers(columnMembers);
         return $$"""
-                private sealed class {{type.Symbol.Name}}Info : CFITS.FitsTableTypeInfo<{{name}}>
+                private sealed class {{type.InfoName}} : CFITS.FitsTableTypeInfo<{{name}}>
                 {
             {{variableHelpers}}
                     public override System.Collections.Generic.IReadOnlyList<{{name}}> Read(System.IO.Stream stream)
                     {
-                        using var document = CFITS.FitsDocument.Open(stream);
+                        return Read(stream, new CFITS.FitsOpenOptions());
+                    }
+
+                    public override System.Collections.Generic.IReadOnlyList<{{name}}> Read(System.IO.Stream stream, CFITS.FitsOpenOptions options)
+                    {
+                        using var document = CFITS.FitsDocument.Open(stream, options);
+                        return ReadDocument(document);
+                    }
+
+                    internal static System.Collections.Generic.IReadOnlyList<{{name}}> ReadDocument(CFITS.FitsDocument document, System.Collections.Generic.HashSet<int>? mapped = null)
+                    {
             {{FindTable(type.HduName, type.HduIndex)}}
+                        mapped?.Add(hdu.Index);
                         var table = hdu.Table ?? throw new CFITS.FitsException("The HDU is not a table.");
                         var rows = new {{name}}[table.RowCount];
             {{cachedColumns}}
@@ -369,15 +471,98 @@ public sealed class FitsContextGenerator : IIncrementalGenerator
                     }
                     public override void Write(System.IO.Stream stream, System.Collections.Generic.IReadOnlyList<{{name}}> rows)
                     {
+                        var builder = CFITS.FitsDocumentBuilder.Create();
+                        WriteToBuilder(builder, rows);
+                        builder.Write(stream);
+                    }
+                    internal static void WriteToBuilder(CFITS.FitsDocumentBuilder builder, System.Collections.Generic.IReadOnlyList<{{name}}> rows)
+                    {
                         var table = new CFITS.BinaryTableBuilder();
             {{writes}}
-                        CFITS.FitsDocumentBuilder.Create().BinaryTable(table, header =>
+                        builder.BinaryTable(table, header =>
                         {
             {{extensionName}}
-                        }).Write(stream);
+                        });
                     }
                 }
             """;
+    }
+
+    private static string EmitDocument(DocumentModel document, IReadOnlyList<TypeModel> knownTypes)
+    {
+        string root = document.Symbol.ToDisplayString();
+        string members = string.Join(NewLine, document.Members.Select(member =>
+        {
+            string assignment = member.Role switch
+            {
+                DocumentMemberRole.Image =>
+                    $"{member.Property.Name} = {member.Child!.InfoName}.ReadDocument(document, mapped),",
+                DocumentMemberRole.Table =>
+                    $"{member.Property.Name} = {member.Child!.InfoName}.ReadDocument(document, mapped),",
+                DocumentMemberRole.Unknown =>
+                    $"{member.Property.Name} = document.SnapshotHdus().Where(hdu => !mapped.Contains(hdu.Index)).ToArray(),",
+                DocumentMemberRole.SpecialRecords =>
+                    $"{member.Property.Name} = document.SnapshotSpecialRecords(),",
+                _ => throw new InvalidOperationException(),
+            };
+            return $"                {assignment}";
+        }));
+        string helpers = string.Join(NewLine, document.Members
+            .Where(static member => member.Child is not null)
+            .Select(member => member.Child!.Table ? EmitTable(member.Child) : EmitImage(member.Child)));
+        string unknownUse = document.Members.Any(static member => member.Role == DocumentMemberRole.Unknown)
+            ? "            var mapped = new System.Collections.Generic.HashSet<int>();"
+            : "            var mapped = new System.Collections.Generic.HashSet<int>();";
+        string writes = string.Join(NewLine, document.Members
+            .Where(static member => member.Child is not null)
+            .Select((member, index) =>
+            {
+                if (member.Child!.HduIndex < 0)
+                {
+                    return $"                        throw new System.InvalidOperationException(\"The mapped HDU for property '{member.Property.Name}' has no explicit HduIndex; name-based composite writes cannot preserve HDU order.\");";
+                }
+
+                return $$"""
+                        var mappedDocument{{index}} = CFITS.FitsDocumentBuilder.Create();
+                        {{(member.Child.HduIndex > 0 ? $"                        mappedDocument{index}.EnsurePrimaryHdu();" : "")}}
+                        {{member.Child.InfoName}}.WriteToBuilder(mappedDocument{{index}}, value.{{member.Property.Name}});
+                        using var mappedResult{{index}} = mappedDocument{{index}}.Build();
+                        var mappedHdu{{index}} = mappedResult{{index}}.SnapshotHdus()[^1].WithIndex({{member.Child.HduIndex}});
+                        ordered.Add((mappedHdu{{index}}.Index, mappedHdu{{index}}));
+                """;
+            }));
+        string unknownWrites = document.Members.Any(static member => member.Role == DocumentMemberRole.Unknown)
+            ? $"                        foreach (var snapshot in value.{document.Members.First(static member => member.Role == DocumentMemberRole.Unknown).Property.Name}) ordered.Add((snapshot.Index, snapshot));"
+            : "";
+        string specialWrite = document.Members.FirstOrDefault(static member => member.Role == DocumentMemberRole.SpecialRecords) is { } specialMember
+            ? $"                        builder.SpecialRecords(value.{specialMember.Property.Name});"
+            : "";
+        return $$"""
+                private sealed class {{document.Symbol.Name}}Info : CFITS.FitsDocumentTypeInfo<{{root}}>
+                {
+                    public override {{root}} Read(CFITS.FitsDocument document)
+                    {
+                        {{unknownUse}}
+                        return new {{root}}
+                        {
+            {{members}}
+                        };
+                    }
+
+                    public override void Write(System.IO.Stream stream, {{root}} value)
+                    {
+                        var ordered = new System.Collections.Generic.List<(int Index, CFITS.FitsHduSnapshot Snapshot)>();
+            {{writes}}
+            {{unknownWrites}}
+                        ordered.Sort(static (left, right) => left.Index.CompareTo(right.Index));
+                        var builder = CFITS.FitsDocumentBuilder.Create();
+                        foreach (var item in ordered) builder.Hdu(item.Snapshot);
+            {{specialWrite}}
+                        builder.Write(stream);
+                    }
+                }
+            {{helpers}}
+        """;
     }
 
     private static string EmitVariableColumnHelpers(IReadOnlyList<MemberModel> members)
@@ -463,7 +648,7 @@ public sealed class FitsContextGenerator : IIncrementalGenerator
         string name = type.Symbol.ToDisplayString();
         string message = Literal($"Generated table serialization does not support member '{member.ColumnName}' of type '{member.Symbol.Type.ToDisplayString()}'.");
         return $$"""
-                private sealed class {{type.Symbol.Name}}Info : CFITS.FitsTableTypeInfo<{{name}}>
+                private sealed class {{type.InfoName}} : CFITS.FitsTableTypeInfo<{{name}}>
                 {
                     public override System.Collections.Generic.IReadOnlyList<{{name}}> Read(System.IO.Stream stream)
                     {
@@ -531,12 +716,12 @@ public sealed class FitsContextGenerator : IIncrementalGenerator
         return member.Symbol.Type.SpecialType switch
         {
             SpecialType.System_Boolean => $"{column}.ReadLogical(row)",
-            SpecialType.System_Int32 => bulk ? $"(int){integer}" : $"(int){column}.ReadInteger(row)",
-            SpecialType.System_Int16 => bulk ? $"(short){integer}" : $"(short){column}.ReadInteger(row)",
-            SpecialType.System_Int64 => bulk ? integer : $"{column}.ReadInteger(row)",
-            SpecialType.System_Byte => bulk ? $"(byte){integer}" : $"(byte){column}.ReadInteger(row)",
-            SpecialType.System_Double => bulk ? real : $"{column}.ReadReal(row)",
-            SpecialType.System_Single => bulk ? $"(float){real}" : $"(float){column}.ReadReal(row)",
+            SpecialType.System_Int32 => bulk ? $"(int)(__cfitsInteger{index}Bulk ? {integer} : {column}.ReadInteger(row))" : $"(int){column}.ReadInteger(row)",
+            SpecialType.System_Int16 => bulk ? $"(short)(__cfitsInteger{index}Bulk ? {integer} : {column}.ReadInteger(row))" : $"(short){column}.ReadInteger(row)",
+            SpecialType.System_Int64 => bulk ? $"(__cfitsInteger{index}Bulk ? {integer} : {column}.ReadInteger(row))" : $"{column}.ReadInteger(row)",
+            SpecialType.System_Byte => bulk ? $"(byte)(__cfitsInteger{index}Bulk ? {integer} : {column}.ReadInteger(row))" : $"(byte){column}.ReadInteger(row)",
+            SpecialType.System_Double => bulk ? $"(__cfitsReal{index}Bulk ? {real} : {column}.ReadReal(row))" : $"{column}.ReadReal(row)",
+            SpecialType.System_Single => bulk ? $"(__cfitsReal{index}Bulk ? (float){real} : (float){column}.ReadReal(row))" : $"(float){column}.ReadReal(row)",
             SpecialType.System_String => $"{column}.ReadString(row)",
             _ => $"{column}.ReadString(row)",
         };
@@ -558,10 +743,18 @@ public sealed class FitsContextGenerator : IIncrementalGenerator
     {
         return member.Symbol.Type.SpecialType switch
         {
-            SpecialType.System_Int32 or SpecialType.System_Int16 or SpecialType.System_Int64 or SpecialType.System_Byte =>
-                $"                            long[] __cfitsInteger{index} = new long[table.RowCount];{NewLine}                            if (!__cfitsColumn{index}.TryCopyInteger(__cfitsInteger{index})) throw new CFITS.FitsException(\"The column changed bulk-copy capability.\");",
-            SpecialType.System_Double or SpecialType.System_Single =>
-                $"                            double[] __cfitsReal{index} = new double[table.RowCount];{NewLine}                            if (!__cfitsColumn{index}.TryCopyReal(__cfitsReal{index})) throw new CFITS.FitsException(\"The column changed bulk-copy capability.\");",
+            SpecialType.System_Int32 =>
+                $"                            int[]? __cfitsInteger{index} = __cfitsInteger{index}Bulk ? new int[table.RowCount] : null;{NewLine}                            if (__cfitsInteger{index}Bulk && !__cfitsColumn{index}.TryCopyInteger(__cfitsInteger{index}!)) throw new CFITS.FitsException(\"The column changed bulk-copy capability.\");",
+            SpecialType.System_Int16 =>
+                $"                            short[]? __cfitsInteger{index} = __cfitsInteger{index}Bulk ? new short[table.RowCount] : null;{NewLine}                            if (__cfitsInteger{index}Bulk && !__cfitsColumn{index}.TryCopyInteger(__cfitsInteger{index}!)) throw new CFITS.FitsException(\"The column changed bulk-copy capability.\");",
+            SpecialType.System_Int64 =>
+                $"                            long[]? __cfitsInteger{index} = __cfitsInteger{index}Bulk ? new long[table.RowCount] : null;{NewLine}                            if (__cfitsInteger{index}Bulk && !__cfitsColumn{index}.TryCopyInteger(__cfitsInteger{index}!)) throw new CFITS.FitsException(\"The column changed bulk-copy capability.\");",
+            SpecialType.System_Byte =>
+                $"                            byte[]? __cfitsInteger{index} = __cfitsInteger{index}Bulk ? new byte[table.RowCount] : null;{NewLine}                            if (__cfitsInteger{index}Bulk && !__cfitsColumn{index}.TryCopyInteger(__cfitsInteger{index}!)) throw new CFITS.FitsException(\"The column changed bulk-copy capability.\");",
+            SpecialType.System_Double =>
+                $"                            double[]? __cfitsReal{index} = __cfitsReal{index}Bulk ? new double[table.RowCount] : null;{NewLine}                            if (__cfitsReal{index}Bulk && !__cfitsColumn{index}.TryCopyReal(__cfitsReal{index}!)) throw new CFITS.FitsException(\"The column changed bulk-copy capability.\");",
+            SpecialType.System_Single =>
+                $"                            float[]? __cfitsReal{index} = __cfitsReal{index}Bulk ? new float[table.RowCount] : null;{NewLine}                            if (__cfitsReal{index}Bulk && !__cfitsColumn{index}.TryCopyReal(__cfitsReal{index}!)) throw new CFITS.FitsException(\"The column changed bulk-copy capability.\");",
             _ => "",
         };
     }
@@ -582,14 +775,15 @@ public sealed class FitsContextGenerator : IIncrementalGenerator
         string cast = array.ElementType.SpecialType == SpecialType.System_Double ? "" : $"({element})";
         bool integer = IsIntegerImageElement(array.ElementType);
         bool bulk = array.ElementType.SpecialType is SpecialType.System_Single or SpecialType.System_Double;
+        string copy = integer ? "CopyInteger" : "CopyPhysical";
         if (array.Rank == 1)
         {
             string validation = ImageRankValidation(1);
-            if (bulk)
+            if (bulk || integer)
             {
                 return validation
                     + $"                            var __cfitsData = new {element}[image.Length];{NewLine}"
-                    + $"                            image.CopyPhysical(__cfitsData);";
+                    + $"                            image.{copy}(__cfitsData);";
             }
 
             return validation
@@ -603,13 +797,13 @@ public sealed class FitsContextGenerator : IIncrementalGenerator
         if (array.Rank == 2)
         {
             string validation = ImageRankValidation(2);
-            if (bulk)
+            if (bulk || integer)
             {
                 return validation
                     + "                            int n1 = image.Axes[0];\n"
                     + "                            int n2 = image.Axes[1];\n"
                     + $"                            var __cfitsData = new {element}[n2, n1];\n"
-                    + "                            image.CopyPhysical(__cfitsData);";
+                    + $"                            image.{copy}(__cfitsData);";
             }
 
             return $$"""
@@ -627,14 +821,14 @@ public sealed class FitsContextGenerator : IIncrementalGenerator
             """;
         }
 
-        if (bulk)
+        if (bulk || integer)
         {
             return ImageRankValidation(3)
                 + "                            int n1 = image.Axes[0];\n"
                 + "                            int n2 = image.Axes[1];\n"
                 + "                            int n3 = image.Axes[2];\n"
                 + $"                            var __cfitsData = new {element}[n3, n2, n1];\n"
-                + "                            image.CopyPhysical(__cfitsData);";
+                + $"                            image.{copy}(__cfitsData);";
         }
 
         return $$"""
@@ -750,26 +944,65 @@ public sealed class FitsContextGenerator : IIncrementalGenerator
 
     private sealed class ContextModel
     {
-        public ContextModel(INamedTypeSymbol symbol, List<TypeModel> types)
+        public ContextModel(INamedTypeSymbol symbol, List<TypeModel> types, List<DocumentModel> documents)
         {
             Symbol = symbol;
             Types = types;
+            Documents = documents;
         }
 
         public INamedTypeSymbol Symbol { get; }
 
         public List<TypeModel> Types { get; }
+
+        public List<DocumentModel> Documents { get; }
+    }
+
+    private sealed class DocumentModel
+    {
+        public DocumentModel(INamedTypeSymbol symbol, List<DocumentMemberModel> members)
+        {
+            Symbol = symbol;
+            Members = members;
+        }
+
+        public INamedTypeSymbol Symbol { get; }
+
+        public List<DocumentMemberModel> Members { get; }
+    }
+
+    private sealed class DocumentMemberModel
+    {
+        public DocumentMemberModel(IPropertySymbol property, TypeModel? child, DocumentMemberRole role)
+        {
+            Property = property;
+            Child = child;
+            Role = role;
+        }
+
+        public IPropertySymbol Property { get; }
+
+        public TypeModel? Child { get; }
+
+        public DocumentMemberRole Role { get; }
     }
 
     private sealed class TypeModel
     {
-        public TypeModel(INamedTypeSymbol symbol, bool table, string? hduName, int hduIndex, List<MemberModel> members)
+        public TypeModel(
+            INamedTypeSymbol symbol,
+            bool table,
+            string? hduName,
+            int hduIndex,
+            List<MemberModel> members,
+            string? infoName = null)
         {
             Symbol = symbol;
             Table = table;
             HduName = hduName;
             HduIndex = hduIndex;
             Members = members;
+            InfoName = infoName ?? $"{symbol.Name}Info";
         }
 
         public INamedTypeSymbol Symbol { get; }
@@ -781,6 +1014,8 @@ public sealed class FitsContextGenerator : IIncrementalGenerator
         public int HduIndex { get; }
 
         public List<MemberModel> Members { get; }
+
+        public string InfoName { get; }
     }
 
     private sealed class MemberModel
@@ -804,5 +1039,13 @@ public sealed class FitsContextGenerator : IIncrementalGenerator
         Keyword,
         Column,
         Data,
+    }
+
+    private enum DocumentMemberRole
+    {
+        Image,
+        Table,
+        Unknown,
+        SpecialRecords,
     }
 }

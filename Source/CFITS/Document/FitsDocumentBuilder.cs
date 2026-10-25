@@ -8,12 +8,20 @@ public sealed class FitsDocumentBuilder
     private readonly List<Action<Stream>> _writers = [];
     private bool _hasPrimary;
     private bool _checksum;
+    private byte[]? _specialRecords;
 
     public static FitsDocumentBuilder Create() => new();
 
     public FitsDocumentBuilder Checksum()
     {
         _checksum = true;
+        return this;
+    }
+
+    /// <summary>Ensures that subsequent HDUs are emitted as extensions.</summary>
+    public FitsDocumentBuilder EnsurePrimaryHdu()
+    {
+        EnsurePrimary();
         return this;
     }
 
@@ -29,6 +37,11 @@ public sealed class FitsDocumentBuilder
         foreach (var write in _writers)
         {
             write(stream);
+        }
+
+        if (_specialRecords is not null)
+        {
+            stream.Write(_specialRecords);
         }
     }
 
@@ -69,6 +82,36 @@ public sealed class FitsDocumentBuilder
         EnsurePrimary();
         var payload = table.Encode();
         _writers.Add(stream => WriteHdu(stream, payload.Header, payload.Data, header, extension: true));
+        return this;
+    }
+
+    /// <summary>Adds an already encoded HDU without changing its header or payload.</summary>
+    public FitsDocumentBuilder Hdu(FitsHduSnapshot snapshot)
+    {
+        ArgumentNullException.ThrowIfNull(snapshot);
+        if (_hasPrimary && snapshot.Index == 0)
+        {
+            throw new FitsException("Only one primary HDU is allowed.", new FitsLocation(snapshot.Index));
+        }
+
+        if (!_hasPrimary)
+        {
+            if (snapshot.Index != 0)
+            {
+                throw new FitsException("The first HDU must be the primary HDU.", new FitsLocation(snapshot.Index));
+            }
+
+            _hasPrimary = true;
+        }
+
+        _writers.Add(snapshot.Write);
+        return this;
+    }
+
+    /// <summary>Appends FITS records that follow the final HDU.</summary>
+    public FitsDocumentBuilder SpecialRecords(ReadOnlyMemory<byte> records)
+    {
+        _specialRecords = records.ToArray();
         return this;
     }
 
@@ -119,6 +162,11 @@ public sealed class FitsDocumentBuilder
             write(hdu);
             byte[] stamped = FitsChecksum.Stamp(hdu.ToArray());
             stream.Write(stamped);
+        }
+
+        if (_specialRecords is not null)
+        {
+            stream.Write(_specialRecords);
         }
 
         return FitsDocument.Parse(stream.ToArray());

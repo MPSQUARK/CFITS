@@ -28,6 +28,18 @@ public sealed class FitsDocument : IDisposable
 
     public ReadOnlyMemory<byte> SpecialRecords { get; }
 
+    public IReadOnlyList<FitsHduSnapshot> SnapshotHdus()
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        return _hdus.Select(static hdu => hdu.Snapshot()).ToArray();
+    }
+
+    public ReadOnlyMemory<byte> SnapshotSpecialRecords()
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        return SpecialRecords.ToArray();
+    }
+
     public static FitsDocument Open(string path, FitsOpenOptions? options = null) =>
         ParseOwned(File.ReadAllBytes(path), options ?? new FitsOpenOptions());
 
