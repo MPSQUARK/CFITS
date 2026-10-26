@@ -447,4 +447,7 @@ public sealed class FitsImage
             : null;
         return new FitsImage(raw, shape.Bitpix, shape.Axes, scale, zero, blank, mode);
     }
+
+    internal static FitsImage Create(ReadOnlyMemory<byte> raw, HduShape shape, double scale, double zero, long? blank, FitsScaleMode mode) =>
+        new(raw, shape.Bitpix, shape.Axes, scale, zero, blank, mode);
 }

@@ -16,6 +16,40 @@ public static class FitsDirectImage
         FitsOpenOptions options,
         out Array? pixels,
         out FitsHeader? header)
+        where T : unmanaged =>
+        TryRead<T>(stream, rank, hduIndex, extensionName, options, keywords: default, out pixels, out header, materializeHeader: true);
+
+    public static bool TryRead<T>(
+        Stream stream,
+        int rank,
+        int hduIndex,
+        string? extensionName,
+        FitsOpenOptions options,
+        out Array? pixels)
+        where T : unmanaged =>
+        TryRead<T>(stream, rank, hduIndex, extensionName, options, keywords: default, out pixels, out _, materializeHeader: false);
+
+    public static bool TryRead<T>(
+        Stream stream,
+        int rank,
+        int hduIndex,
+        string? extensionName,
+        FitsOpenOptions options,
+        Span<FitsKeywordQuery> keywords,
+        out Array? pixels)
+        where T : unmanaged =>
+        TryRead<T>(stream, rank, hduIndex, extensionName, options, keywords, out pixels, out _, materializeHeader: false);
+
+    private static bool TryRead<T>(
+        Stream stream,
+        int rank,
+        int hduIndex,
+        string? extensionName,
+        FitsOpenOptions options,
+        Span<FitsKeywordQuery> keywords,
+        out Array? pixels,
+        out FitsHeader? header,
+        bool materializeHeader)
         where T : unmanaged
     {
         ArgumentNullException.ThrowIfNull(stream);
@@ -28,21 +62,26 @@ public static class FitsDirectImage
         }
 
         long origin = stream.Position;
-        if (!FitsHduStream.TrySelect(stream, hduIndex, extensionName, image: true, out FitsHduStream.Opened opened, out header))
+        if (!FitsHduStream.TrySelect(stream, hduIndex, extensionName, image: true, out FitsHduStream.Opened opened))
         {
-            if (!FitsHduStream.TrySelect(stream, hduIndex, extensionName, image: false, out opened, out header, compressedImage: true))
+            if (!FitsHduStream.TrySelect(stream, hduIndex, extensionName, image: false, out opened, compressedImage: true))
             {
                 return false;
             }
 
             try
             {
-                return ReadCompressed<T>(stream, rank, opened, header!, options, out pixels);
+                header = FitsHduStream.CreateHeader(opened.DetachBuffer(), opened.HeaderLength, opened.Index);
+                return ReadCompressed<T>(stream, rank, opened, header, options, out pixels);
             }
             catch
             {
                 stream.Position = origin;
                 throw;
+            }
+            finally
+            {
+                opened.Dispose();
             }
         }
 
@@ -59,11 +98,13 @@ public static class FitsDirectImage
                 length = checked(length * axis);
             }
 
+            ReadOnlySpan<byte> cards = opened.Header;
+            double scale = HeaderValues.Real(cards, "BSCALE"u8, 1);
+            double zero = HeaderValues.Real(cards, "BZERO"u8, 0);
+            long? blank = HeaderValues.Integer(cards, "BLANK"u8);
+            FitsKeywordQuery.Bind(cards, keywords);
             bool identity = opened.Shape.Bitpix == Bitpix<T>()
-                && (options.ScaleMode == FitsScaleMode.Stored
-                    || (FitsHduStream.Scale(header!, "BSCALE") == 1
-                        && FitsHduStream.Zero(header!, "BZERO") == 0
-                        && FitsHduStream.Null(header!, "BLANK") is null));
+                && (options.ScaleMode == FitsScaleMode.Stored || (scale == 1 && zero == 0 && blank is null));
             pixels = Create<T>(opened.Shape.Axes);
             if (identity)
             {
@@ -71,7 +112,12 @@ public static class FitsDirectImage
             }
             else
             {
-                ReadScaled<T>(stream, pixels, opened, header!, options);
+                ReadScaled<T>(stream, pixels, opened, scale, zero, blank, options);
+            }
+
+            if (materializeHeader)
+            {
+                header = FitsHduStream.CreateHeader(opened.DetachBuffer(), opened.HeaderLength, opened.Index);
             }
 
             FitsHduStream.SkipPadding(stream, opened.Shape);
@@ -82,6 +128,10 @@ public static class FitsDirectImage
         {
             stream.Position = origin;
             throw;
+        }
+        finally
+        {
+            opened.Dispose();
         }
     }
 
@@ -230,40 +280,47 @@ public static class FitsDirectImage
         }
     }
 
-    private static void ReadScaled<T>(Stream stream, Array pixels, FitsHduStream.Opened opened, FitsHeader header, FitsOpenOptions options)
+    private static void ReadScaled<T>(Stream stream, Array pixels, FitsHduStream.Opened opened, double scale, double zero, long? blank, FitsOpenOptions options)
         where T : unmanaged
     {
         int dataBytes = checked((int)opened.Shape.DataBytes);
-        var raw = new byte[dataBytes];
-        stream.ReadExactly(raw);
-        FitsImage image = FitsImage.Create(header, raw, opened.Shape, options.ScaleMode);
-        if (typeof(T) == typeof(short))
+        byte[] raw = ArrayPool<byte>.Shared.Rent(Math.Max(dataBytes, 1));
+        try
         {
-            CopyInteger(image, pixels);
+            stream.ReadExactly(raw.AsSpan(0, dataBytes));
+            FitsImage image = FitsImage.Create(raw.AsMemory(0, dataBytes), opened.Shape, scale, zero, blank, options.ScaleMode);
+            if (typeof(T) == typeof(short))
+            {
+                CopyInteger(image, pixels);
+            }
+            else if (typeof(T) == typeof(int))
+            {
+                CopyInteger(image, pixels);
+            }
+            else if (typeof(T) == typeof(long))
+            {
+                CopyInteger(image, pixels);
+            }
+            else if (typeof(T) == typeof(byte))
+            {
+                CopyInteger(image, pixels);
+            }
+            else if (typeof(T) == typeof(float))
+            {
+                CopyReal(image, pixels);
+            }
+            else if (typeof(T) == typeof(double))
+            {
+                CopyReal(image, pixels);
+            }
+            else
+            {
+                throw new FitsException("The image element type is not supported.", new FitsLocation());
+            }
         }
-        else if (typeof(T) == typeof(int))
+        finally
         {
-            CopyInteger(image, pixels);
-        }
-        else if (typeof(T) == typeof(long))
-        {
-            CopyInteger(image, pixels);
-        }
-        else if (typeof(T) == typeof(byte))
-        {
-            CopyInteger(image, pixels);
-        }
-        else if (typeof(T) == typeof(float))
-        {
-            CopyReal(image, pixels);
-        }
-        else if (typeof(T) == typeof(double))
-        {
-            CopyReal(image, pixels);
-        }
-        else
-        {
-            throw new FitsException("The image element type is not supported.", new FitsLocation());
+            ArrayPool<byte>.Shared.Return(raw);
         }
     }
 

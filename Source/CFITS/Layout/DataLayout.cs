@@ -6,8 +6,8 @@ internal static class DataLayout
     {
         int? bitpix = null;
         int? naxis = null;
-        var axes = new int[1000];
-        var axisSeen = new bool[1000];
+        Span<int> axes = stackalloc int[1000];
+        Span<bool> axisSeen = stackalloc bool[1000];
         long? pcount = null;
         long? gcount = null;
         bool groups = false;
@@ -32,7 +32,8 @@ internal static class DataLayout
         double? bscale = null;
         bool hasPcount = false;
         bool hasGcount = false;
-        string? randomGroupsEarlyKeyword = null;
+        Span<byte> earlyKeyword = stackalloc byte[8];
+        int earlyKeywordLength = 0;
         long randomGroupsEarlyKeywordPosition = headerOffset;
         int offset = 0;
         int axisCount = 0;
@@ -96,9 +97,14 @@ internal static class DataLayout
 
             if (kind == HeaderKeyword.Other && phase <= 3)
             {
-                string keywordText = view.KeywordText();
-                randomGroupsEarlyKeyword ??= keywordText;
-                if (randomGroupsEarlyKeyword == keywordText)
+                ReadOnlySpan<byte> other = view.Keyword;
+                if (earlyKeywordLength == 0)
+                {
+                    other.CopyTo(earlyKeyword);
+                    earlyKeywordLength = other.Length;
+                    randomGroupsEarlyKeywordPosition = headerOffset + cardOffset;
+                }
+                else if (other.SequenceEqual(earlyKeyword[..earlyKeywordLength]))
                 {
                     randomGroupsEarlyKeywordPosition = headerOffset + cardOffset;
                 }
@@ -310,11 +316,12 @@ internal static class DataLayout
 
         if (groups)
         {
-            if (randomGroupsEarlyKeyword is not null)
+            if (earlyKeywordLength != 0)
             {
+                string earlyName = System.Text.Encoding.ASCII.GetString(earlyKeyword[..earlyKeywordLength]);
                 throw new FitsException(
-                    $"Keyword {randomGroupsEarlyKeyword} cannot appear before the last NAXISn keyword in a random-groups header.",
-                    At(hduIndex, randomGroupsEarlyKeyword, randomGroupsEarlyKeywordPosition));
+                    $"Keyword {earlyName} cannot appear before the last NAXISn keyword in a random-groups header.",
+                    At(hduIndex, earlyName, randomGroupsEarlyKeywordPosition));
             }
 
             if (!primary || naxis.Value < 2 || ordered[0] != 0)

@@ -229,6 +229,9 @@ public sealed class FitsTable
         return new FitsTable(ascii, rows, columns);
     }
 
+    internal static FitsTable FromColumns(bool ascii, int rows, IReadOnlyList<FitsColumn> columns) =>
+        new(ascii, rows, columns);
+
     private static void ValidateNullRange(long value, char code, FitsHeader header, int field)
     {
         long minimum = code switch

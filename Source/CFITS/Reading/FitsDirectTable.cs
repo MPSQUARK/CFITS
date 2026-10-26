@@ -23,6 +23,7 @@ public sealed class FitsDirectTable : IDisposable
         int hduIndex,
         string? extensionName,
         FitsOpenOptions options,
+        ReadOnlySpan<string> columns,
         out FitsDirectTable? opened)
     {
         ArgumentNullException.ThrowIfNull(stream);
@@ -34,7 +35,7 @@ public sealed class FitsDirectTable : IDisposable
         }
 
         long origin = stream.Position;
-        if (!FitsHduStream.TrySelect(stream, hduIndex, extensionName, image: false, out FitsHduStream.Opened selected, out FitsHeader? header))
+        if (!FitsHduStream.TrySelect(stream, hduIndex, extensionName, image: false, out FitsHduStream.Opened selected))
         {
             return false;
         }
@@ -55,13 +56,13 @@ public sealed class FitsDirectTable : IDisposable
                 stream.ReadExactly(rented.AsSpan(0, length));
             }
 
-            bool ascii = string.Equals(selected.Shape.Extension, "TABLE", StringComparison.OrdinalIgnoreCase);
-            FitsTable table = FitsTable.Create(
-                header!,
-                rented.AsMemory(0, length),
-                ascii,
+            FitsTable table = DirectColumnLayout.Select(
+                selected.Header,
                 selected.Shape,
-                options.ScaleMode);
+                rented.AsMemory(0, length),
+                columns,
+                options.ScaleMode,
+                selected.Index);
             FitsHduStream.SkipPadding(stream, selected.Shape);
             FitsHduStream.ValidateRemainder(stream);
             opened = new FitsDirectTable(rented, table);
@@ -77,6 +78,10 @@ public sealed class FitsDirectTable : IDisposable
 
             stream.Position = origin;
             throw;
+        }
+        finally
+        {
+            selected.Dispose();
         }
     }
 

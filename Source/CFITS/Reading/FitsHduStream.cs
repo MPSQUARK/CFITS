@@ -1,3 +1,5 @@
+using System.Buffers;
+
 namespace CFITS;
 
 /// <summary>
@@ -5,13 +7,44 @@ namespace CFITS;
 /// </summary>
 internal static class FitsHduStream
 {
-    internal readonly struct Opened
+    internal struct Opened : IDisposable
     {
-        public byte[] Header { get; init; }
+        private byte[]? _buffer;
 
-        public HduShape Shape { get; init; }
+        public Opened(byte[] buffer, int headerLength, HduShape shape, int index)
+        {
+            _buffer = buffer;
+            HeaderLength = headerLength;
+            Shape = shape;
+            Index = index;
+        }
 
-        public int Index { get; init; }
+        public int HeaderLength { get; }
+
+        public HduShape Shape { get; }
+
+        public int Index { get; }
+
+        public ReadOnlySpan<byte> Header => _buffer is null ? [] : _buffer.AsSpan(0, HeaderLength);
+
+        public byte[] DetachBuffer()
+        {
+            byte[] buffer = _buffer ?? throw new InvalidOperationException("The header buffer was already released.");
+            _buffer = null;
+            return buffer;
+        }
+
+        public void Dispose()
+        {
+            byte[]? buffer = _buffer;
+            if (buffer is null)
+            {
+                return;
+            }
+
+            _buffer = null;
+            ArrayPool<byte>.Shared.Return(buffer);
+        }
     }
 
     public static bool TrySelect(
@@ -20,43 +53,42 @@ internal static class FitsHduStream
         string? extensionName,
         bool image,
         out Opened opened,
-        out FitsHeader? header,
         bool compressedImage = false)
     {
         opened = default;
-        header = null;
         long origin = stream.Position;
         int index = 0;
         while (true)
         {
-            if (!TryReadHeader(stream, index, out byte[] bytes, out HduShape shape))
+            if (!TryReadHeader(stream, index, out Opened candidate))
             {
                 stream.Position = origin;
                 return false;
             }
 
+            ReadOnlySpan<byte> bytes = candidate.Header;
             bool compressed = IsCompressedImage(bytes);
             bool kind = compressedImage
-                ? shape.Extension == "BINTABLE" && compressed
+                ? candidate.Shape.Extension == "BINTABLE" && compressed
                 : image
-                    ? shape.Extension is null or "IMAGE"
-                    : shape.Extension is "TABLE" or "BINTABLE" && !compressed;
+                    ? candidate.Shape.Extension is null or "IMAGE"
+                    : candidate.Shape.Extension is "TABLE" or "BINTABLE" && !compressed;
             bool name = extensionName is null || ExtensionName(bytes) == extensionName;
             bool indexMatches = hduIndex < 0 || index == hduIndex;
             if (kind && name && indexMatches)
             {
-                opened = new Opened { Header = bytes, Shape = shape, Index = index };
-                header = CreateHeader(bytes, index);
+                opened = candidate;
                 return true;
             }
 
+            candidate.Dispose();
             if (hduIndex >= 0 && index == hduIndex)
             {
                 stream.Position = origin;
                 return false;
             }
 
-            SkipData(stream, shape);
+            SkipData(stream, candidate.Shape);
             index++;
         }
     }
@@ -73,8 +105,10 @@ internal static class FitsHduStream
 
     public static void ValidateRemainder(Stream stream)
     {
-        while (TryReadHeader(stream, 1, out _, out HduShape shape))
+        while (TryReadHeader(stream, 1, out Opened opened))
         {
+            HduShape shape = opened.Shape;
+            opened.Dispose();
             SkipData(stream, shape);
         }
     }
@@ -88,10 +122,9 @@ internal static class FitsHduStream
     public static long? Null(FitsHeader header, string keyword) =>
         header.TryGetCard(keyword, out FitsCard card) && card.Kind == FitsValueKind.Integer ? card.Integer : null;
 
-    private static bool TryReadHeader(Stream stream, int hduIndex, out byte[] header, out HduShape shape)
+    private static bool TryReadHeader(Stream stream, int hduIndex, out Opened opened)
     {
-        header = [];
-        shape = default;
+        opened = default;
         long remaining = stream.Length - stream.Position;
         if (remaining == 0)
         {
@@ -121,39 +154,57 @@ internal static class FitsHduStream
             return false;
         }
 
-        var blocks = new List<byte[]>();
-        bool ended = false;
-        while (!ended)
+        byte[]? buffer = ArrayPool<byte>.Shared.Rent(FitsBlock.Size);
+        int length = 0;
+        try
         {
-            var block = new byte[FitsBlock.Size];
-            ReadExact(stream, block);
-            blocks.Add(block);
-            for (int offset = 0; offset < block.Length && !ended; offset += FitsBlock.CardSize)
+            bool ended = false;
+            while (!ended)
             {
-                if (block.AsSpan(offset, 8).StartsWith("END"u8) && block.AsSpan(offset, 8).TrimEnd((byte)' ').Length == 3)
+                if (buffer.Length < length + FitsBlock.Size)
                 {
-                    ended = true;
+                    byte[] grown = ArrayPool<byte>.Shared.Rent(length + FitsBlock.Size);
+                    buffer.AsSpan(0, length).CopyTo(grown);
+                    ArrayPool<byte>.Shared.Return(buffer);
+                    buffer = grown;
                 }
+
+                ReadExact(stream, buffer.AsSpan(length, FitsBlock.Size));
+                for (int offset = length; offset < length + FitsBlock.Size && !ended; offset += FitsBlock.CardSize)
+                {
+                    ReadOnlySpan<byte> name = buffer.AsSpan(offset, 8);
+                    if (name.StartsWith("END"u8) && name.TrimEnd((byte)' ').Length == 3)
+                    {
+                        ended = true;
+                    }
+                }
+
+                length += FitsBlock.Size;
             }
-        }
 
-        header = new byte[blocks.Count * FitsBlock.Size];
-        for (int index = 0; index < blocks.Count; index++)
+            HduShape shape = DataLayout.Measure(buffer.AsSpan(0, length), hduIndex, 0);
+            opened = new Opened(buffer, length, shape, hduIndex);
+            buffer = null;
+            return true;
+        }
+        catch
         {
-            blocks[index].CopyTo(header, index * FitsBlock.Size);
-        }
+            if (buffer is not null)
+            {
+                ArrayPool<byte>.Shared.Return(buffer);
+            }
 
-        shape = DataLayout.Measure(header, hduIndex, 0);
-        return true;
+            throw;
+        }
     }
 
     private static void SkipData(Stream stream, HduShape shape) =>
         stream.Seek(FitsBlock.Pad(shape.DataBytes), SeekOrigin.Current);
 
-    private static FitsHeader CreateHeader(byte[] header, int hduIndex)
+    internal static FitsHeader CreateHeader(byte[] header, int length, int hduIndex)
     {
         var records = new List<CardRecord>();
-        for (int offset = 0; offset + FitsBlock.CardSize <= header.Length; offset += FitsBlock.CardSize)
+        for (int offset = 0; offset + FitsBlock.CardSize <= length; offset += FitsBlock.CardSize)
         {
             FitsCardView view = FitsCardView.Parse(header.AsSpan(offset, FitsBlock.CardSize), offset);
             if (view.IsEnd)
