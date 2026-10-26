@@ -9,8 +9,9 @@ namespace CFITS.Benchmarks;
 /// </summary>
 internal static class TargetedBenchmarks
 {
-    private const int Warmups = 3;
-    private const int Iterations = 8;
+    private const int DefaultWarmups = 5;
+    private const int DefaultIterations = 20;
+    private const int DefaultMinimumIterationMilliseconds = 100;
     private static object? _sink;
     private static readonly byte[] ChecksumPayload = Enumerable.Range(0, 1_048_576).Select(index => (byte)index).ToArray();
     private static readonly int[] EndianValues = Enumerable.Range(0, 1_048_576).Select(index => index * 3).ToArray();
@@ -33,7 +34,11 @@ internal static class TargetedBenchmarks
     {
         string root = FitsScenarios.FindRoot();
         string data = Path.Combine(root, "Benchmarks", "Data");
-        string results = Path.Combine(root, "Benchmarks", "Results", "optimization-targeted.csv");
+        string results = Environment.GetEnvironmentVariable("CFITS_TARGETED_OUTPUT")
+            ?? Path.Combine(root, "Benchmarks", "Results", "optimization-targeted.csv");
+        int warmups = ReadPositiveInt("CFITS_TARGETED_WARMUPS", DefaultWarmups);
+        int iterations = ReadPositiveInt("CFITS_TARGETED_ITERATIONS", DefaultIterations);
+        int minimumIterationMilliseconds = ReadPositiveInt("CFITS_TARGETED_MIN_MS", DefaultMinimumIterationMilliseconds);
         var scenarios = CreateScenarios(data)
             .Where(scenario => scenario.Family is "pixels" or "compression" or "parse-open-header" or "wcs" or "clock" or "checksum" or "micro-arithmetic" or "tables" or "source-generator-variable" or "runtime-mapping-variable")
             .ToArray();
@@ -45,15 +50,16 @@ internal static class TargetedBenchmarks
 
         Directory.CreateDirectory(Path.GetDirectoryName(results)!);
         using var csv = new StreamWriter(results);
-        csv.WriteLine("scenario,family,warmups,iterations,mean_ns,stddev_ns,allocated_bytes,stddev_allocated_bytes,status,notes");
+        csv.WriteLine("scenario,family,warmups,iterations,min_iteration_ms,mean_ns,stddev_ns,allocated_bytes,stddev_allocated_bytes,status,notes");
         foreach (TargetedScenario scenario in scenarios)
         {
-            TargetedSample sample = Measure(scenario.Action);
+            TargetedSample sample = Measure(scenario.Action, warmups, iterations, minimumIterationMilliseconds);
             csv.WriteLine(string.Join(",",
                 scenario.Name,
                 scenario.Family,
-                Warmups.ToString(CultureInfo.InvariantCulture),
-                Iterations.ToString(CultureInfo.InvariantCulture),
+                warmups.ToString(CultureInfo.InvariantCulture),
+                iterations.ToString(CultureInfo.InvariantCulture),
+                minimumIterationMilliseconds.ToString(CultureInfo.InvariantCulture),
                 Format(sample.MeanNanoseconds),
                 Format(sample.StandardDeviationNanoseconds),
                 Format(sample.MeanAllocatedBytes),
@@ -135,21 +141,27 @@ internal static class TargetedBenchmarks
         .ToArray();
     }
 
-    private static TargetedSample Measure(Action action)
+    private static TargetedSample Measure(Action action, int warmups, int iterations, int minimumIterationMilliseconds)
     {
-        for (int index = 0; index < Warmups; index++)
+        TimeSpan minimumIteration = TimeSpan.FromMilliseconds(minimumIterationMilliseconds);
+        for (int index = 0; index < warmups; index++)
         {
             action();
         }
 
-        var timings = new double[Iterations];
-        var allocations = new double[Iterations];
-        for (int index = 0; index < Iterations; index++)
+        var timings = new double[iterations];
+        var allocations = new double[iterations];
+        for (int index = 0; index < iterations; index++)
         {
             var stopwatch = Stopwatch.StartNew();
-            action();
-            stopwatch.Stop();
-            timings[index] = stopwatch.Elapsed.TotalNanoseconds;
+            long count = 0;
+            while (stopwatch.Elapsed < minimumIteration || count == 0)
+            {
+                action();
+                count++;
+            }
+
+            timings[index] = stopwatch.Elapsed.TotalNanoseconds / count;
 
             GC.Collect();
             GC.WaitForPendingFinalizers();
@@ -164,6 +176,14 @@ internal static class TargetedBenchmarks
             StandardDeviation(timings),
             Mean(allocations),
             StandardDeviation(allocations));
+    }
+
+    private static int ReadPositiveInt(string variable, int fallback)
+    {
+        string? text = Environment.GetEnvironmentVariable(variable);
+        return int.TryParse(text, NumberStyles.Integer, CultureInfo.InvariantCulture, out int value) && value > 0
+            ? value
+            : fallback;
     }
 
     private static void PackBits()

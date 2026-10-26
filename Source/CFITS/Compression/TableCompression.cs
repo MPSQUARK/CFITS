@@ -114,8 +114,8 @@ internal static class TableCompression
 
     private static void ValidateAlgorithm(string algorithm, int field)
     {
-        string name = algorithm.Trim().Replace(' ', '_').ToUpperInvariant();
-        if (name is not ("NOCOMPRESS" or "GZIP_1" or "GZIP_2" or "RICE_1" or "RICE_ONE"))
+        string name = CompressionAlgorithms.Normalize(algorithm);
+        if (!CompressionAlgorithms.IsTableTile(name))
         {
             throw new FitsException($"Table compression algorithm '{algorithm}' is not supported.", new FitsLocation(Keyword: $"ZCTYP{field}"));
         }

@@ -4,7 +4,7 @@ using System.Runtime.InteropServices;
 
 namespace CFITS.Compression;
 
-internal static class TileCompression
+internal static partial class TileCompression
 {
     private static readonly float[] Dither = BuildDither();
 
@@ -63,16 +63,16 @@ internal static class TileCompression
             }
         }
 
-        string algorithm = header.GetString("ZCMPTYPE").Trim().Replace(' ', '_').ToUpperInvariant();
-        if (algorithm is not ("GZIP_1" or "GZIP_2" or "RICE_1" or "RICE_ONE" or "HCOMPRESS_1" or "PLIO_1" or "NOCOMPRESS"))
+        string algorithm = CompressionAlgorithms.Normalize(header.GetString("ZCMPTYPE"));
+        if (!CompressionAlgorithms.TryResolveTileImage(algorithm, out CompressionAlgorithmId algorithmId))
         {
             throw new FitsException($"Compression algorithm '{algorithm}' is not supported.", new FitsLocation(Keyword: "ZCMPTYPE"));
         }
-        if (algorithm == "HCOMPRESS_1" && (axesCount != 2 || bitpix < 0))
+        if (algorithmId == CompressionAlgorithmId.Hcompress1 && (axesCount != 2 || bitpix < 0))
         {
             throw new FitsException("HCOMPRESS_1 requires a two-dimensional integer image.", new FitsLocation(Keyword: "ZCMPTYPE"));
         }
-        if (algorithm == "PLIO_1" && bitpix < 0)
+        if (algorithmId == CompressionAlgorithmId.Plio1 && bitpix < 0)
         {
             throw new FitsException("PLIO_1 requires an integer image.", new FitsLocation(Keyword: "ZCMPTYPE"));
         }
@@ -84,7 +84,7 @@ internal static class TileCompression
         }
 
         int width = Pixels.Width(bitpix);
-        bool rice = algorithm is "RICE_1" or "RICE_ONE";
+        bool rice = algorithmId is CompressionAlgorithmId.Rice1 or CompressionAlgorithmId.RiceOne;
         int byteCount = checked(pixels * width);
         if (storage is not null && storage.Length < byteCount)
         {
@@ -119,19 +119,23 @@ internal static class TileCompression
 
         FitsColumn? mask = FindColumn(table, "NULL_PIXEL_MASK");
         string maskAlgorithm = header.TryGetCard("ZMASKCMP", out var maskCard)
-            ? NormalizeAlgorithm(maskCard.GetString() ?? "")
+            ? CompressionAlgorithms.Normalize(maskCard.GetString() ?? "")
             : "";
-        if (mask is not null && maskAlgorithm is not ("NOCOMPRESS" or "GZIP_1" or "GZIP_2" or "RICE_1" or "RICE_ONE" or "PLIO_1"))
+        CompressionAlgorithmId maskAlgorithmId = default;
+        if (mask is not null)
         {
-            throw new FitsException("NULL_PIXEL_MASK requires a supported ZMASKCMP algorithm.", new FitsLocation(Keyword: "ZMASKCMP"));
+            if (!CompressionAlgorithms.IsTileMask(maskAlgorithm) || !CompressionAlgorithms.TryResolveTileImage(maskAlgorithm, out maskAlgorithmId))
+            {
+                throw new FitsException("NULL_PIXEL_MASK requires a supported ZMASKCMP algorithm.", new FitsLocation(Keyword: "ZMASKCMP"));
+            }
         }
         ValidateSettings(header);
         int blockSize = Setting(header, "BLOCKSIZE", 32);
         int bytePix = Setting(header, "BYTEPIX", rice ? 4 : width);
         int smooth = Setting(header, "SMOOTH", 0);
         string quantize = header.TryGetCard("ZQUANTIZ", out var quantizeCard) ? quantizeCard.GetString() ?? "NO_DITHER" : "NO_DITHER";
-        quantize = quantize.Trim().Replace(' ', '_').ToUpperInvariant();
-        if (quantize is not ("NO_DITHER" or "SUBTRACTIVE_DITHER_1" or "SUBTRACTIVE_DITHER_2"))
+        quantize = CompressionAlgorithms.Normalize(quantize);
+        if (!CompressionAlgorithms.IsQuantizeMode(quantize))
         {
             throw new FitsException($"Quantization algorithm '{quantize}' is not supported.", new FitsLocation(Keyword: "ZQUANTIZ"));
         }
@@ -161,6 +165,8 @@ internal static class TileCompression
         {
             throw new FitsException($"Compressed image has {rows} tiles; expected {expectedTiles}.", new FitsLocation());
         }
+        ITileDecodeStrategy tileDecoder = TileDecodeStrategies.For(algorithmId);
+        ITileDecodeStrategy? maskDecoder = mask is not null ? TileDecodeStrategies.For(maskAlgorithmId) : null;
         var origin = new int[axesCount];
         var span = new int[axesCount];
         for (int row = 0; row < rows; row++)
@@ -178,14 +184,14 @@ internal static class TileCompression
                 continue;
             }
 
-            if (TryWriteWholeGzipTile(algorithm, rows, pixels, tilePixels, width, bytePix, bitpix, quantize, mask, scale, zero, data, row, raw, byteCount))
+            if (TryWriteWholeGzipTile(algorithmId, rows, pixels, tilePixels, width, bytePix, bitpix, quantize, mask, scale, zero, data, row, raw, byteCount))
             {
                 break;
             }
 
             byte[] compressed = data.ReadVariableBytes(row);
             byte[]? fallback = null;
-            bool losslessGzip = algorithm is "GZIP_1" or "GZIP_2" && gzip is not null && compressed.Length == 0;
+            bool losslessGzip = CompressionAlgorithms.IsGzip(algorithmId) && gzip is not null && compressed.Length == 0;
             bool losslessRaw = uncompressed is not null && compressed.Length == 0;
             if (losslessGzip)
             {
@@ -214,7 +220,7 @@ internal static class TileCompression
                 ? new TileBytes(GunzipExact(fallback!, checked(tilePixels * width)), width)
                 : losslessRaw
                 ? new TileBytes(RequireLength(fallback!, checked(tilePixels * width)), width)
-                : Decode(algorithm, compressed, tilePixels, bytePix, blockSize, width, smooth);
+                : tileDecoder.Decode(compressed, tilePixels, bytePix, blockSize, width, smooth);
             int[] tileOrigin = (int[])origin.Clone();
             WriteTile(raw, axes, origin, span, bitpix, decoded.Bytes, decoded.Width, quantize, ditherSeed, row + 1, rowScale, rowZero, blank);
             if (mask is not null)
@@ -222,7 +228,7 @@ internal static class TileCompression
                 byte[] maskBytes = mask.ReadVariableBytes(row);
                 if (maskBytes.Length != 0)
                 {
-                    TileBytes decodedMask = Decode(maskAlgorithm, maskBytes, tilePixels, 1, blockSize, 1, 0);
+                    TileBytes decodedMask = maskDecoder!.Decode(maskBytes, tilePixels, 1, blockSize, 1, 0);
                     ApplyMask(raw, axes, tileOrigin, span, bitpix, decodedMask.Bytes, blank);
                 }
             }
@@ -233,7 +239,7 @@ internal static class TileCompression
     }
 
     private static bool TryWriteWholeGzipTile(
-        string algorithm,
+        CompressionAlgorithmId algorithmId,
         int rows,
         int pixels,
         int tilePixels,
@@ -257,7 +263,7 @@ internal static class TileCompression
             || scale is not null
             || zero is not null
             || quantize != "NO_DITHER"
-            || algorithm is not ("GZIP_1" or "GZIP_2"))
+            || !CompressionAlgorithms.IsGzip(algorithmId))
         {
             return false;
         }
@@ -268,7 +274,7 @@ internal static class TileCompression
             return false;
         }
 
-        if (algorithm == "GZIP_2")
+        if (algorithmId == CompressionAlgorithmId.Gzip2)
         {
             byte[] shuffled = ArrayPool<byte>.Shared.Rent(byteCount);
             try
@@ -290,68 +296,6 @@ internal static class TileCompression
     }
 
     private readonly record struct TileBytes(byte[] Bytes, int Width);
-
-    private static TileBytes Decode(string algorithm, byte[] compressed, int pixels, int bytePix, int blockSize, int width, int smooth)
-    {
-        if (algorithm is "GZIP_1" or "GZIP_2")
-        {
-            byte[] decoded = Gunzip(compressed);
-            if (pixels <= 0 || decoded.Length % pixels != 0)
-            {
-                throw new FitsException("A GZIP tile does not contain a whole number of encoded pixels.", new FitsLocation());
-            }
-
-            int encodedWidth = decoded.Length / pixels;
-            byte[] plain = algorithm == "GZIP_2" ? Unshuffle(decoded, encodedWidth) : decoded;
-            return new TileBytes(plain, encodedWidth);
-        }
-
-        if (algorithm is "RICE_1" or "RICE_ONE")
-        {
-            uint[] values = Rice.Decompress(compressed, pixels, bytePix, blockSize);
-            return new TileBytes(Pack(values, pixels, bytePix), bytePix);
-        }
-
-        if (algorithm is "PLIO_1")
-        {
-            int[] values = Plio.Decompress(compressed, pixels);
-            var bytes = new byte[pixels * bytePix];
-            int offset = 0;
-            for (int index = 0; index < pixels; index++)
-            {
-                WriteInteger(bytes.AsSpan(offset, bytePix), values[index]);
-                offset += bytePix;
-            }
-
-            return new TileBytes(bytes, bytePix);
-        }
-
-        if (algorithm is "HCOMPRESS_1")
-        {
-            int[] values = HCompress.Decompress(compressed, smooth);
-            if (values.Length != pixels)
-            {
-                throw new FitsException("An H-compress tile does not match the image tile.", new FitsLocation());
-            }
-
-            var bytes = new byte[pixels * 4];
-            int offset = 0;
-            for (int index = 0; index < pixels; index++)
-            {
-                WriteInteger(bytes.AsSpan(offset, 4), values[index]);
-                offset += 4;
-            }
-
-            return new TileBytes(bytes, 4);
-        }
-
-        if (algorithm is "NOCOMPRESS")
-        {
-            return new TileBytes(RequireLength(compressed, checked(pixels * bytePix)), bytePix);
-        }
-
-        throw new FitsException($"Compression algorithm '{algorithm}' is not supported yet.", new FitsLocation());
-    }
 
     private static void ApplyMask(byte[] destination, int[] axes, int[] origin, int[] span, int bitpix, byte[] mask, long? blank)
     {
@@ -881,9 +825,6 @@ internal static class TileCompression
         long maximum = (1L << (bitpix - 1)) - 1;
         return value >= minimum && value <= maximum;
     }
-
-    private static string NormalizeAlgorithm(string algorithm) =>
-        algorithm.Trim().Replace(' ', '_').ToUpperInvariant();
 
     private static void TileOrigin(int row, int[] counts, int[] tile, int[] origin)
     {
