@@ -1,7 +1,7 @@
 namespace CFITS.Benchmarks;
 
 [FitsTable]
-public sealed class GeneratedFluxRow
+public struct GeneratedFluxRow
 {
     [FitsColumn("flux")]
     public double Flux { get; set; }

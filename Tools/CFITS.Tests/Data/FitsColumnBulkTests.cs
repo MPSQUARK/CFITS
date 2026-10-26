@@ -112,6 +112,34 @@ public sealed class FitsColumnBulkTests
         Assert.Equal(1d, vector.ReadReal(0, 0));
     }
 
+    [Fact]
+    public void CopiesVariableInt32RowsInOnePass()
+    {
+        int[][] rows = [[1, 2, 3, 4], [5, -6], []];
+        using var document = Open(new BinaryTableBuilder().AddVariable("VALUES", rows));
+        FitsColumn column = document.Hdus[1].Table!.Column("VALUES");
+
+        for (int row = 0; row < rows.Length; row++)
+        {
+            var actual = new int[rows[row].Length];
+            column.CopyIntegers(row, actual);
+            Assert.Equal(rows[row], actual);
+        }
+    }
+
+    [Fact]
+    public void CopyIntegersHonorsNulls()
+    {
+        using var document = Open(
+            new BinaryTableBuilder().Add("VALUES", new[] { 1, 99 }),
+            header => header.Integer("TNULL1", 99));
+        FitsColumn column = document.Hdus[1].Table!.Column("VALUES");
+        var present = new int[1];
+        column.CopyIntegers(0, present);
+        Assert.Equal(1, present[0]);
+        Assert.Throws<FitsException>(() => column.CopyIntegers(1, present));
+    }
+
     private static FitsDocument Open(
         BinaryTableBuilder table,
         Action<FitsHeaderBuilder>? header = null,

@@ -40,10 +40,43 @@ public sealed class FitsDocument : IDisposable
         return snapshots;
     }
 
+    public IReadOnlyList<FitsHduSnapshot> SnapshotHdus(bool[] excluded)
+    {
+        ArgumentNullException.ThrowIfNull(excluded);
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        if (excluded.Length != _hdus.Count)
+        {
+            throw new FitsException("The HDU map does not match the document.", new FitsLocation());
+        }
+
+        int count = 0;
+        for (int index = 0; index < excluded.Length; index++)
+        {
+            if (!excluded[index])
+            {
+                count++;
+            }
+        }
+
+        var snapshots = new FitsHduSnapshot[count];
+        int write = 0;
+        for (int index = 0; index < _hdus.Count; index++)
+        {
+            if (excluded[index])
+            {
+                continue;
+            }
+
+            snapshots[write++] = _hdus[index].Snapshot();
+        }
+
+        return snapshots;
+    }
+
     public ReadOnlyMemory<byte> SnapshotSpecialRecords()
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
-        return SpecialRecords.IsEmpty ? ReadOnlyMemory<byte>.Empty : SpecialRecords.ToArray();
+        return SpecialRecords;
     }
 
     public static FitsDocument Open(string path, FitsOpenOptions? options = null) =>
@@ -51,6 +84,17 @@ public sealed class FitsDocument : IDisposable
 
     public static FitsDocument Open(Stream stream, FitsOpenOptions? options = null)
     {
+        if (stream is FileStream && stream.CanSeek)
+        {
+            long remaining = stream.Length - stream.Position;
+            if (remaining is >= 0 and <= int.MaxValue)
+            {
+                var owned = new byte[(int)remaining];
+                stream.ReadExactly(owned);
+                return ParseOwned(owned, options ?? new FitsOpenOptions());
+            }
+        }
+
         MemoryStream buffer;
         try
         {

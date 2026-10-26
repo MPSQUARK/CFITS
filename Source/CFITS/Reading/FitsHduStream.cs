@@ -20,7 +20,8 @@ internal static class FitsHduStream
         string? extensionName,
         bool image,
         out Opened opened,
-        out FitsHeader? header)
+        out FitsHeader? header,
+        bool compressedImage = false)
     {
         opened = default;
         header = null;
@@ -34,9 +35,12 @@ internal static class FitsHduStream
                 return false;
             }
 
-            bool kind = image
-                ? shape.Extension is null or "IMAGE"
-                : shape.Extension == "BINTABLE" && !HasHeapColumn(bytes) && !IsCompressedImage(bytes);
+            bool compressed = IsCompressedImage(bytes);
+            bool kind = compressedImage
+                ? shape.Extension == "BINTABLE" && compressed
+                : image
+                    ? shape.Extension is null or "IMAGE"
+                    : shape.Extension is "TABLE" or "BINTABLE" && !compressed;
             bool name = extensionName is null || ExtensionName(bytes) == extensionName;
             bool indexMatches = hduIndex < 0 || index == hduIndex;
             if (kind && name && indexMatches)
@@ -180,31 +184,6 @@ internal static class FitsHduStream
         }
 
         return null;
-    }
-
-    private static bool HasHeapColumn(ReadOnlySpan<byte> header)
-    {
-        for (int offset = 0; offset + FitsBlock.CardSize <= header.Length; offset += FitsBlock.CardSize)
-        {
-            FitsCardView view = FitsCardView.Parse(header.Slice(offset, FitsBlock.CardSize), offset);
-            if (view.IsEnd)
-            {
-                return false;
-            }
-
-            if (!view.Keyword.StartsWith("TFORM"u8))
-            {
-                continue;
-            }
-
-            ColumnSpec spec = ColumnFormats.Parse(view.TextValue() ?? "", ascii: false);
-            if (spec.Variable)
-            {
-                return true;
-            }
-        }
-
-        return false;
     }
 
     private static bool IsCompressedImage(ReadOnlySpan<byte> header)

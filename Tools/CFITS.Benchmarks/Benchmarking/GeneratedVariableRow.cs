@@ -1,8 +1,12 @@
 namespace CFITS.Benchmarks;
 
 [FitsTable]
-public sealed class GeneratedVariableRow
+public struct GeneratedVariableRow
 {
+    public GeneratedVariableRow()
+    {
+    }
+
     [FitsColumn("samples")]
-    public int[] Samples { get; set; } = [];
+    public int[] Samples { get; set; } = null!;
 }

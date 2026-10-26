@@ -429,8 +429,14 @@ public sealed class FitsContextGenerator : IIncrementalGenerator
         string bulkCapabilities = string.Join(NewLine, columnMembers
             .Select((member, index) => EmitBulkColumn(member, index))
             .Where(static text => text.Length > 0));
-        string bulkBuffers = string.Join(NewLine, columnMembers
-            .Select((member, index) => EmitBulkBuffer(member, index))
+        string bulkRents = string.Join(NewLine, columnMembers
+            .Select((member, index) => EmitBulkRent(member, index))
+            .Where(static text => text.Length > 0));
+        string bulkCopies = string.Join(NewLine, columnMembers
+            .Select((member, index) => EmitBulkCopy(member, index))
+            .Where(static text => text.Length > 0));
+        string bulkReturns = string.Join(NewLine, columnMembers
+            .Select((member, index) => EmitBulkReturn(member, index))
             .Where(static text => text.Length > 0));
         string scalarColumns = string.Join(NewLine, type.Members
             .Where(static member => member.Role == MemberRole.Column)
@@ -459,8 +465,16 @@ public sealed class FitsContextGenerator : IIncrementalGenerator
             : string.Join(NewLine,
                 $"                        if (table.RowCount >= {BulkReadRowThreshold})",
                 "                        {",
-                bulkBuffers,
+                bulkRents,
+                "                            try",
+                "                            {",
+                bulkCopies,
                 bulkLoop,
+                "                            }",
+                "                            finally",
+                "                            {",
+                bulkReturns,
+                "                            }",
                 "                        }",
                 "                        else",
                 "                        {",
@@ -472,6 +486,7 @@ public sealed class FitsContextGenerator : IIncrementalGenerator
         string extensionName = string.IsNullOrEmpty(type.HduName)
             ? ""
             : $"                header.Text(\"EXTNAME\", {Literal(type.HduName!)});";
+        string nameArgument = string.IsNullOrEmpty(type.HduName) ? "null" : Literal(type.HduName!);
         string variableHelpers = EmitVariableColumnHelpers(columnMembers);
         return $$"""
                 private sealed class {{type.InfoName}} : CFITS.FitsTableTypeInfo<{{name}}>
@@ -484,6 +499,14 @@ public sealed class FitsContextGenerator : IIncrementalGenerator
 
                     public override System.Collections.Generic.IReadOnlyList<{{name}}> Read(System.IO.Stream stream, CFITS.FitsOpenOptions options)
                     {
+                        if (CFITS.FitsDirectTable.TryOpen(stream, {{type.HduIndex}}, {{nameArgument}}, options, out CFITS.FitsDirectTable? __cfitsDirect))
+                        {
+                            using (__cfitsDirect)
+                            {
+                                return ReadTable(__cfitsDirect!.Table);
+                            }
+                        }
+
                         using var document = CFITS.FitsDocument.Open(stream, options);
                         return ReadDocument(document);
                     }
@@ -492,7 +515,11 @@ public sealed class FitsContextGenerator : IIncrementalGenerator
                     {
             {{FindTable(type.HduName, type.HduIndex)}}
                         if (mapped is not null) mapped[hdu.Index] = true;
-                        var table = hdu.Table ?? throw new CFITS.FitsException("The HDU is not a table.");
+                        return ReadTable(hdu.Table ?? throw new CFITS.FitsException("The HDU is not a table."));
+                    }
+
+                    internal static System.Collections.Generic.IReadOnlyList<{{name}}> ReadTable(CFITS.FitsTable table)
+                    {
                         var rows = new {{name}}[table.RowCount];
             {{cachedColumns}}
             {{bulkCapabilities}}
@@ -537,7 +564,7 @@ public sealed class FitsContextGenerator : IIncrementalGenerator
                 DocumentMemberRole.Table =>
                     $"{member.Property.Name} = {member.Child!.InfoName}.ReadDocument(document, {mappedArgument}),",
                 DocumentMemberRole.Unknown =>
-                    $"{member.Property.Name} = document.SnapshotHdus().Where(hdu => !mapped![hdu.Index]).ToArray(),",
+                    $"{member.Property.Name} = document.SnapshotHdus(mapped!),",
                 DocumentMemberRole.SpecialRecords =>
                     $"{member.Property.Name} = document.SnapshotSpecialRecords(),",
                 _ => throw new InvalidOperationException(),
@@ -668,11 +695,7 @@ public sealed class FitsContextGenerator : IIncrementalGenerator
                     private static int[] ReadInt32Array(CFITS.FitsColumn column, int row)
                     {
                         var values = new int[column.Count(row)];
-                        for (int index = 0; index < values.Length; index++)
-                        {
-                            values[index] = (int)column.ReadInteger(row, index);
-                        }
-
+                        column.CopyIntegers(row, values);
                         return values;
                     }
                 """);
@@ -839,25 +862,59 @@ public sealed class FitsContextGenerator : IIncrementalGenerator
         };
     }
 
-    private static string EmitBulkBuffer(MemberModel member, int index)
-    {
-        return member.Symbol.Type.SpecialType switch
+    private static string EmitBulkRent(MemberModel member, int index) =>
+        member.Symbol.Type.SpecialType switch
         {
             SpecialType.System_Int32 =>
-                $"                            int[]? __cfitsInteger{index} = __cfitsInteger{index}Bulk ? new int[table.RowCount] : null;{NewLine}                            if (__cfitsInteger{index}Bulk && !__cfitsColumn{index}.TryCopyInteger(__cfitsInteger{index}!)) throw new CFITS.FitsException(\"The column changed bulk-copy capability.\");",
+                $"                            int[]? __cfitsInteger{index} = __cfitsInteger{index}Bulk ? System.Buffers.ArrayPool<int>.Shared.Rent(table.RowCount) : null;",
             SpecialType.System_Int16 =>
-                $"                            short[]? __cfitsInteger{index} = __cfitsInteger{index}Bulk ? new short[table.RowCount] : null;{NewLine}                            if (__cfitsInteger{index}Bulk && !__cfitsColumn{index}.TryCopyInteger(__cfitsInteger{index}!)) throw new CFITS.FitsException(\"The column changed bulk-copy capability.\");",
+                $"                            short[]? __cfitsInteger{index} = __cfitsInteger{index}Bulk ? System.Buffers.ArrayPool<short>.Shared.Rent(table.RowCount) : null;",
             SpecialType.System_Int64 =>
-                $"                            long[]? __cfitsInteger{index} = __cfitsInteger{index}Bulk ? new long[table.RowCount] : null;{NewLine}                            if (__cfitsInteger{index}Bulk && !__cfitsColumn{index}.TryCopyInteger(__cfitsInteger{index}!)) throw new CFITS.FitsException(\"The column changed bulk-copy capability.\");",
+                $"                            long[]? __cfitsInteger{index} = __cfitsInteger{index}Bulk ? System.Buffers.ArrayPool<long>.Shared.Rent(table.RowCount) : null;",
             SpecialType.System_Byte =>
-                $"                            byte[]? __cfitsInteger{index} = __cfitsInteger{index}Bulk ? new byte[table.RowCount] : null;{NewLine}                            if (__cfitsInteger{index}Bulk && !__cfitsColumn{index}.TryCopyInteger(__cfitsInteger{index}!)) throw new CFITS.FitsException(\"The column changed bulk-copy capability.\");",
+                $"                            byte[]? __cfitsInteger{index} = __cfitsInteger{index}Bulk ? System.Buffers.ArrayPool<byte>.Shared.Rent(table.RowCount) : null;",
             SpecialType.System_Double =>
-                $"                            double[]? __cfitsReal{index} = __cfitsReal{index}Bulk ? new double[table.RowCount] : null;{NewLine}                            if (__cfitsReal{index}Bulk && !__cfitsColumn{index}.TryCopyReal(__cfitsReal{index}!)) throw new CFITS.FitsException(\"The column changed bulk-copy capability.\");",
+                $"                            double[]? __cfitsReal{index} = __cfitsReal{index}Bulk ? System.Buffers.ArrayPool<double>.Shared.Rent(table.RowCount) : null;",
             SpecialType.System_Single =>
-                $"                            float[]? __cfitsReal{index} = __cfitsReal{index}Bulk ? new float[table.RowCount] : null;{NewLine}                            if (__cfitsReal{index}Bulk && !__cfitsColumn{index}.TryCopyReal(__cfitsReal{index}!)) throw new CFITS.FitsException(\"The column changed bulk-copy capability.\");",
+                $"                            float[]? __cfitsReal{index} = __cfitsReal{index}Bulk ? System.Buffers.ArrayPool<float>.Shared.Rent(table.RowCount) : null;",
             _ => "",
         };
-    }
+
+    private static string EmitBulkCopy(MemberModel member, int index) =>
+        member.Symbol.Type.SpecialType switch
+        {
+            SpecialType.System_Int32 =>
+                $"                                if (__cfitsInteger{index}Bulk && !__cfitsColumn{index}.TryCopyInteger(__cfitsInteger{index}!.AsSpan(0, table.RowCount))) throw new CFITS.FitsException(\"The column changed bulk-copy capability.\");",
+            SpecialType.System_Int16 =>
+                $"                                if (__cfitsInteger{index}Bulk && !__cfitsColumn{index}.TryCopyInteger(__cfitsInteger{index}!.AsSpan(0, table.RowCount))) throw new CFITS.FitsException(\"The column changed bulk-copy capability.\");",
+            SpecialType.System_Int64 =>
+                $"                                if (__cfitsInteger{index}Bulk && !__cfitsColumn{index}.TryCopyInteger(__cfitsInteger{index}!.AsSpan(0, table.RowCount))) throw new CFITS.FitsException(\"The column changed bulk-copy capability.\");",
+            SpecialType.System_Byte =>
+                $"                                if (__cfitsInteger{index}Bulk && !__cfitsColumn{index}.TryCopyInteger(__cfitsInteger{index}!.AsSpan(0, table.RowCount))) throw new CFITS.FitsException(\"The column changed bulk-copy capability.\");",
+            SpecialType.System_Double =>
+                $"                                if (__cfitsReal{index}Bulk && !__cfitsColumn{index}.TryCopyReal(__cfitsReal{index}!.AsSpan(0, table.RowCount))) throw new CFITS.FitsException(\"The column changed bulk-copy capability.\");",
+            SpecialType.System_Single =>
+                $"                                if (__cfitsReal{index}Bulk && !__cfitsColumn{index}.TryCopyReal(__cfitsReal{index}!.AsSpan(0, table.RowCount))) throw new CFITS.FitsException(\"The column changed bulk-copy capability.\");",
+            _ => "",
+        };
+
+    private static string EmitBulkReturn(MemberModel member, int index) =>
+        member.Symbol.Type.SpecialType switch
+        {
+            SpecialType.System_Int32 =>
+                $"                                if (__cfitsInteger{index} is not null) System.Buffers.ArrayPool<int>.Shared.Return(__cfitsInteger{index});",
+            SpecialType.System_Int16 =>
+                $"                                if (__cfitsInteger{index} is not null) System.Buffers.ArrayPool<short>.Shared.Return(__cfitsInteger{index});",
+            SpecialType.System_Int64 =>
+                $"                                if (__cfitsInteger{index} is not null) System.Buffers.ArrayPool<long>.Shared.Return(__cfitsInteger{index});",
+            SpecialType.System_Byte =>
+                $"                                if (__cfitsInteger{index} is not null) System.Buffers.ArrayPool<byte>.Shared.Return(__cfitsInteger{index});",
+            SpecialType.System_Double =>
+                $"                                if (__cfitsReal{index} is not null) System.Buffers.ArrayPool<double>.Shared.Return(__cfitsReal{index});",
+            SpecialType.System_Single =>
+                $"                                if (__cfitsReal{index} is not null) System.Buffers.ArrayPool<float>.Shared.Return(__cfitsReal{index});",
+            _ => "",
+        };
 
     private static string BulkCapability(MemberModel member, int index) =>
         member.Symbol.Type.SpecialType switch

@@ -460,6 +460,26 @@ public sealed class FitsColumn
         return _zero + (_scale * stored);
     }
 
+    public void CopyIntegers(int row, Span<int> destination)
+    {
+        EnsureRow(row);
+        int count = Count(row);
+        if (destination.Length != count)
+        {
+            throw new FitsException("The destination length does not match the column.", new FitsLocation(_hduIndex, Column: Name));
+        }
+
+        if (count == 0 || TryCopyRawInt32(row, destination))
+        {
+            return;
+        }
+
+        for (int index = 0; index < count; index++)
+        {
+            destination[index] = checked((int)ReadInteger(row, index));
+        }
+    }
+
     public bool TryCopyReal(Span<double> destination)
     {
         EnsureBulkDestination(destination);
@@ -1012,6 +1032,27 @@ public sealed class FitsColumn
         {
             throw new FitsException("The destination is shorter than the column.", new FitsLocation(_hduIndex, Column: Name));
         }
+    }
+
+    private bool TryCopyRawInt32(int row, Span<int> destination)
+    {
+        char code = IsVariableLength ? _spec.ElementCode : _spec.Code;
+        if (code != 'J' || ElementWidth(code) != sizeof(int) || _null is not null)
+        {
+            return false;
+        }
+
+        if (_mode == FitsScaleMode.Physical && (_scale != 1d || _zero != 0d))
+        {
+            return false;
+        }
+
+        int bytes = destination.Length * sizeof(int);
+        ReadOnlySpan<byte> source = IsVariableLength
+            ? HeapSlice(CachedDescriptor(row).Offset, bytes)
+            : FixedField(row, 0, bytes);
+        FitsEndian.ReadInt32(source, destination);
+        return true;
     }
 
     private bool IsFixedScalarInteger() =>

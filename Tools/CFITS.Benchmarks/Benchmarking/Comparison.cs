@@ -84,10 +84,10 @@ internal static class Comparison
             ("Read a 4,000-row ASCII table", () => CfitsColumn(files["ascii"], "value"), () => GeneratedSumAscii(files["ascii"]), () => SharpColumn(files["ascii"], "value"), "read_ascii"),
             ("Read 1,000 variable-length rows", () => CfitsVariable(files["heap"]), () => GeneratedSumVariable(files["heap"]), () => SharpVariable(files["heap"]), "read_heap"),
             ("Write a 512² int16 image", CfitsWrite, GeneratedWrite, SharpWrite, "write_image"),
-            ("Decompress a GZIP_1 image", () => CfitsSum(files["gzip"], 1), () => GeneratedSumCompressed(files["gzip"]), null, "decompress_gzip"),
-            ("Decompress a GZIP_2 image", () => CfitsSum(files["gzip2"], 1), () => GeneratedSumCompressed(files["gzip2"]), null, "decompress_gzip2"),
-            ("Decompress a Rice image", () => CfitsSum(files["rice"], 1), () => GeneratedSumCompressed(files["rice"]), null, "decompress_rice"),
-            ("Decompress an H-compress image", () => CfitsSum(files["hcomp"], 1), () => GeneratedSumCompressed(files["hcomp"]), null, "decompress_hcomp"),
+            ("Decompress a GZIP_1 image", () => CfitsSum(files["gzip"], 1), () => GeneratedSumShortCompressed(files["gzip"]), null, "decompress_gzip"),
+            ("Decompress a GZIP_2 image", () => CfitsSum(files["gzip2"], 1), () => GeneratedSumFloatCompressed(files["gzip2"]), null, "decompress_gzip2"),
+            ("Decompress a Rice image", () => CfitsSum(files["rice"], 1), () => GeneratedSumShortCompressed(files["rice"]), null, "decompress_rice"),
+            ("Decompress an H-compress image", () => CfitsSum(files["hcomp"], 1), () => GeneratedSumShortCompressed(files["hcomp"]), null, "decompress_hcomp"),
             ("Open a checksummed image", () => CfitsChecksum(files["checksum"]), () => GeneratedReadChecksum(files["checksum"]), null, "open_checksum"),
             ("TAN coordinates, 100,000 pixels", () => CfitsWcs(world), null, null, "tan_wcs"),
             ("Read an SDSS spectrum column", () => CfitsColumn(files["sdss"], "flux"), () => GeneratedSumFlux(files["sdss"]), () => SharpColumn(files["sdss"], "flux"), "read_sdss"),
@@ -203,10 +203,11 @@ internal static class Comparison
         for (int index = 0; index < files.Count; index++)
         {
             using var input = File.OpenRead(files[index]);
+            long length = input.Length;
             GeneratedWholeFile value = FitsSerializer.Read(
                 input,
                 GeneratedBenchmarkContext.Default.GeneratedWholeFile);
-            using var output = new MemoryStream();
+            using var output = new MemoryStream(length <= int.MaxValue ? (int)length : 0);
             FitsSerializer.Write(
                 output,
                 value,
@@ -534,20 +535,33 @@ internal static class Comparison
         GC.KeepAlive(sum);
     }
 
-    private static void GeneratedSumCompressed(string path)
+    private static void GeneratedSumFloatCompressed(string path)
     {
         using var stream = File.OpenRead(path);
         GeneratedCompressedImage image = FitsSerializer.Read(
             stream,
             GeneratedBenchmarkContext.Default.GeneratedCompressedImage);
-        float[,] pixels = image.Pixels!;
+        Span<float> pixels = FitsEndian.AsContiguous(image.Pixels!);
         double sum = 0;
-        for (int row = 0; row < pixels.GetLength(0); row++)
+        for (int index = 0; index < pixels.Length; index++)
         {
-            for (int column = 0; column < pixels.GetLength(1); column++)
-            {
-                sum += pixels[row, column];
-            }
+            sum += pixels[index];
+        }
+
+        GC.KeepAlive(sum);
+    }
+
+    private static void GeneratedSumShortCompressed(string path)
+    {
+        using var stream = File.OpenRead(path);
+        GeneratedCompressedShortImage image = FitsSerializer.Read(
+            stream,
+            GeneratedBenchmarkContext.Default.GeneratedCompressedShortImage);
+        Span<short> pixels = FitsEndian.AsContiguous(image.Pixels!);
+        long sum = 0;
+        for (int index = 0; index < pixels.Length; index++)
+        {
+            sum += pixels[index];
         }
 
         GC.KeepAlive(sum);

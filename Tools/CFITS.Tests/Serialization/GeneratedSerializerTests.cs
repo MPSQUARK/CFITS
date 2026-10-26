@@ -281,6 +281,26 @@ public sealed class GeneratedSerializerTests
     }
 
     [Fact]
+    public void GeneratedStructRowsRoundTripWithoutPerRowObjects()
+    {
+        var rows = new StructEventRow[]
+        {
+            new() { Time = 1.5, Channel = 4 },
+            new() { Time = 2.75, Channel = 9 },
+        };
+
+        using var stream = new MemoryStream();
+        FitsSerializer.Write(stream, rows, AppFitsContext.Default.StructEventRow);
+        stream.Position = 0;
+        IReadOnlyList<StructEventRow> result = FitsSerializer.Read(stream, AppFitsContext.Default.StructEventRow);
+
+        Assert.IsType<StructEventRow[]>(result);
+        Assert.Equal(2, result.Count);
+        Assert.Equal(1.5, result[0].Time);
+        Assert.Equal(9, result[1].Channel);
+    }
+
+    [Fact]
     public void GeneratedTableSerializerUsesBulkCapableColumnsIndependently()
     {
         var rows = Enumerable.Range(0, 8_192)

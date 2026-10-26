@@ -3,6 +3,7 @@ namespace CFITS.Tests;
 [FitsSerializable(typeof(Exposure))]
 [FitsSerializable(typeof(ByteKeywordImage))]
 [FitsSerializable(typeof(EventRow))]
+[FitsSerializable(typeof(StructEventRow))]
 [FitsSerializable(typeof(MixedEventRow))]
 [FitsSerializable(typeof(LongExposure))]
 [FitsSerializable(typeof(UnsupportedImage))]

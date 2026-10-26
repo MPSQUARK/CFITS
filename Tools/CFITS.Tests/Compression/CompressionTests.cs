@@ -17,6 +17,34 @@ public sealed class CompressionTests
         Assert.Empty(image.ReadPhysical());
     }
 
+    [Fact]
+    public void DirectCompressedReadMatchesDocumentPixels()
+    {
+        short[] source = [1, 2, 3, 4, 5, 6];
+        byte[] file = FitsDocumentBuilder.Create().GzipImage([3, 2], source).Build().ToArray();
+        using var document = FitsDocument.Parse(file);
+        var expected = new short[2, 3];
+        document.Hdus[1].Image!.CopyInteger(expected);
+
+        using var stream = new MemoryStream(file);
+        Assert.True(FitsDirectImage.TryRead<short>(stream, 2, 1, null, new FitsOpenOptions(), out Array? pixels, out _));
+        Assert.Equal(FitsEndian.AsContiguous(expected).ToArray(), FitsEndian.AsContiguous((short[,])pixels!).ToArray());
+    }
+
+    [Fact]
+    public void DirectShuffledCompressedReadMatchesDocumentPixels()
+    {
+        float[] source = [1f, 2f, 3f, 4f];
+        byte[] file = FitsDocumentBuilder.Create().GzipImage([2, 2], source, shuffle: true).Build().ToArray();
+        using var document = FitsDocument.Parse(file);
+        var expected = new float[2, 2];
+        document.Hdus[1].Image!.CopyPhysical(expected);
+
+        using var stream = new MemoryStream(file);
+        Assert.True(FitsDirectImage.TryRead<float>(stream, 2, 1, null, new FitsOpenOptions(), out Array? pixels, out _));
+        Assert.Equal(FitsEndian.AsContiguous(expected).ToArray(), FitsEndian.AsContiguous((float[,])pixels!).ToArray());
+    }
+
     [Theory]
     [InlineData(15)]
     [InlineData(17)]

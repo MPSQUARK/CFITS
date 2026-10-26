@@ -1,4 +1,6 @@
+using System.Buffers;
 using System.IO.Compression;
+using System.Runtime.InteropServices;
 
 namespace CFITS.Compression;
 
@@ -9,7 +11,23 @@ internal static class TileCompression
     public static bool IsCompressedImage(FitsHeader header) =>
         header.TryGetCard("ZIMAGE", out var image) && image.Kind == FitsValueKind.Logical && image.Logical;
 
-    public static FitsImage Decompress(FitsHeader header, FitsTable table, FitsScaleMode mode)
+    internal static int UncompressedBytes(FitsHeader header)
+    {
+        int bitpix = checked((int)header.GetInt64("ZBITPIX"));
+        int axesCount = checked((int)header.GetInt64("ZNAXIS"));
+        int pixels = axesCount == 0 ? 0 : 1;
+        for (int axis = 0; axis < axesCount; axis++)
+        {
+            pixels = checked(pixels * checked((int)header.GetInt64($"ZNAXIS{axis + 1}")));
+        }
+
+        return checked(pixels * Pixels.Width(bitpix));
+    }
+
+    public static FitsImage Decompress(FitsHeader header, FitsTable table, FitsScaleMode mode) =>
+        Decompress(header, table, mode, storage: null);
+
+    internal static FitsImage Decompress(FitsHeader header, FitsTable table, FitsScaleMode mode, byte[]? storage)
     {
         int bitpix = checked((int)header.GetInt64("ZBITPIX"));
         if (bitpix is not (8 or 16 or 32 or 64 or -32 or -64))
@@ -67,7 +85,13 @@ internal static class TileCompression
 
         int width = Pixels.Width(bitpix);
         bool rice = algorithm is "RICE_1" or "RICE_ONE";
-        var raw = new byte[checked(pixels * width)];
+        int byteCount = checked(pixels * width);
+        if (storage is not null && storage.Length < byteCount)
+        {
+            throw new FitsException("The decompressed image buffer is too small.", new FitsLocation());
+        }
+
+        byte[] raw = storage ?? new byte[byteCount];
         var counts = new int[axesCount];
         for (int axis = 0; axis < axesCount; axis++)
         {
@@ -154,6 +178,11 @@ internal static class TileCompression
                 continue;
             }
 
+            if (TryWriteWholeGzipTile(algorithm, rows, pixels, tilePixels, width, bytePix, bitpix, quantize, mask, scale, zero, data, row, raw, byteCount))
+            {
+                break;
+            }
+
             byte[] compressed = data.ReadVariableBytes(row);
             byte[]? fallback = null;
             bool losslessGzip = algorithm is "GZIP_1" or "GZIP_2" && gzip is not null && compressed.Length == 0;
@@ -200,7 +229,64 @@ internal static class TileCompression
         }
 
         var shape = new HduShape { Bitpix = bitpix, Axes = axes, Gcount = 1 };
-        return FitsImage.Create(ImageHeader(bitpix, axes, blank), raw, shape, mode);
+        return FitsImage.Create(ImageHeader(bitpix, axes, blank), raw.AsMemory(0, byteCount), shape, mode);
+    }
+
+    private static bool TryWriteWholeGzipTile(
+        string algorithm,
+        int rows,
+        int pixels,
+        int tilePixels,
+        int width,
+        int bytePix,
+        int bitpix,
+        string quantize,
+        FitsColumn? mask,
+        FitsColumn? scale,
+        FitsColumn? zero,
+        FitsColumn data,
+        int row,
+        byte[] raw,
+        int byteCount)
+    {
+        if (rows != 1
+            || row != 0
+            || tilePixels != pixels
+            || bytePix != width
+            || mask is not null
+            || scale is not null
+            || zero is not null
+            || quantize != "NO_DITHER"
+            || algorithm is not ("GZIP_1" or "GZIP_2"))
+        {
+            return false;
+        }
+
+        ReadOnlyMemory<byte> payload = data.ReadVariableMemory(row);
+        if (payload.Length == 0)
+        {
+            return false;
+        }
+
+        if (algorithm == "GZIP_2")
+        {
+            byte[] shuffled = ArrayPool<byte>.Shared.Rent(byteCount);
+            try
+            {
+                GunzipExact(payload, shuffled.AsSpan(0, byteCount));
+                Unshuffle(shuffled.AsSpan(0, byteCount), raw.AsSpan(0, byteCount), width);
+            }
+            finally
+            {
+                ArrayPool<byte>.Shared.Return(shuffled);
+            }
+        }
+        else
+        {
+            GunzipExact(payload, raw.AsSpan(0, byteCount));
+        }
+
+        return true;
     }
 
     private readonly record struct TileBytes(byte[] Bytes, int Width);
@@ -454,6 +540,80 @@ internal static class TileCompression
                 destinationOffset -= span[axis] * byteStride;
                 coordinateStride *= axes[axis];
             }
+        }
+    }
+
+    private static void GunzipExact(ReadOnlyMemory<byte> compressed, Span<byte> output)
+    {
+        if (!MemoryMarshal.TryGetArray(compressed, out ArraySegment<byte> segment) || segment.Array is null)
+        {
+            GunzipExact(new ArraySegment<byte>(compressed.ToArray()), output);
+            return;
+        }
+
+        GunzipExact(segment, output);
+    }
+
+    private static void GunzipExact(ArraySegment<byte> compressed, Span<byte> output)
+    {
+        try
+        {
+            using var input = new MemoryStream(compressed.Array!, compressed.Offset, compressed.Count, writable: false);
+            using var gzip = new GZipStream(input, CompressionMode.Decompress);
+            int read = 0;
+            while (read < output.Length)
+            {
+                int count = gzip.Read(output[read..]);
+                if (count == 0)
+                {
+                    throw new FitsException($"Decoded image tile has {read} bytes; expected {output.Length}.", new FitsLocation());
+                }
+
+                read += count;
+            }
+
+            if (gzip.ReadByte() >= 0)
+            {
+                throw new FitsException($"Decoded image tile is longer than the expected {output.Length} bytes.", new FitsLocation());
+            }
+        }
+        catch (InvalidDataException exception)
+        {
+            throw new FitsException("A compressed image tile is not a valid GZIP stream.", new FitsLocation(), exception);
+        }
+    }
+
+    private static void Unshuffle(ReadOnlySpan<byte> shuffled, Span<byte> destination, int width)
+    {
+        if (destination.Length != shuffled.Length)
+        {
+            throw new FitsException("A shuffled tile does not match the image buffer.", new FitsLocation());
+        }
+
+        if (width <= 1)
+        {
+            shuffled.CopyTo(destination);
+            return;
+        }
+
+        if (shuffled.Length % width != 0)
+        {
+            throw new FitsException("A shuffled tile length is not divisible by its element width.", new FitsLocation());
+        }
+
+        int count = shuffled.Length / width;
+        int sourceOffset = 0;
+        int destinationOffset = 0;
+        for (int item = 0; item < count; item++)
+        {
+            for (int byteIndex = 0; byteIndex < width; byteIndex++)
+            {
+                destination[destinationOffset + byteIndex] = shuffled[sourceOffset];
+                sourceOffset += count;
+            }
+
+            destinationOffset += width;
+            sourceOffset = item + 1;
         }
     }
 

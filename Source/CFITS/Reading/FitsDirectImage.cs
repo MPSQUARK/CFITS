@@ -1,4 +1,5 @@
 using System.Buffers;
+using CFITS.Compression;
 
 namespace CFITS;
 
@@ -29,7 +30,20 @@ public static class FitsDirectImage
         long origin = stream.Position;
         if (!FitsHduStream.TrySelect(stream, hduIndex, extensionName, image: true, out FitsHduStream.Opened opened, out header))
         {
-            return false;
+            if (!FitsHduStream.TrySelect(stream, hduIndex, extensionName, image: false, out opened, out header, compressedImage: true))
+            {
+                return false;
+            }
+
+            try
+            {
+                return ReadCompressed<T>(stream, rank, opened, header!, options, out pixels);
+            }
+            catch
+            {
+                stream.Position = origin;
+                throw;
+            }
         }
 
         try
@@ -68,6 +82,70 @@ public static class FitsDirectImage
         {
             stream.Position = origin;
             throw;
+        }
+    }
+
+    private static bool ReadCompressed<T>(
+        Stream stream,
+        int rank,
+        FitsHduStream.Opened opened,
+        FitsHeader header,
+        FitsOpenOptions options,
+        out Array? pixels)
+        where T : unmanaged
+    {
+        pixels = null;
+        int dataBytes = checked((int)opened.Shape.DataBytes);
+        byte[] rentedData = ArrayPool<byte>.Shared.Rent(Math.Max(dataBytes, 1));
+        byte[]? rentedImage = null;
+        try
+        {
+            if (dataBytes > 0)
+            {
+                stream.ReadExactly(rentedData.AsSpan(0, dataBytes));
+            }
+
+            FitsTable table = FitsTable.Create(
+                header,
+                rentedData.AsMemory(0, dataBytes),
+                ascii: false,
+                opened.Shape,
+                options.ScaleMode);
+            int imageBytes = TileCompression.UncompressedBytes(header);
+            rentedImage = ArrayPool<byte>.Shared.Rent(Math.Max(imageBytes, 1));
+            FitsImage image = TileCompression.Decompress(header, table, options.ScaleMode, rentedImage);
+            if (image.Axes.Count != rank)
+            {
+                throw new FitsException("Generated image rank does not match the target array.", new FitsLocation(opened.Index));
+            }
+
+            var axes = new int[image.Axes.Count];
+            for (int axis = 0; axis < axes.Length; axis++)
+            {
+                axes[axis] = image.Axes[axis];
+            }
+
+            pixels = Create<T>(axes);
+            if (typeof(T) == typeof(float) || typeof(T) == typeof(double))
+            {
+                CopyReal(image, pixels);
+            }
+            else
+            {
+                CopyInteger(image, pixels);
+            }
+
+            FitsHduStream.SkipPadding(stream, opened.Shape);
+            FitsHduStream.ValidateRemainder(stream);
+            return true;
+        }
+        finally
+        {
+            ArrayPool<byte>.Shared.Return(rentedData);
+            if (rentedImage is not null)
+            {
+                ArrayPool<byte>.Shared.Return(rentedImage);
+            }
         }
     }
 

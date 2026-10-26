@@ -1,7 +1,7 @@
 namespace CFITS.Benchmarks;
 
 [FitsTable]
-public sealed class GeneratedAsciiRow
+public struct GeneratedAsciiRow
 {
     [FitsColumn("value")]
     public double Value { get; set; }
