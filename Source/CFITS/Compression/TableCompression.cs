@@ -96,14 +96,14 @@ internal static class TableCompression
             }
 
             int tileRows = Math.Min(tileLength, rows - start);
-            byte[] stored = column.ReadVariableBytes(tile);
+            ReadOnlyMemory<byte> stored = column.ReadVariableMemory(tile);
             if (spec.Variable)
             {
                 ExpandVariable(column, spec, algorithm, element, stored, start, tileRows, offset, rowWidth, blockSize, body, heap);
             }
             else
             {
-                byte[] plain = Expand(algorithm, stored, checked(tileRows * spec.Width), ElementBytes(element), element, blockSize);
+                byte[] plain = Expand(algorithm, stored.ToArray(), checked(tileRows * spec.Width), ElementBytes(element), element, blockSize);
                 for (int row = 0; row < tileRows; row++)
                 {
                     plain.AsSpan(row * spec.Width, spec.Width).CopyTo(body.Slice(((start + row) * rowWidth) + offset, spec.Width));
@@ -121,10 +121,10 @@ internal static class TableCompression
         }
     }
 
-    private static void ExpandVariable(FitsColumn column, ColumnSpec spec, string algorithm, char element, byte[] stored, int start, int tileRows, int offset, int rowWidth, int blockSize, Span<byte> body, Span<byte> heap)
+    private static void ExpandVariable(FitsColumn column, ColumnSpec spec, string algorithm, char element, ReadOnlyMemory<byte> stored, int start, int tileRows, int offset, int rowWidth, int blockSize, Span<byte> body, Span<byte> heap)
     {
         string name = algorithm.Trim().Replace(' ', '_').ToUpperInvariant();
-        byte[] bundle = name == "NOCOMPRESS" ? stored : Gunzip(stored);
+        ReadOnlyMemory<byte> bundle = name == "NOCOMPRESS" ? stored : Gunzip(stored.ToArray());
         int originalDescriptor = spec.Width;
         int compressedDescriptor = DescriptorWidth(column.Format);
         int needed = checked((tileRows * compressedDescriptor) + (tileRows * originalDescriptor));
@@ -137,18 +137,18 @@ internal static class TableCompression
         {
             int compressedAt = checked(row * compressedDescriptor);
             int halfDescriptor = compressedDescriptor / 2;
-            long compressedCount = ReadDescriptorValue(bundle.AsSpan(compressedAt, halfDescriptor), halfDescriptor);
-            long compressedOffset = ReadDescriptorValue(bundle.AsSpan(compressedAt + halfDescriptor, halfDescriptor), halfDescriptor);
+            long compressedCount = ReadDescriptorValue(bundle.Span.Slice(compressedAt, halfDescriptor), halfDescriptor);
+            long compressedOffset = ReadDescriptorValue(bundle.Span.Slice(compressedAt + halfDescriptor, halfDescriptor), halfDescriptor);
             int originalAt = checked((tileRows * compressedDescriptor) + (row * originalDescriptor));
-            bundle.AsSpan(originalAt, originalDescriptor).CopyTo(body.Slice(((start + row) * rowWidth) + offset, originalDescriptor));
+            bundle.Span.Slice(originalAt, originalDescriptor).CopyTo(body.Slice(((start + row) * rowWidth) + offset, originalDescriptor));
             if (compressedCount < 0 || compressedOffset < 0 || compressedCount > int.MaxValue)
             {
                 throw new FitsException("A compressed variable-length descriptor is invalid.", new FitsLocation(Column: column.Name));
             }
 
             int originalValueWidth = originalDescriptor / 2;
-            long elements = ReadDescriptorValue(bundle.AsSpan(originalAt, originalValueWidth), originalValueWidth);
-            long heapOffset = ReadDescriptorValue(bundle.AsSpan(originalAt + originalValueWidth, originalValueWidth), originalValueWidth);
+            long elements = ReadDescriptorValue(bundle.Span.Slice(originalAt, originalValueWidth), originalValueWidth);
+            long heapOffset = ReadDescriptorValue(bundle.Span.Slice(originalAt + originalValueWidth, originalValueWidth), originalValueWidth);
             if (elements < 0 || elements > int.MaxValue || heapOffset < 0)
             {
                 throw new FitsException("A compressed variable-length descriptor is invalid.", new FitsLocation(Column: column.Name));
@@ -164,9 +164,22 @@ internal static class TableCompression
                 continue;
             }
 
-            byte[] payload = column.ReadHeap(compressedOffset, checked((int)compressedCount));
             int width = ElementBytes(element);
-            byte[] plain = Expand(algorithm, payload, checked((int)elements * width), width, element, blockSize);
+            if (name == "NOCOMPRESS")
+            {
+                ReadOnlyMemory<byte> payload = column.ReadHeapMemory(compressedOffset, checked((int)compressedCount));
+                int expected = checked((int)elements * width);
+                if (payload.Length != expected)
+                {
+                    throw new FitsException($"Decoded table column has {payload.Length} bytes; expected {expected}.", new FitsLocation());
+                }
+
+                Place(heap, heapOffset, payload.Span);
+                continue;
+            }
+
+            byte[] compressedPayload = column.ReadHeap(compressedOffset, checked((int)compressedCount));
+            byte[] plain = Expand(algorithm, compressedPayload, checked((int)elements * width), width, element, blockSize);
             Place(heap, heapOffset, plain);
         }
     }
@@ -189,7 +202,7 @@ internal static class TableCompression
         return compressed.Width;
     }
 
-    private static void Place(Span<byte> heap, long offset, byte[] plain)
+    private static void Place(Span<byte> heap, long offset, ReadOnlySpan<byte> plain)
     {
         if (offset < 0)
         {

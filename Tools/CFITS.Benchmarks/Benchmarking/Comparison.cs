@@ -9,6 +9,10 @@ namespace CFITS.Benchmarks;
 /// <summary>
 /// Times the same files with CFITS, source-generated CFITS, Astropy, and CSharpFITS.
 /// Each iteration repeats the operation until at least 100 ms have elapsed, matching a short BenchmarkDotNet iteration.
+/// Astropy's byte column is tracemalloc's Python-heap peak. It does not include native NumPy buffers
+/// and is not a managed-allocation comparison against the .NET libraries.
+/// Whole-file CSharpFITS reads touch <see cref="BasicHDU.Kernel"/> because <c>Fits.Read</c> leaves image
+/// and table payloads deferred.
 /// </summary>
 internal static class Comparison
 {
@@ -225,7 +229,14 @@ internal static class Comparison
         foreach (string file in files)
         {
             var fits = new Fits(file);
-            _ = fits.Read();
+            BasicHDU[] hdus = fits.Read();
+            long touched = 0;
+            for (int index = 0; index < hdus.Length; index++)
+            {
+                touched += TouchPayload(hdus[index]);
+            }
+
+            GC.KeepAlive(touched);
             fits.Close();
         }
     }
@@ -234,12 +245,30 @@ internal static class Comparison
     {
         foreach (string file in files)
         {
+            // Write reads each deferred payload while emitting it. Touching Kernel
+            // first consumes and closes the input stream, so the write itself is
+            // the materialization step.
             var fits = new Fits(file);
             _ = fits.Read();
             using var stream = new MemoryStream();
             fits.Write(stream);
             fits.Close();
         }
+    }
+
+    /// <summary>
+    /// Forces CSharpFITS to read a deferred HDU payload. <c>Fits.Read</c> parses headers only;
+    /// <see cref="BasicHDU.Kernel"/> is the call that fills image arrays and table columns.
+    /// </summary>
+    private static long TouchPayload(BasicHDU hdu)
+    {
+        object? kernel = hdu.Kernel;
+        if (kernel is Array array)
+        {
+            return array.LongLength;
+        }
+
+        return kernel is null ? 0 : 1;
     }
 
     public static void Replot(string root)
@@ -570,9 +599,27 @@ internal static class Comparison
         var table = document.Hdus[1].Table!;
         var column = table.Column(name);
         double sum = 0;
-        for (int row = 0; row < table.RowCount; row++)
+        if (column.CanCopyReal)
         {
-            sum += column.ReadReal(row);
+            // Astropy materializes the column and then reduces it. Fixed scalar
+            // columns take the same bulk path; ASCII columns stay on ReadReal.
+            var values = new double[table.RowCount];
+            if (!column.TryCopyReal(values))
+            {
+                throw new InvalidOperationException($"Column '{name}' no longer supports bulk real copy.");
+            }
+
+            for (int row = 0; row < values.Length; row++)
+            {
+                sum += values[row];
+            }
+        }
+        else
+        {
+            for (int row = 0; row < table.RowCount; row++)
+            {
+                sum += column.ReadReal(row);
+            }
         }
 
         _ = sum;

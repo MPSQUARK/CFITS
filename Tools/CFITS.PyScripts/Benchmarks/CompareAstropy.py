@@ -179,8 +179,9 @@ def main():
             ("firefly_write_all", lambda: write_whole(firefly_files)),
         ])
 
-    # tracemalloc reports Python-managed peak growth; NumPy/Astropy native buffers
-    # are not included and are intentionally labeled as such in the output.
+    # python_peak_bytes is tracemalloc's Python-heap peak growth. Native NumPy and
+    # Astropy buffers are excluded, so this column is not comparable to CLR
+    # allocated-byte measurements from CFITS or CSharpFITS.
     lines = ["key,mean_ms,stddev_ms,python_peak_bytes,python_peak_stddev_bytes"]
     for key, action in scenarios:
         print(key, flush=True)

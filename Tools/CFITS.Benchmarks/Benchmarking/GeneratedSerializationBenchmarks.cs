@@ -10,6 +10,8 @@ internal static class GeneratedSerializationBenchmarks
         byte[] image = CreateImage();
         GeneratedCompositeFile compositeValue = CreateCompositeValue(imageValue);
         byte[] composite = CreateComposite(compositeValue);
+        byte[] variableDouble = CreateVariableDoubleTable();
+        byte[] variableInt = CreateVariableIntTable();
         var scenarios = new List<TargetedScenario>
         {
             new("generated_image_write", "source-generator", () => WriteGeneratedImage(imageValue)),
@@ -21,6 +23,12 @@ internal static class GeneratedSerializationBenchmarks
             new("generated_composite_builder_write", "source-generator-composite-builder", () => WriteGeneratedCompositeBuilder(compositeValue)),
             new("generated_composite_write_staged", "source-generator-composite-staged", () => WriteGeneratedCompositeStaged(compositeValue)),
             new("generated_composite_read", "source-generator-composite", () => ReadGeneratedComposite(composite)),
+            new("generated_variable_double_read", "source-generator-variable", () => ReadGeneratedVariableDouble(variableDouble)),
+            new("runtime_variable_double_read", "runtime-mapping-variable", () => ReadRuntimeVariableDouble(variableDouble)),
+            new("runtime_variable_double_scalar_read", "runtime-mapping-variable", () => ReadRuntimeVariableDoubleScalar(variableDouble)),
+            new("generated_variable_int_read", "source-generator-variable", () => ReadGeneratedVariableInt(variableInt)),
+            new("runtime_variable_int_vector_convert_read", "runtime-mapping-variable", () => ReadRuntimeVariableIntVectorConvert(variableInt)),
+            new("runtime_variable_int_scalar_read", "runtime-mapping-variable", () => ReadRuntimeVariableIntScalar(variableInt)),
         };
         foreach (int rowCount in new[] { 1_000, 20_000, 100_000 })
         {
@@ -98,6 +106,40 @@ internal static class GeneratedSerializationBenchmarks
     {
         using var stream = new MemoryStream();
         FitsSerializer.Write(stream, CreateTableRows(rowCount), GeneratedBenchmarkContext.Default.GeneratedEventRow);
+        return stream.ToArray();
+    }
+
+    private static byte[] CreateVariableDoubleTable()
+    {
+        const int rowCount = 20_000;
+        var rows = new GeneratedVariableDoubleRow[rowCount];
+        for (int row = 0; row < rows.Length; row++)
+        {
+            rows[row] = new GeneratedVariableDoubleRow
+            {
+                Values = Enumerable.Range(0, 8).Select(value => row + (value * 0.25)).ToArray(),
+            };
+        }
+
+        using var stream = new MemoryStream();
+        FitsSerializer.Write(stream, rows, GeneratedBenchmarkContext.Default.GeneratedVariableDoubleRow);
+        return stream.ToArray();
+    }
+
+    private static byte[] CreateVariableIntTable()
+    {
+        const int rowCount = 20_000;
+        var rows = new GeneratedVariableIntRow[rowCount];
+        for (int row = 0; row < rows.Length; row++)
+        {
+            rows[row] = new GeneratedVariableIntRow
+            {
+                Values = Enumerable.Range(0, 8).Select(value => row + value).ToArray(),
+            };
+        }
+
+        using var stream = new MemoryStream();
+        FitsSerializer.Write(stream, rows, GeneratedBenchmarkContext.Default.GeneratedVariableIntRow);
         return stream.ToArray();
     }
 
@@ -256,6 +298,142 @@ internal static class GeneratedSerializationBenchmarks
         _sink = value.Image.ExposureSeconds + value.Events[0].Channel + value.Events[^1].Time;
     }
 
+    private static void ReadGeneratedVariableDouble(byte[] data)
+    {
+        using var stream = new MemoryStream(data, writable: false);
+        IReadOnlyList<GeneratedVariableDoubleRow> rows = FitsSerializer.Read(
+            stream, GeneratedBenchmarkContext.Default.GeneratedVariableDoubleRow);
+        _sink = rows[0].Values[0] + rows[^1].Values[^1];
+    }
+
+    private static void ReadRuntimeVariableDouble(byte[] data)
+    {
+        using var stream = new MemoryStream(data, writable: false);
+        using var document = FitsDocument.Open(stream);
+        FitsTable table = document.Hdus[1].Table!;
+        FitsColumn column = table.Column("VALUES");
+        double first = 0;
+        double last = 0;
+        for (int row = 0; row < table.RowCount; row++)
+        {
+            double[] values = column.ReadRealVector(row);
+            if (row == 0)
+            {
+                first = values[0];
+            }
+
+            last = values[^1];
+        }
+
+        _sink = first + last;
+    }
+
+    private static void ReadRuntimeVariableDoubleScalar(byte[] data)
+    {
+        using var stream = new MemoryStream(data, writable: false);
+        using var document = FitsDocument.Open(stream);
+        FitsTable table = document.Hdus[1].Table!;
+        FitsColumn column = table.Column("VALUES");
+        double first = 0;
+        double last = 0;
+        for (int row = 0; row < table.RowCount; row++)
+        {
+            int count = column.Count(row);
+            double rowFirst = 0;
+            double rowLast = 0;
+            for (int element = 0; element < count; element++)
+            {
+                double value = column.ReadReal(row, element);
+                if (element == 0)
+                {
+                    rowFirst = value;
+                }
+
+                rowLast = value;
+            }
+
+            if (row == 0)
+            {
+                first = rowFirst;
+            }
+
+            last = rowLast;
+        }
+
+        _sink = first + last;
+    }
+
+    private static void ReadGeneratedVariableInt(byte[] data)
+    {
+        using var stream = new MemoryStream(data, writable: false);
+        IReadOnlyList<GeneratedVariableIntRow> rows = FitsSerializer.Read(
+            stream, GeneratedBenchmarkContext.Default.GeneratedVariableIntRow);
+        _sink = rows[0].Values[0] + rows[^1].Values[^1];
+    }
+
+    private static void ReadRuntimeVariableIntVectorConvert(byte[] data)
+    {
+        using var stream = new MemoryStream(data, writable: false);
+        using var document = FitsDocument.Open(stream);
+        FitsTable table = document.Hdus[1].Table!;
+        FitsColumn column = table.Column("VALUES");
+        int first = 0;
+        int last = 0;
+        for (int row = 0; row < table.RowCount; row++)
+        {
+            long[] source = column.ReadIntegerVector(row);
+            var values = new int[source.Length];
+            for (int element = 0; element < source.Length; element++)
+            {
+                values[element] = (int)source[element];
+            }
+
+            if (row == 0)
+            {
+                first = values[0];
+            }
+
+            last = values[^1];
+        }
+
+        _sink = first + last;
+    }
+
+    private static void ReadRuntimeVariableIntScalar(byte[] data)
+    {
+        using var stream = new MemoryStream(data, writable: false);
+        using var document = FitsDocument.Open(stream);
+        FitsTable table = document.Hdus[1].Table!;
+        FitsColumn column = table.Column("VALUES");
+        int first = 0;
+        int last = 0;
+        for (int row = 0; row < table.RowCount; row++)
+        {
+            int count = column.Count(row);
+            int rowFirst = 0;
+            int rowLast = 0;
+            for (int element = 0; element < count; element++)
+            {
+                int value = (int)column.ReadInteger(row, element);
+                if (element == 0)
+                {
+                    rowFirst = value;
+                }
+
+                rowLast = value;
+            }
+
+            if (row == 0)
+            {
+                first = rowFirst;
+            }
+
+            last = rowLast;
+        }
+
+        _sink = first + last;
+    }
+
     private static void ReadRuntimeTableScalar(byte[] data)
     {
         using var stream = new MemoryStream(data, writable: false);
@@ -307,4 +485,5 @@ internal static class GeneratedSerializationBenchmarks
 
         _sink = rows[0].Time + rows[^1].Channel;
     }
+
 }

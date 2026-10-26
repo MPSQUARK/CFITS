@@ -1,14 +1,19 @@
+using System.Text;
+
 namespace CFITS.Header;
 
 internal sealed class CardRecord
 {
     public required FitsCard Card { get; set; }
 
-    public List<byte[]> Images { get; } = [];
+    public List<ReadOnlyMemory<byte>> Images { get; } = [];
 
-    public static CardRecord FromView(FitsCardView view)
+    public static CardRecord FromView(FitsCardView view) => FromImage(view.Image.ToArray(), view);
+
+    public static CardRecord FromImage(ReadOnlyMemory<byte> image, FitsCardView view)
     {
-        string keyword = view.KeywordText().ToUpperInvariant();
+        // ValidateKeyword has already restricted standard keywords to FITS uppercase ASCII.
+        string keyword = view.KeywordText();
         string? text = view.Kind switch
         {
             FitsValueKind.String => view.TextValue(),
@@ -27,11 +32,15 @@ internal sealed class CardRecord
             view.CommentText(),
             view.UnitText());
         var record = new CardRecord { Card = card, Continues = continues };
-        record.Images.Add(view.Image.ToArray());
+        record.Images.Add(image);
         return record;
     }
 
     public bool Continues { get; set; }
+
+    internal StringBuilder? TextBuilder { get; set; }
+
+    internal StringBuilder? CommentBuilder { get; set; }
 
     public void Append(FitsCardView view)
     {

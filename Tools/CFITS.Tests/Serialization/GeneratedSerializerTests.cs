@@ -1,3 +1,5 @@
+using System.Buffers.Binary;
+
 namespace CFITS.Tests;
 
 public sealed class GeneratedSerializerTests
@@ -107,6 +109,30 @@ public sealed class GeneratedSerializerTests
                 Assert.Equal(value.Pixels[row, column], result.Pixels[row, column]);
             }
         }
+    }
+
+    [Fact]
+    public void GeneratedImageSerializerRoundTripsByteKeywordsAsIntegers()
+    {
+        var value = new ByteKeywordImage
+        {
+            BitDepth = 255,
+            Pixels = [1, 2, 3],
+        };
+
+        using var stream = new MemoryStream();
+        FitsSerializer.Write(stream, value, AppFitsContext.Default.ByteKeywordImage);
+        stream.Position = 0;
+
+        using var document = FitsDocument.Parse(stream.ToArray());
+        Assert.Equal(255, document.Hdus[0].Header.GetInt64("LEVEL"));
+
+        stream.Position = 0;
+        ByteKeywordImage result = FitsSerializer.Read(
+            stream, AppFitsContext.Default.ByteKeywordImage);
+
+        Assert.Equal(value.BitDepth, result.BitDepth);
+        Assert.Equal(value.Pixels, result.Pixels);
     }
 
     [Fact]
@@ -276,6 +302,156 @@ public sealed class GeneratedSerializerTests
         Assert.Equal(rows[0].Time, result[0].Time);
         Assert.Equal(rows[rows.Length - 1].Channel, result[rows.Length - 1].Channel);
         Assert.Equal(rows[rows.Length - 1].Label, result[rows.Length - 1].Label);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void GeneratedVariableDoubleReadMatchesRuntimeForPAndQDescriptors(bool useQDescriptor)
+    {
+        using var document = CreateVariableDoubleDocument(useQDescriptor);
+        byte[] bytes = document.ToArray();
+
+        IReadOnlyList<VariableDoubleRow> generated;
+        using (var generatedStream = new MemoryStream(bytes))
+        {
+            generated = FitsSerializer.Read(generatedStream, AppFitsContext.Default.VariableDoubleRow);
+        }
+
+        using var runtimeDocument = FitsDocument.Parse(bytes);
+        FitsColumn column = runtimeDocument.Hdus[1].Table!.Column("VALUES");
+        Assert.Equal(2, generated.Count);
+        for (int row = 0; row < generated.Count; row++)
+        {
+            Assert.Equal(column.ReadRealVector(row), generated[row].Values);
+        }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void GeneratedVariableDoubleReadRejectsMalformedHeapLikeRuntime(bool useQDescriptor)
+    {
+        using var document = CreateVariableDoubleDocument(useQDescriptor);
+        byte[] bytes = document.ToArray();
+        int tableDataOffset = 5_760;
+        int descriptorOffset = tableDataOffset + (useQDescriptor ? 8 : 4);
+        BinaryPrimitives.WriteInt64BigEndian(
+            bytes.AsSpan(descriptorOffset, 8),
+            9);
+        if (!useQDescriptor)
+        {
+            BinaryPrimitives.WriteInt32BigEndian(
+                bytes.AsSpan(descriptorOffset, 4),
+                9);
+        }
+
+        using var generatedStream = new MemoryStream(bytes);
+        Assert.Throws<FitsException>(() =>
+            FitsSerializer.Read(generatedStream, AppFitsContext.Default.VariableDoubleRow));
+
+        Assert.Throws<FitsException>(() => FitsDocument.Parse(bytes));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void GeneratedVariableIntReadMatchesRuntimeForPAndQDescriptors(bool useQDescriptor)
+    {
+        using var document = CreateVariableIntDocument(useQDescriptor);
+        byte[] bytes = document.ToArray();
+
+        IReadOnlyList<VariableIntRow> generated;
+        using (var generatedStream = new MemoryStream(bytes))
+        {
+            generated = FitsSerializer.Read(generatedStream, AppFitsContext.Default.VariableIntRow);
+        }
+
+        using var runtimeDocument = FitsDocument.Parse(bytes);
+        FitsColumn column = runtimeDocument.Hdus[1].Table!.Column("VALUES");
+        Assert.Equal(2, generated.Count);
+        for (int row = 0; row < generated.Count; row++)
+        {
+            Assert.Equal(column.ReadIntegerVector(row).Select(static value => (int)value), generated[row].Values);
+        }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void GeneratedVariableIntReadRejectsMalformedHeapLikeRuntime(bool useQDescriptor)
+    {
+        using var document = CreateVariableIntDocument(useQDescriptor);
+        byte[] bytes = document.ToArray();
+        int tableDataOffset = 5_760;
+        int descriptorOffset = tableDataOffset + (useQDescriptor ? 8 : 4);
+        if (useQDescriptor)
+        {
+            BinaryPrimitives.WriteInt64BigEndian(bytes.AsSpan(descriptorOffset, 8), 9);
+        }
+        else
+        {
+            BinaryPrimitives.WriteInt32BigEndian(bytes.AsSpan(descriptorOffset, 4), 9);
+        }
+
+        using var generatedStream = new MemoryStream(bytes);
+        Assert.Throws<FitsException>(() =>
+            FitsSerializer.Read(generatedStream, AppFitsContext.Default.VariableIntRow));
+
+        Assert.Throws<FitsException>(() => FitsDocument.Parse(bytes));
+    }
+
+    private static FitsDocument CreateVariableDoubleDocument(bool useQDescriptor)
+    {
+        const string format = "1PD";
+        byte[] heap = new byte[16];
+        BinaryPrimitives.WriteInt64BigEndian(heap, BitConverter.DoubleToInt64Bits(1.5));
+        BinaryPrimitives.WriteInt64BigEndian(heap.AsSpan(8), BitConverter.DoubleToInt64Bits(2.5));
+        byte[] row = new byte[useQDescriptor ? 16 : 8];
+        if (useQDescriptor)
+        {
+            BinaryPrimitives.WriteInt64BigEndian(row, 2);
+            BinaryPrimitives.WriteInt64BigEndian(row.AsSpan(8), 0);
+        }
+        else
+        {
+            BinaryPrimitives.WriteInt32BigEndian(row, 2);
+            BinaryPrimitives.WriteInt32BigEndian(row.AsSpan(4), 0);
+        }
+
+        var builder = new FitsRawTableBuilder(false)
+            .AddColumn("VALUES", useQDescriptor ? "1QD" : format)
+            .AddRow(row)
+            .SetHeap(heap);
+        builder.AddRow(useQDescriptor ? new byte[16] : new byte[8]);
+
+        return builder.Build();
+    }
+
+    private static FitsDocument CreateVariableIntDocument(bool useQDescriptor)
+    {
+        byte[] heap = new byte[8];
+        BinaryPrimitives.WriteInt32BigEndian(heap.AsSpan(0, 4), 15);
+        BinaryPrimitives.WriteInt32BigEndian(heap.AsSpan(4, 4), 25);
+        byte[] row = new byte[useQDescriptor ? 16 : 8];
+        if (useQDescriptor)
+        {
+            BinaryPrimitives.WriteInt64BigEndian(row, 2);
+            BinaryPrimitives.WriteInt64BigEndian(row.AsSpan(8), 0);
+        }
+        else
+        {
+            BinaryPrimitives.WriteInt32BigEndian(row, 2);
+            BinaryPrimitives.WriteInt32BigEndian(row.AsSpan(4), 0);
+        }
+
+        var builder = new FitsRawTableBuilder(false)
+            .AddColumn("VALUES", useQDescriptor ? "1QJ" : "1PJ")
+            .AddRow(row)
+            .SetHeap(heap);
+        builder.AddRow(useQDescriptor ? new byte[16] : new byte[8]);
+
+        return builder.Build();
     }
 
     [Fact]

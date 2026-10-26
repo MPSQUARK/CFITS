@@ -1,13 +1,3 @@
 scenario,family,warmups,iterations,mean_ns,stddev_ns,allocated_bytes,stddev_allocated_bytes,status,notes
-pixel_offset_multiply,micro-arithmetic,3,8,474375,14389.554743434062,24,0,available,CFITS-only representative measurement
-pixel_offset_counter,micro-arithmetic,3,8,328825,4958.0382065029371,24,0,available,CFITS-only representative measurement
-tile_index_division,micro-arithmetic,3,8,12236562.5,111880.24129781425,248,0,available,CFITS-only representative measurement
-tile_index_counter,micro-arithmetic,3,8,729612.5,14997.660531848673,24,0,available,CFITS-only representative measurement
-checksum_verify,checksum,3,8,136987.5,9307.8212119854197,43040,0,available,CFITS-only representative measurement
-checksum_split_division,micro-arithmetic,3,8,1033250,70486.087786375065,24,0,available,CFITS-only representative measurement
-checksum_split_bitwise,micro-arithmetic,3,8,570812.5,27000.499334007032,24,0,available,CFITS-only representative measurement
-wcs_projection,wcs,3,8,15898112.5,390169.96090531768,6744,410.51326757748387,available,CFITS-only representative measurement
-wcs_inverse_allocating,wcs,3,8,19227500,2146380.8462486002,4000024,0,available,CFITS-only representative measurement
-wcs_inverse_span,wcs,3,8,16391512.5,592684.93301367853,24,0,available,CFITS-only representative measurement
-clock_unit_cached,clock,3,8,80212.5,1761.0366265356322,24,0,available,CFITS-only representative measurement
-checksum_sum_1mb,checksum,3,8,200025,777.81745930520231,24,0,available,CFITS-only representative measurement
+pixel_endian_scalar,pixels,3,8,2372387.5,440095.47482823057,24,0,available,Paired scalar BinaryPrimitives loop over 1048576 int32 values
+pixel_endian_vector,pixels,3,8,703862.5,182250.18861444286,24,0,available,FitsEndian vector path over the same 1048576 int32 values; 70 percent faster than the scalar row

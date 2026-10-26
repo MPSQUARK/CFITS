@@ -115,7 +115,31 @@ public readonly ref struct FitsCardView
         return ParseValue(card, position);
     }
 
-    public string KeywordText() => Ascii(Keyword);
+    public string KeywordText()
+    {
+        ReadOnlySpan<byte> keyword = Keyword;
+        if (keyword.IsEmpty)
+        {
+            return string.Empty;
+        }
+
+        if (keyword.SequenceEqual("COMMENT"u8))
+        {
+            return "COMMENT";
+        }
+
+        if (keyword.SequenceEqual("HISTORY"u8))
+        {
+            return "HISTORY";
+        }
+
+        if (keyword.SequenceEqual("CONTINUE"u8))
+        {
+            return "CONTINUE";
+        }
+
+        return keyword.SequenceEqual("END"u8) ? "END" : Ascii(keyword);
+    }
 
     public string? TextValue()
     {
@@ -424,7 +448,7 @@ public readonly ref struct FitsCardView
         var token = card[start..index];
         if (!dot && !exponent)
         {
-            if (long.TryParse(Encoding.ASCII.GetString(token), NumberStyles.AllowLeadingSign, CultureInfo.InvariantCulture, out long integer))
+            if (TryParseInteger(token, out long integer))
             {
                 return new NumberToken { IsInteger = true, Integer = integer, Real = integer, Next = index };
             }
@@ -447,6 +471,53 @@ public readonly ref struct FitsCardView
         }
 
         return new NumberToken { IsInteger = false, Real = real, Next = index };
+    }
+
+    private static bool TryParseInteger(ReadOnlySpan<byte> token, out long value)
+    {
+        value = 0;
+        if (token.IsEmpty)
+        {
+            return false;
+        }
+
+        int index = 0;
+        bool negative = token[0] == (byte)'-';
+        if (negative || token[0] == (byte)'+')
+        {
+            index++;
+        }
+
+        if (index == token.Length)
+        {
+            return false;
+        }
+
+        ulong magnitude = 0;
+        const ulong MaximumBeforeFinalDigit = 922337203685477580UL;
+        uint maximumFinalDigit = negative ? 8u : 7u;
+        for (; index < token.Length; index++)
+        {
+            byte digit = token[index];
+            if (digit is < (byte)'0' or > (byte)'9')
+            {
+                return false;
+            }
+
+            uint next = (uint)(digit - (byte)'0');
+            if (magnitude > MaximumBeforeFinalDigit
+                || (magnitude == MaximumBeforeFinalDigit && next > maximumFinalDigit))
+            {
+                return false;
+            }
+
+            magnitude = (magnitude * 10) + next;
+        }
+
+        value = negative
+            ? magnitude == 0x8000_0000_0000_0000UL ? long.MinValue : -(long)magnitude
+            : (long)magnitude;
+        return true;
     }
 
     private readonly struct CommentSpan

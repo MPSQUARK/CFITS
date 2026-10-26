@@ -11,6 +11,7 @@ public ref struct FitsReader
     private long _dataLength;
     private HduShape _shape;
     private FitsCardView _card;
+    private int _cardOffset;
 
     public FitsReader(ReadOnlySpan<byte> source)
     {
@@ -26,6 +27,8 @@ public ref struct FitsReader
     public readonly int HeaderOffset => _hduStart;
 
     public readonly FitsCardView Card => _card;
+
+    public readonly int CardOffset => _cardOffset;
 
     public readonly long DataOffset => _dataOffset;
 
@@ -128,6 +131,7 @@ public ref struct FitsReader
                 error);
         }
         int cardAt = _offset;
+        _cardOffset = cardAt;
         _offset += FitsBlock.CardSize;
         if (view.IsEnd)
         {

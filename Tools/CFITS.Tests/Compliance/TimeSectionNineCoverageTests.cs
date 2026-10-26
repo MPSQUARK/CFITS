@@ -47,6 +47,28 @@ public sealed class TimeSectionNineCoverageTests
         Assert.Equal(59000 + (10d / 86400d), clock.ToModifiedJulianDate(0), 12);
     }
 
+    [Theory]
+    [InlineData("s", 59000d, 2d, -123.5d)]
+    [InlineData("min", 59000.25d, -7.25d, 456.75d)]
+    [InlineData("ns", 51544.5d, 1_000_000d, -987654.5d)]
+    public void TimeConversionMatchesReferenceExpressionAcrossUnitsAndSigns(
+        string unit,
+        double reference,
+        double offset,
+        double time)
+    {
+        var clock = FitsClock.FromHeader(FitsHeader.Builder()
+            .Text("TIMEUNIT", unit)
+            .Real("MJDREF", reference)
+            .Real("TIMEOFFS", offset)
+            .Build());
+
+        double offsetDays = offset * clock.UnitDays;
+        double expected = reference + ((offsetDays / clock.UnitDays + time) * clock.UnitDays);
+
+        Assert.Equal(expected, clock.ToModifiedJulianDate(time), 12);
+    }
+
     [Fact]
     public void ExposesObservationBoundsElapsedTimeAndEphemerisReference()
     {

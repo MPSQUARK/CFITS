@@ -30,9 +30,32 @@ public sealed class FitsRawTableBuilder
         return this;
     }
 
+    /// <summary>
+    /// Adds a row without copying it. The caller must not mutate or reuse
+    /// <paramref name="row"/> until <see cref="Build"/> has completed.
+    /// </summary>
+    public FitsRawTableBuilder AddRowOwned(byte[] row)
+    {
+        ArgumentNullException.ThrowIfNull(row);
+        _rows.Add(row);
+        return this;
+    }
+
     public FitsRawTableBuilder SetHeap(ReadOnlyMemory<byte> heap, long? theap = null)
     {
         _heap = heap.ToArray();
+        _theap = theap;
+        return this;
+    }
+
+    /// <summary>
+    /// Sets the heap without copying it. The caller must not mutate or reuse
+    /// <paramref name="heap"/> until <see cref="Build"/> has completed.
+    /// </summary>
+    public FitsRawTableBuilder SetHeapOwned(byte[] heap, long? theap = null)
+    {
+        ArgumentNullException.ThrowIfNull(heap);
+        _heap = heap;
         _theap = theap;
         return this;
     }

@@ -47,7 +47,7 @@ public sealed class FitsHeader
 
     internal static FitsHeader FromPhysical(IReadOnlyList<CardRecord> physical, int hduIndex)
     {
-        var logical = new List<CardRecord>();
+        var logical = new List<CardRecord>(physical.Count);
         CardRecord? open = null;
         foreach (var record in physical)
         {
@@ -56,6 +56,7 @@ public sealed class FitsHeader
                 open.AppendView(record);
                 if (!record.Continues)
                 {
+                    open.Complete();
                     open = null;
                 }
 
@@ -67,6 +68,7 @@ public sealed class FitsHeader
                 // An ampersand is a continuation marker only when the next
                 // physical card is a conforming CONTINUE card. Otherwise it
                 // remains the literal final character of the string.
+                open.Complete();
                 open.Card = open.Card with { Text = (open.Card.Text ?? "") + "&" };
                 open.Continues = false;
             }
@@ -79,7 +81,7 @@ public sealed class FitsHeader
                 {
                     Keyword = "COMMENT",
                     Kind = FitsValueKind.Commentary,
-                    Text = Encoding.ASCII.GetString(record.Images[0], 8, FitsBlock.CardSize - 8).TrimEnd(),
+                    Text = Encoding.ASCII.GetString(record.Images[0].Span[8..]).TrimEnd(),
                     Comment = "",
                 };
                 logical.Add(record);
@@ -94,6 +96,7 @@ public sealed class FitsHeader
         {
             // The final physical card is also a valid place for a literal
             // ampersand; no following CONTINUE card means no continuation.
+            open.Complete();
             open.Card = open.Card with { Text = (open.Card.Text ?? "") + "&" };
             open.Continues = false;
         }
@@ -110,7 +113,7 @@ public sealed class FitsHeader
             {
                 foreach (var image in record.Images)
                 {
-                    stream.Write(image);
+                    stream.Write(image.Span);
                     written += image.Length;
                 }
 

@@ -1,7 +1,36 @@
+using System.Buffers.Binary;
+
 namespace CFITS.Tests;
 
 public sealed class TableCompressionTests
 {
+    [Fact]
+    public void NocompressVariableExpansionPreservesHeapBytes()
+    {
+        byte[] expected = [0, 0, 0, 1, 0, 0, 0, 2, 0, 0, 0, 3, 0, 0, 0, 4];
+        using var document = CreateNocompressTable(expected, compressedCount: expected.Length, compressedOffset: 32, heapOffset: 0);
+
+        FitsTable table = document.Hdus[1].Table!;
+        Assert.Equal(expected, table.Column("COMPRESSED").ReadVariableBytes(0));
+    }
+
+    [Theory]
+    [InlineData(17, 32, 0)]
+    [InlineData(16, 40, 0)]
+    [InlineData(16, 32, 1)]
+    public void RejectsMalformedNocompressVariableDescriptor(long compressedCount, long compressedOffset, long heapOffset)
+    {
+        Assert.Throws<FitsException>(() =>
+        {
+            using var document = CreateNocompressTable(
+                [0, 0, 0, 1, 0, 0, 0, 2, 0, 0, 0, 3, 0, 0, 0, 4],
+                compressedCount,
+                compressedOffset,
+                heapOffset);
+            _ = document.Hdus[1].Table;
+        });
+    }
+
     [Fact]
     public void DecompressesFixedAndVariableColumns()
     {
@@ -49,6 +78,31 @@ public sealed class TableCompressionTests
         Assert.Equal(2, samples.ReadInteger(0, 1));
         Assert.Equal(1, samples.Count(1));
         Assert.Equal(3, samples.ReadInteger(1, 0));
+    }
+
+    private static FitsDocument CreateNocompressTable(byte[] payload, long compressedCount, long compressedOffset, long heapOffset)
+    {
+        const int bundleLength = 32;
+        byte[] bundle = new byte[bundleLength + payload.Length];
+        BinaryPrimitives.WriteInt32BigEndian(bundle.AsSpan(0, 4), checked((int)compressedCount));
+        BinaryPrimitives.WriteInt32BigEndian(bundle.AsSpan(4, 4), checked((int)compressedOffset));
+        BinaryPrimitives.WriteInt32BigEndian(bundle.AsSpan(8, 4), 4);
+        BinaryPrimitives.WriteInt32BigEndian(bundle.AsSpan(12, 4), checked((int)heapOffset));
+        payload.CopyTo(bundle.AsSpan(bundleLength));
+        string bytes = new(bundle.Select(static value => (char)value).ToArray());
+
+        return FitsDocumentBuilder.Create()
+            .BinaryTable(
+                new BinaryTableBuilder().AddVariable("COMPRESSED", new[] { bytes }),
+                header => header
+                    .Logical("ZTABLE", true)
+                    .Integer("ZNAXIS1", 8)
+                    .Integer("ZNAXIS2", 1)
+                    .Integer("ZPCOUNT", payload.Length)
+                    .Integer("ZTILELEN", 1)
+                    .Text("ZFORM1", "1PJ")
+                    .Text("ZCTYP1", "NOCOMPRESS"))
+            .Build();
     }
 
     private static string FindRoot()

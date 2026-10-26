@@ -98,32 +98,88 @@ public sealed class FitsImage
     {
         ValidateRectangularShape(destination.GetLength(0), destination.GetLength(1), 0, 2);
         EnsureIntegerDestination(destination.Length);
-        for (int index = 0; index < Length; index++)
-            destination[index / destination.GetLength(1), index % destination.GetLength(1)] = (short)ReadInteger(index);
+        if (CanCopyStoredBits(16))
+        {
+            FitsEndian.ReadInt16(_raw.Span[..(Length * sizeof(short))], FitsEndian.AsContiguous(destination)[..Length]);
+            return;
+        }
+
+        int width = destination.GetLength(1);
+        for (int index = 0, row = 0, column = 0; index < Length; index++)
+        {
+            destination[row, column] = (short)ReadInteger(index);
+            if (++column == width)
+            {
+                column = 0;
+                row++;
+            }
+        }
     }
 
     public void CopyInteger(int[,] destination)
     {
         ValidateRectangularShape(destination.GetLength(0), destination.GetLength(1), 0, 2);
         EnsureIntegerDestination(destination.Length);
-        for (int index = 0; index < Length; index++)
-            destination[index / destination.GetLength(1), index % destination.GetLength(1)] = (int)ReadInteger(index);
+        if (CanCopyStoredBits(32))
+        {
+            FitsEndian.ReadInt32(_raw.Span[..(Length * sizeof(int))], FitsEndian.AsContiguous(destination)[..Length]);
+            return;
+        }
+
+        int width = destination.GetLength(1);
+        for (int index = 0, row = 0, column = 0; index < Length; index++)
+        {
+            destination[row, column] = (int)ReadInteger(index);
+            if (++column == width)
+            {
+                column = 0;
+                row++;
+            }
+        }
     }
 
     public void CopyInteger(long[,] destination)
     {
         ValidateRectangularShape(destination.GetLength(0), destination.GetLength(1), 0, 2);
         EnsureIntegerDestination(destination.Length);
-        for (int index = 0; index < Length; index++)
-            destination[index / destination.GetLength(1), index % destination.GetLength(1)] = (long)ReadInteger(index);
+        if (CanCopyStoredBits(64))
+        {
+            FitsEndian.ReadInt64(_raw.Span[..(Length * sizeof(long))], FitsEndian.AsContiguous(destination)[..Length]);
+            return;
+        }
+
+        int width = destination.GetLength(1);
+        for (int index = 0, row = 0, column = 0; index < Length; index++)
+        {
+            destination[row, column] = (long)ReadInteger(index);
+            if (++column == width)
+            {
+                column = 0;
+                row++;
+            }
+        }
     }
 
     public void CopyInteger(byte[,] destination)
     {
         ValidateRectangularShape(destination.GetLength(0), destination.GetLength(1), 0, 2);
         EnsureIntegerDestination(destination.Length);
-        for (int index = 0; index < Length; index++)
-            destination[index / destination.GetLength(1), index % destination.GetLength(1)] = (byte)ReadInteger(index);
+        if (CanCopyStoredBits(8))
+        {
+            _raw.Span[..Length].CopyTo(FitsEndian.AsContiguous(destination)[..Length]);
+            return;
+        }
+
+        int width = destination.GetLength(1);
+        for (int index = 0, row = 0, column = 0; index < Length; index++)
+        {
+            destination[row, column] = (byte)ReadInteger(index);
+            if (++column == width)
+            {
+                column = 0;
+                row++;
+            }
+        }
     }
 
     public void CopyInteger(short[,,] destination)
@@ -202,13 +258,20 @@ public sealed class FitsImage
     {
         ValidateRectangularShape(destination.GetLength(0), destination.GetLength(1), 0, 2);
         int n1 = Axes[0];
+        bool physical = _mode == FitsScaleMode.Physical;
+        if (Bitpix == -32 && (!physical || (Scale == 1 && Zero == 0 && Blank is null)))
+        {
+            FitsEndian.ReadSingle(_raw.Span[..(Length * sizeof(float))], FitsEndian.AsContiguous(destination)[..Length]);
+            return;
+        }
+
         Pixels.Copy(
             _raw.Span,
             Bitpix,
             Length,
-            _mode == FitsScaleMode.Physical ? Scale : 1,
-            _mode == FitsScaleMode.Physical ? Zero : 0,
-            _mode == FitsScaleMode.Physical ? Blank : null,
+            physical ? Scale : 1,
+            physical ? Zero : 0,
+            physical ? Blank : null,
             destination,
             n1);
     }
@@ -360,6 +423,9 @@ public sealed class FitsImage
             throw new FitsException("The pixel index is outside the image.", new FitsLocation());
         }
     }
+
+    private bool CanCopyStoredBits(int bitpix) =>
+        Bitpix == bitpix && (_mode == FitsScaleMode.Stored || (Blank is null && Scale == 1 && Zero == 0));
 
     private void ValidateRectangularShape(int first, int second, int third, int rank)
     {

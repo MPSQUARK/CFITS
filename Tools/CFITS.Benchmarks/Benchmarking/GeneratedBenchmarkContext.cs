@@ -7,6 +7,8 @@ namespace CFITS.Benchmarks;
 [FitsSerializable(typeof(GeneratedFluxRow))]
 [FitsSerializable(typeof(GeneratedAsciiRow))]
 [FitsSerializable(typeof(GeneratedVariableRow))]
+[FitsSerializable(typeof(GeneratedVariableDoubleRow))]
+[FitsSerializable(typeof(GeneratedVariableIntRow))]
 [FitsSerializable(typeof(GeneratedCompressedImage))]
 [FitsSerializable(typeof(GeneratedWholeFile))]
 [FitsSerializable(typeof(GeneratedCompositeFile))]

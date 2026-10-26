@@ -13,12 +13,13 @@ public sealed class FitsHdu
             ["BINTABLE"] = FitsHduKind.BinaryTable,
         }.ToFrozenDictionary(StringComparer.OrdinalIgnoreCase);
 
-    private FitsHdu(int index, FitsHduKind kind, FitsHeader header, ReadOnlyMemory<byte> raw, ReadOnlyMemory<byte> headerBytes, FitsImage? image, FitsTable? table, FitsGroups? groups, FitsIntegrity integrity)
+    private FitsHdu(int index, FitsHduKind kind, FitsHeader header, ReadOnlyMemory<byte> raw, long paddedDataLength, ReadOnlyMemory<byte> headerBytes, FitsImage? image, FitsTable? table, FitsGroups? groups, FitsIntegrity integrity)
     {
         Index = index;
         Kind = kind;
         Header = header;
         RawData = raw;
+        PaddedDataLength = paddedDataLength;
         HeaderBytes = headerBytes;
         Image = image;
         Table = table;
@@ -37,6 +38,7 @@ public sealed class FitsHdu
     private ReadOnlyMemory<byte> HeaderBytes { get; }
 
     internal int HeaderBytesLength => HeaderBytes.Length;
+    internal long PaddedDataLength { get; }
 
     public FitsImage? Image { get; }
 
@@ -46,7 +48,7 @@ public sealed class FitsHdu
 
     public FitsIntegrity Integrity { get; }
 
-    internal static FitsHdu Create(int index, FitsHeader header, ReadOnlyMemory<byte> raw, HduShape shape, FitsScaleMode mode, ReadOnlyMemory<byte> headerBytes, ReadOnlyMemory<byte> dataBytes)
+    internal static FitsHdu Create(int index, FitsHeader header, ReadOnlyMemory<byte> raw, long paddedDataLength, HduShape shape, FitsScaleMode mode, ReadOnlyMemory<byte> headerBytes, ReadOnlyMemory<byte> dataBytes)
     {
         var kind = KindOf(shape);
         FitsImage? image = kind == FitsHduKind.Image ? FitsImage.Create(header, raw, shape, mode) : null;
@@ -65,10 +67,10 @@ public sealed class FitsHdu
         FitsGroups? groups = kind == FitsHduKind.RandomGroups ? FitsGroups.Create(header, raw, shape, mode) : null;
         bool uncompressed = image is not null && header.TryGetCard("ZDATASUM", out _);
         var integrity = FitsChecksum.Inspect(headerBytes.Span, dataBytes.Span, header, uncompressed ? image!.Stored.Span : default, uncompressed);
-        return new FitsHdu(index, kind, header, raw, headerBytes, image, table, groups, integrity);
+        return new FitsHdu(index, kind, header, raw, paddedDataLength, headerBytes, image, table, groups, integrity);
     }
 
-    public FitsHduSnapshot Snapshot() => new(Index, Kind, HeaderBytes.Span, RawData.Span);
+    public FitsHduSnapshot Snapshot() => FitsHduSnapshot.Share(Index, Kind, HeaderBytes, RawData);
 
     private static FitsHduKind KindOf(HduShape shape)
     {

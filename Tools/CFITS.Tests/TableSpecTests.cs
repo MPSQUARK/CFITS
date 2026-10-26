@@ -46,6 +46,20 @@ public sealed class TableSpecTests
     }
 
     [Fact]
+    public void ParsesAsciiIntegerWhitespaceAndBoundariesWithoutChangingResults()
+    {
+        using var document = new FitsRawTableBuilder(true)
+            .AddColumn("VALUE", "I20")
+            .AddRow(Encoding.ASCII.GetBytes("                   7"))
+            .AddRow(Encoding.ASCII.GetBytes("                 -12"))
+            .Build();
+
+        FitsColumn column = document.Hdus[1].Table!.Column("VALUE");
+        Assert.Equal(7, column.ReadInteger(0));
+        Assert.Equal(-12, column.ReadInteger(1));
+    }
+
+    [Fact]
     public void EncodesBinaryScalarTypesInBigEndianRowStride()
     {
         using var document = FitsDocumentBuilder.Create()
@@ -78,6 +92,47 @@ public sealed class TableSpecTests
     }
 
     [Fact]
+    public void BulkScalarReadsMatchRowReadsAndPreserveWireBytes()
+    {
+        using var document = FitsDocumentBuilder.Create()
+            .BinaryTable(new BinaryTableBuilder()
+                .Add("B", new byte[] { 1, 2, 255 })
+                .Add("I", new short[] { -3, 4, 123 })
+                .Add("J", new[] { 5, -6, 789 })
+                .Add("K", new long[] { 7, -8, 9 })
+                .Add("E", new[] { 1.5f, -2.5f, 3.25f })
+                .Add("D", new[] { 3.25, -4.5, 6.75 }))
+            .Build();
+
+        FitsTable table = document.Hdus[1].Table!;
+        foreach (FitsColumn column in table.Columns)
+        {
+            long[] integers = new long[table.RowCount];
+            double[] reals = new double[table.RowCount];
+            bool copiedIntegers = column.TryCopyInteger(integers);
+            bool copiedReals = column.TryCopyReal(reals);
+            Assert.True(copiedIntegers || copiedReals);
+
+            for (int row = 0; row < table.RowCount; row++)
+            {
+                if (copiedIntegers)
+                    Assert.Equal(column.ReadInteger(row), integers[row]);
+                if (copiedReals)
+                    Assert.Equal(column.ReadReal(row), reals[row], 10);
+            }
+        }
+
+        byte[] expectedFirstRow = new byte[27];
+        expectedFirstRow[0] = 1;
+        BinaryPrimitives.WriteInt16BigEndian(expectedFirstRow.AsSpan(1), -3);
+        BinaryPrimitives.WriteInt32BigEndian(expectedFirstRow.AsSpan(3), 5);
+        BinaryPrimitives.WriteInt64BigEndian(expectedFirstRow.AsSpan(7), 7);
+        BinaryPrimitives.WriteSingleBigEndian(expectedFirstRow.AsSpan(15), 1.5f);
+        BinaryPrimitives.WriteDoubleBigEndian(expectedFirstRow.AsSpan(19), 3.25);
+        Assert.Equal(expectedFirstRow, document.Hdus[1].RawData.Span[..27].ToArray());
+    }
+
+    [Fact]
     public void PreservesVectorsComplexAndBitPackingRules()
     {
         using var document = FitsDocumentBuilder.Create()
@@ -106,6 +161,21 @@ public sealed class TableSpecTests
         Assert.Equal(1, table.Column("X").ReadInteger(1, 9));
         Assert.Equal(0x81, document.Hdus[1].RawData.Span[40]);
         Assert.Equal(0x40, document.Hdus[1].RawData.Span[82]);
+    }
+
+    [Fact]
+    public void ReadsEveryBitPositionMsbFirst()
+    {
+        bool[] values = Enumerable.Range(0, 19).Select(index => (index % 3) == 0).ToArray();
+        using var document = FitsDocumentBuilder.Create()
+            .BinaryTable(new BinaryTableBuilder().AddBits("BITS", values.Length, [values]))
+            .Build();
+
+        FitsColumn column = document.Hdus[1].Table!.Column("BITS");
+        for (int index = 0; index < values.Length; index++)
+        {
+            Assert.Equal(values[index] ? 1 : 0, column.ReadInteger(0, index));
+        }
     }
 
     [Fact]
@@ -176,6 +246,65 @@ public sealed class TableSpecTests
         Assert.Equal(3.5, table.Column("DOUBLES").ReadReal(1), 10);
         Assert.Equal(9, table.Column("BITS").Count(2));
         Assert.Equal(1, table.Column("BITS").ReadInteger(2, 1));
+    }
+
+    [Fact]
+    public void WritesMixedFixedAndVariableRowsWithExactWireBytes()
+    {
+        using var document = FitsDocumentBuilder.Create()
+            .BinaryTable(new BinaryTableBuilder()
+                .Add("FIXED", new[] { 1, 2, 3 })
+                .AddVariable("VARIABLE", new int[][] { [10, 20], [30], [] }))
+            .Build();
+
+        byte[] expected = new byte[48];
+        BinaryPrimitives.WriteInt32BigEndian(expected.AsSpan(0, 4), 1);
+        BinaryPrimitives.WriteInt32BigEndian(expected.AsSpan(4, 4), 2);
+        BinaryPrimitives.WriteInt32BigEndian(expected.AsSpan(8, 4), 0);
+        BinaryPrimitives.WriteInt32BigEndian(expected.AsSpan(12, 4), 2);
+        BinaryPrimitives.WriteInt32BigEndian(expected.AsSpan(16, 4), 1);
+        BinaryPrimitives.WriteInt32BigEndian(expected.AsSpan(20, 4), 8);
+        BinaryPrimitives.WriteInt32BigEndian(expected.AsSpan(24, 4), 3);
+        BinaryPrimitives.WriteInt32BigEndian(expected.AsSpan(28, 4), 0);
+        BinaryPrimitives.WriteInt32BigEndian(expected.AsSpan(32, 4), 12);
+        BinaryPrimitives.WriteInt32BigEndian(expected.AsSpan(36, 4), 10);
+        BinaryPrimitives.WriteInt32BigEndian(expected.AsSpan(40, 4), 20);
+        BinaryPrimitives.WriteInt32BigEndian(expected.AsSpan(44, 4), 30);
+        Assert.Equal(48, document.Hdus[1].RawData.Length);
+        Assert.Equal(expected, document.Hdus[1].RawData.Span.ToArray());
+    }
+
+    [Fact]
+    public void ReadsVariableVectorsInBulkAndExposesReadOnlyHeapMemory()
+    {
+        using var document = FitsDocumentBuilder.Create()
+            .BinaryTable(new BinaryTableBuilder()
+                .AddVariable("INTS", new int[][] { [10, 20], [30] })
+                .AddVariable("DOUBLES", new[] { new[] { 1.5, 2.5 }, new[] { 3.5 } }))
+            .Build();
+
+        FitsTable table = document.Hdus[1].Table!;
+        FitsColumn ints = table.Column("INTS");
+        FitsColumn doubles = table.Column("DOUBLES");
+
+        Assert.Equal(new long[] { 10, 20 }, ints.ReadIntegerVector(0));
+        Assert.Equal(new double[] { 1.5, 2.5 }, doubles.ReadRealVector(0));
+        Assert.Equal(new byte[] { 0, 0, 0, 10, 0, 0, 0, 20 }, ints.ReadVariableMemory(0).ToArray());
+        Assert.Equal(new byte[] { 0, 0, 0, 10, 0, 0, 0, 20 }, ints.ReadVariableBytes(0));
+    }
+
+    [Fact]
+    public void OwnedRawRowsAndHeapMatchCopyingBuilder()
+    {
+        byte[] row = [0, 0, 0, 7];
+        byte[] heap = [];
+        using var document = new FitsRawTableBuilder(false)
+            .AddColumn("VALUE", "1J")
+            .AddRowOwned(row)
+            .SetHeapOwned(heap)
+            .Build();
+
+        Assert.Equal(7, document.Hdus[1].Table!.Column("VALUE").ReadInteger(0));
     }
 
     [Fact]

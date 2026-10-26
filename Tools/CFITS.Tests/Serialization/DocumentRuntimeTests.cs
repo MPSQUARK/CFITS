@@ -55,6 +55,22 @@ public sealed class DocumentRuntimeTests
     }
 
     [Fact]
+    public void MultiHduWritePreservesReferencePaddingAtBoundaryLengths()
+    {
+        using var document = FitsDocumentBuilder.Create()
+            .Image([1], new byte[] { 1 })
+            .Image([2880], new byte[2880])
+            .Image([2881], new byte[2881])
+            .Build();
+
+        Assert.Equal(3, document.Hdus.Count);
+        Assert.Equal(20160, document.ToArray().Length);
+        Assert.Equal(1, document.Hdus[0].Image!.ReadInteger(0));
+        Assert.Equal(2880, document.Hdus[1].RawData.Length);
+        Assert.Equal(2881, document.Hdus[2].RawData.Length);
+    }
+
+    [Fact]
     public void DocumentTypeInfoOpensWithRequestedOptions()
     {
         using var stream = new MemoryStream(

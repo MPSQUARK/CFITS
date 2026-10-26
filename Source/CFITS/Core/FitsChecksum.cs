@@ -148,10 +148,10 @@ public static class FitsChecksum
     internal static FitsIntegrity Inspect(ReadOnlySpan<byte> header, ReadOnlySpan<byte> data, FitsHeader cards, ReadOnlySpan<byte> uncompressed, bool checkUncompressed)
     {
         uint dataSum = Sum(data);
-        uint total = Add(dataSum, Sum(header));
         bool? checksum = null;
         if (TryGetUniqueCard(cards, "CHECKSUM", out var checksumCard))
         {
+            uint total = Add(dataSum, Sum(header));
             checksum = checksumCard.GetString() is string encoded
                 && encoded.Length == 16
                 && IsChecksumText(encoded)
@@ -222,7 +222,7 @@ public static class FitsChecksum
     {
         foreach (char character in value)
         {
-            if (character is < '0' or > 'z' || ExcludedCharacters.Contains(character))
+            if (character is < '0' or > 'z' || IsExcluded(character))
             {
                 return false;
             }
@@ -230,6 +230,9 @@ public static class FitsChecksum
 
         return true;
     }
+
+    private static bool IsExcluded(char character) =>
+        character is >= ':' and <= '@' or >= '[' and <= '`';
 
     private static byte[] InsertMissing(byte[] hdu, int end, int headerLength, int dataLength, bool datasum, bool checksum)
     {
@@ -341,4 +344,5 @@ public static class FitsChecksum
 
         return (uint)((high << 16) + low);
     }
+
 }

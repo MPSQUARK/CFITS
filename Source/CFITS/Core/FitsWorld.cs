@@ -55,9 +55,10 @@ public sealed class FitsWorld
     private readonly double[] _euler;
     private readonly double[] _pv;
     private readonly string?[] _axisAlgorithms;
+    private readonly bool[] _logAxes;
     private readonly IReadOnlyList<WcsAxisMetadata> _axisMetadata;
 
-    private FitsWorld(double[] referencePixel, double[] referenceValue, double[] scale, double[] matrix, bool scaledMatrix, int longitude, int latitude, string? projection, double[] euler, double[] pv, string?[] axisAlgorithms, IReadOnlyList<WcsAxisMetadata> axisMetadata)
+    private FitsWorld(double[] referencePixel, double[] referenceValue, double[] scale, double[] matrix, bool scaledMatrix, int longitude, int latitude, string? projection, double[] euler, double[] pv, string?[] axisAlgorithms, bool[] logAxes, IReadOnlyList<WcsAxisMetadata> axisMetadata)
     {
         _referencePixel = referencePixel;
         _referenceValue = referenceValue;
@@ -70,6 +71,7 @@ public sealed class FitsWorld
         _euler = euler;
         _pv = pv;
         _axisAlgorithms = axisAlgorithms;
+        _logAxes = logAxes;
         _axisMetadata = axisMetadata;
     }
 
@@ -247,6 +249,7 @@ public sealed class FitsWorld
         }
         var metadata = new WcsAxisMetadata[count];
         var axisAlgorithms = new string?[count];
+        var logAxes = new bool[count];
         string? referenceSystem = Text(header, "SPECSYS", version);
         string? velocitySystem = Text(header, "SSYSOBS", version);
         double? restFrequency = OptionalFinite(header, "RESTFRQ", version);
@@ -261,6 +264,7 @@ public sealed class FitsWorld
                 ? algorithmName
                 : null;
             axisAlgorithms[axis] = axisAlgorithm;
+            logAxes[axis] = string.Equals(axisAlgorithm, "LOG", StringComparison.OrdinalIgnoreCase);
             metadata[axis] = new WcsAxisMetadata(
                 axis + 1,
                 coordinate,
@@ -280,7 +284,7 @@ public sealed class FitsWorld
                 velocityReference);
         }
 
-        return new FitsWorld(referencePixel, referenceValue, scale, matrix, cd, longitude, latitude, active, euler, pv, axisAlgorithms, metadata);
+        return new FitsWorld(referencePixel, referenceValue, scale, matrix, cd, longitude, latitude, active, euler, pv, axisAlgorithms, logAxes, metadata);
     }
 
     public double[] PixelToWorld(ReadOnlySpan<double> pixel)
@@ -300,6 +304,17 @@ public sealed class FitsWorld
         if (world.Length < Axes)
         {
             throw new FitsException("The world coordinate destination is too short.", new FitsLocation());
+        }
+
+        if (_projectionKind == Projection.None && Axes == 2)
+        {
+            double first = pixel[0] - _referencePixel[0];
+            double second = pixel[1] - _referencePixel[1];
+            world[0] = _referenceValue[0] + (_matrix[0] * first + _matrix[1] * second) * (_scaledMatrix ? 1 : _scale[0]);
+            world[1] = _referenceValue[1] + (_matrix[2] * first + _matrix[3] * second) * (_scaledMatrix ? 1 : _scale[1]);
+            world[0] = ApplySpectralForward(world[0], 0);
+            world[1] = ApplySpectralForward(world[1], 1);
+            return;
         }
 
         Span<double> source = stackalloc double[Axes];
@@ -415,6 +430,26 @@ public sealed class FitsWorld
         double pv2 = pv[1];
         double radius = Math.Sqrt((x * x) + (y * y));
         ValidateNativeDomain(projection, x, y, radius, pv1);
+        if (projection is Projection.Ait)
+        {
+            return AitNative(x, y);
+        }
+
+        if (projection is Projection.Mol)
+        {
+            return MolNative(x, y);
+        }
+
+        if (projection is Projection.Cyp)
+        {
+            return CypNative(x, y, pv1, pv2);
+        }
+
+        if (projection is Projection.Coe or Projection.Cod or Projection.Coo or Projection.Bon or Projection.Cop)
+        {
+            return ConicNative(projection, x, y, pv1, pv2);
+        }
+
         double phi = double.RadiansToDegrees(Math.Atan2(x, -y));
         double theta = projection switch
         {
@@ -424,7 +459,6 @@ public sealed class FitsWorld
             Projection.Stg => 90 - (2 * double.RadiansToDegrees(Math.Atan(RadiansPerDegree * radius / 2))),
             Projection.Zea => 90 - (2 * double.RadiansToDegrees(Math.Asin(RadiansPerDegree * radius / 2))),
             Projection.Cea => double.RadiansToDegrees(Math.Asin(Math.Clamp(y * RadiansPerDegree * pv1, -1, 1))),
-            Projection.Ait => AitNative(x, y).Theta,
             Projection.Azp => AzpNative(x, y, pv2, pv1).Theta,
             Projection.Szp => SlantNative(x, y, pv2, pv1).Theta,
             Projection.Zpn => ZpnNative(x, y, pv),
@@ -433,9 +467,6 @@ public sealed class FitsWorld
             Projection.Mer => double.RadiansToDegrees(2 * Math.Atan(Math.Exp(y * RadiansPerDegree)) - Math.PI / 2),
             Projection.Sfl => y,
             Projection.Par => DegreesPerRadian * 3 * Math.Asin(Math.Clamp(y / 180, -1, 1)),
-            Projection.Mol => MolNative(x, y).Theta,
-            Projection.Cyp => CypNative(x, y, pv1, pv2).Theta,
-            Projection.Coe or Projection.Cod or Projection.Coo or Projection.Bon or Projection.Cop => ConicNative(projection, x, y, pv1, pv2).Theta,
             Projection.Car => y,
             _ => throw new FitsException("Projection is not implemented.", new FitsLocation()),
         };
@@ -446,10 +477,6 @@ public sealed class FitsWorld
         else if (projection == Projection.Azp)
         {
             phi = AzpNative(x, y, pv2, pv1).Phi;
-        }
-        else if (projection == Projection.Ait)
-        {
-            phi = AitNative(x, y).Phi;
         }
         else if (projection == Projection.Cea)
         {
@@ -1167,7 +1194,7 @@ public sealed class FitsWorld
 
     private double ApplySpectralForward(double value, int axis)
     {
-        if (_axisAlgorithms[axis] != "LOG")
+        if (!_logAxes[axis])
         {
             return value;
         }
@@ -1185,7 +1212,7 @@ public sealed class FitsWorld
 
     private double ApplySpectralInverse(double value, int axis)
     {
-        if (_axisAlgorithms[axis] != "LOG")
+        if (!_logAxes[axis])
         {
             return value;
         }

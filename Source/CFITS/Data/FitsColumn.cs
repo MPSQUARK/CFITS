@@ -174,42 +174,50 @@ public sealed class FitsColumn
             return false;
         }
 
+        // The validated table buffer makes every row start representable as an
+        // int; advancing by the fixed stride preserves row * stride + offset
+        // without repeating the multiplication in this bulk hot path.
+        int start = _offset;
         switch (_spec.Code)
         {
             case 'B':
                 for (int row = 0; row < _rows; row++)
                 {
-                    long stored = FixedField(row, 0, 1)[0];
+                    long stored = _data.Span[start];
                     if (_null is long marker && stored == marker)
                         throw NullAt(row);
                     destination[row] = stored;
+                    start += _stride;
                 }
                 break;
             case 'I':
                 for (int row = 0; row < _rows; row++)
                 {
-                    long stored = BinaryPrimitives.ReadInt16BigEndian(FixedField(row, 0, 2));
+                    long stored = BinaryPrimitives.ReadInt16BigEndian(_data.Span.Slice(start, 2));
                     if (_null is long marker && stored == marker)
                         throw NullAt(row);
                     destination[row] = stored;
+                    start += _stride;
                 }
                 break;
             case 'J':
                 for (int row = 0; row < _rows; row++)
                 {
-                    long stored = BinaryPrimitives.ReadInt32BigEndian(FixedField(row, 0, 4));
+                    long stored = BinaryPrimitives.ReadInt32BigEndian(_data.Span.Slice(start, 4));
                     if (_null is long marker && stored == marker)
                         throw NullAt(row);
                     destination[row] = stored;
+                    start += _stride;
                 }
                 break;
             case 'K':
                 for (int row = 0; row < _rows; row++)
                 {
-                    long stored = BinaryPrimitives.ReadInt64BigEndian(FixedField(row, 0, 8));
+                    long stored = BinaryPrimitives.ReadInt64BigEndian(_data.Span.Slice(start, 8));
                     if (_null is long marker && stored == marker)
                         throw NullAt(row);
                     destination[row] = stored;
+                    start += _stride;
                 }
                 break;
         }
@@ -225,42 +233,47 @@ public sealed class FitsColumn
             return false;
         }
 
+        int start = _offset;
         switch (_spec.Code)
         {
             case 'B':
                 for (int row = 0; row < _rows; row++)
                 {
-                    long stored = FixedField(row, 0, 1)[0];
+                    long stored = _data.Span[start];
                     if (_null is long marker && stored == marker)
                         throw NullAt(row);
                     destination[row] = (int)stored;
+                    start += _stride;
                 }
                 break;
             case 'I':
                 for (int row = 0; row < _rows; row++)
                 {
-                    long stored = BinaryPrimitives.ReadInt16BigEndian(FixedField(row, 0, 2));
+                    long stored = BinaryPrimitives.ReadInt16BigEndian(_data.Span.Slice(start, 2));
                     if (_null is long marker && stored == marker)
                         throw NullAt(row);
                     destination[row] = (int)stored;
+                    start += _stride;
                 }
                 break;
             case 'J':
                 for (int row = 0; row < _rows; row++)
                 {
-                    long stored = BinaryPrimitives.ReadInt32BigEndian(FixedField(row, 0, 4));
+                    long stored = BinaryPrimitives.ReadInt32BigEndian(_data.Span.Slice(start, 4));
                     if (_null is long marker && stored == marker)
                         throw NullAt(row);
                     destination[row] = (int)stored;
+                    start += _stride;
                 }
                 break;
             case 'K':
                 for (int row = 0; row < _rows; row++)
                 {
-                    long stored = BinaryPrimitives.ReadInt64BigEndian(FixedField(row, 0, 8));
+                    long stored = BinaryPrimitives.ReadInt64BigEndian(_data.Span.Slice(start, 8));
                     if (_null is long marker && stored == marker)
                         throw NullAt(row);
                     destination[row] = (int)stored;
+                    start += _stride;
                 }
                 break;
         }
@@ -276,42 +289,47 @@ public sealed class FitsColumn
             return false;
         }
 
+        int start = _offset;
         switch (_spec.Code)
         {
             case 'B':
                 for (int row = 0; row < _rows; row++)
                 {
-                    long stored = FixedField(row, 0, 1)[0];
+                    long stored = _data.Span[start];
                     if (_null is long marker && stored == marker)
                         throw NullAt(row);
                     destination[row] = (short)stored;
+                    start += _stride;
                 }
                 break;
             case 'I':
                 for (int row = 0; row < _rows; row++)
                 {
-                    long stored = BinaryPrimitives.ReadInt16BigEndian(FixedField(row, 0, 2));
+                    long stored = BinaryPrimitives.ReadInt16BigEndian(_data.Span.Slice(start, 2));
                     if (_null is long marker && stored == marker)
                         throw NullAt(row);
                     destination[row] = (short)stored;
+                    start += _stride;
                 }
                 break;
             case 'J':
                 for (int row = 0; row < _rows; row++)
                 {
-                    long stored = BinaryPrimitives.ReadInt32BigEndian(FixedField(row, 0, 4));
+                    long stored = BinaryPrimitives.ReadInt32BigEndian(_data.Span.Slice(start, 4));
                     if (_null is long marker && stored == marker)
                         throw NullAt(row);
                     destination[row] = (short)stored;
+                    start += _stride;
                 }
                 break;
             case 'K':
                 for (int row = 0; row < _rows; row++)
                 {
-                    long stored = BinaryPrimitives.ReadInt64BigEndian(FixedField(row, 0, 8));
+                    long stored = BinaryPrimitives.ReadInt64BigEndian(_data.Span.Slice(start, 8));
                     if (_null is long marker && stored == marker)
                         throw NullAt(row);
                     destination[row] = (short)stored;
+                    start += _stride;
                 }
                 break;
         }
@@ -327,42 +345,47 @@ public sealed class FitsColumn
             return false;
         }
 
+        int start = _offset;
         switch (_spec.Code)
         {
             case 'B':
                 for (int row = 0; row < _rows; row++)
                 {
-                    long stored = FixedField(row, 0, 1)[0];
+                    long stored = _data.Span[start];
                     if (_null is long marker && stored == marker)
                         throw NullAt(row);
                     destination[row] = (byte)stored;
+                    start += _stride;
                 }
                 break;
             case 'I':
                 for (int row = 0; row < _rows; row++)
                 {
-                    long stored = BinaryPrimitives.ReadInt16BigEndian(FixedField(row, 0, 2));
+                    long stored = BinaryPrimitives.ReadInt16BigEndian(_data.Span.Slice(start, 2));
                     if (_null is long marker && stored == marker)
                         throw NullAt(row);
                     destination[row] = (byte)stored;
+                    start += _stride;
                 }
                 break;
             case 'J':
                 for (int row = 0; row < _rows; row++)
                 {
-                    long stored = BinaryPrimitives.ReadInt32BigEndian(FixedField(row, 0, 4));
+                    long stored = BinaryPrimitives.ReadInt32BigEndian(_data.Span.Slice(start, 4));
                     if (_null is long marker && stored == marker)
                         throw NullAt(row);
                     destination[row] = (byte)stored;
+                    start += _stride;
                 }
                 break;
             case 'K':
                 for (int row = 0; row < _rows; row++)
                 {
-                    long stored = BinaryPrimitives.ReadInt64BigEndian(FixedField(row, 0, 8));
+                    long stored = BinaryPrimitives.ReadInt64BigEndian(_data.Span.Slice(start, 8));
                     if (_null is long marker && stored == marker)
                         throw NullAt(row);
                     destination[row] = (byte)stored;
+                    start += _stride;
                 }
                 break;
         }
@@ -446,56 +469,63 @@ public sealed class FitsColumn
         }
 
         bool physical = _physical;
+        int start = _offset;
         switch (_spec.Code)
         {
             case 'B':
                 for (int row = 0; row < _rows; row++)
                 {
-                    long stored = FixedField(row, 0, 1)[0];
+                    long stored = _data.Span[start];
                     destination[row] = _null is long marker && stored == marker
                         ? double.NaN
                         : physical ? _zero + (_scale * stored) : stored;
+                    start += _stride;
                 }
                 break;
             case 'I':
                 for (int row = 0; row < _rows; row++)
                 {
-                    long stored = BinaryPrimitives.ReadInt16BigEndian(FixedField(row, 0, 2));
+                    long stored = BinaryPrimitives.ReadInt16BigEndian(_data.Span.Slice(start, 2));
                     destination[row] = _null is long marker && stored == marker
                         ? double.NaN
                         : physical ? _zero + (_scale * stored) : stored;
+                    start += _stride;
                 }
                 break;
             case 'J':
                 for (int row = 0; row < _rows; row++)
                 {
-                    long stored = BinaryPrimitives.ReadInt32BigEndian(FixedField(row, 0, 4));
+                    long stored = BinaryPrimitives.ReadInt32BigEndian(_data.Span.Slice(start, 4));
                     destination[row] = _null is long marker && stored == marker
                         ? double.NaN
                         : physical ? _zero + (_scale * stored) : stored;
+                    start += _stride;
                 }
                 break;
             case 'K':
                 for (int row = 0; row < _rows; row++)
                 {
-                    long stored = BinaryPrimitives.ReadInt64BigEndian(FixedField(row, 0, 8));
+                    long stored = BinaryPrimitives.ReadInt64BigEndian(_data.Span.Slice(start, 8));
                     destination[row] = _null is long marker && stored == marker
                         ? double.NaN
                         : physical ? _zero + (_scale * stored) : stored;
+                    start += _stride;
                 }
                 break;
             case 'E':
                 for (int row = 0; row < _rows; row++)
                 {
-                    double stored = BinaryPrimitives.ReadSingleBigEndian(FixedField(row, 0, 4));
+                    double stored = BinaryPrimitives.ReadSingleBigEndian(_data.Span.Slice(start, 4));
                     destination[row] = physical ? _zero + (_scale * stored) : stored;
+                    start += _stride;
                 }
                 break;
             case 'D':
                 for (int row = 0; row < _rows; row++)
                 {
-                    double stored = BinaryPrimitives.ReadDoubleBigEndian(FixedField(row, 0, 8));
+                    double stored = BinaryPrimitives.ReadDoubleBigEndian(_data.Span.Slice(start, 8));
                     destination[row] = physical ? _zero + (_scale * stored) : stored;
+                    start += _stride;
                 }
                 break;
         }
@@ -515,17 +545,28 @@ public sealed class FitsColumn
         }
 
         bool physical = _physical;
+        int start = _offset;
         for (int row = 0; row < _rows; row++)
         {
             long storedInteger = 0;
             if (IsIntegerCode(_spec.Code))
             {
-                storedInteger = ReadStoredInteger(row, 0);
+                storedInteger = _spec.Code == 'B'
+                    ? _data.Span[start]
+                    : _spec.Code switch
+                    {
+                        'I' => BinaryPrimitives.ReadInt16BigEndian(_data.Span.Slice(start, 2)),
+                        'J' => BinaryPrimitives.ReadInt32BigEndian(_data.Span.Slice(start, 4)),
+                        'K' => BinaryPrimitives.ReadInt64BigEndian(_data.Span.Slice(start, 8)),
+                        _ => throw new InvalidOperationException(),
+                    };
             }
 
             double stored = IsIntegerCode(_spec.Code)
                 ? storedInteger
-                : ReadStoredReal(row, 0);
+                : _spec.Code == 'E'
+                    ? BinaryPrimitives.ReadSingleBigEndian(_data.Span.Slice(start, 4))
+                    : BinaryPrimitives.ReadDoubleBigEndian(_data.Span.Slice(start, 8));
             float value = (float)(physical ? _zero + (_scale * stored) : stored);
             if (_null is long marker && IsIntegerCode(_spec.Code) && storedInteger == marker)
             {
@@ -533,6 +574,7 @@ public sealed class FitsColumn
             }
 
             destination[row] = value;
+            start += _stride;
         }
 
         return true;
@@ -698,31 +740,7 @@ public sealed class FitsColumn
     }
 
     private ReadOnlySpan<byte> HeapSlice(long offset, int count)
-    {
-        if (offset < 0 || count < 0)
-        {
-            throw new FitsException($"Column '{Name}' has an invalid heap range.", new FitsLocation(_hduIndex, Column: Name));
-        }
-
-        long start;
-        long end;
-        try
-        {
-            start = checked((long)_heap + offset);
-            end = checked(start + count);
-        }
-        catch (OverflowException exception)
-        {
-            throw new FitsException($"Column '{Name}' has an overflowing heap range.", new FitsLocation(_hduIndex, Column: Name), exception);
-        }
-
-        if (start > _heapEnd || end > _heapEnd || end > _data.Length)
-        {
-            throw new FitsException($"Column '{Name}' references data outside the heap.", new FitsLocation(_hduIndex, Column: Name));
-        }
-
-        return _data.Span.Slice(checked((int)start), count);
-    }
+        => HeapMemory(offset, count).Span;
 
     private byte LogicalByte(int row, int element)
     {
@@ -815,13 +833,18 @@ public sealed class FitsColumn
 
     public byte[] ReadVariableBytes(int row)
     {
-        var descriptor = CachedDescriptor(row);
-        if (descriptor.Count == 0)
-        {
-            return [];
-        }
+        return ReadVariableMemory(row).ToArray();
+    }
 
-        return HeapSlice(descriptor.Offset, VariableByteCount(descriptor.Count)).ToArray();
+    /// <summary>
+    /// Returns a read-only view over a variable-length heap payload.
+    /// The view is valid while the owning document remains alive.
+    /// </summary>
+    public ReadOnlyMemory<byte> ReadVariableMemory(int row)
+    {
+        EnsureRow(row);
+        var descriptor = CachedDescriptor(row);
+        return HeapMemory(descriptor.Offset, VariableByteCount(descriptor.Count));
     }
 
     public long[] ReadIntegerVector(int row)
@@ -829,8 +852,21 @@ public sealed class FitsColumn
         EnsureRow(row);
         int count = Count(row);
         var values = new long[count];
+        if (!IsVariableLength)
+        {
+            for (int element = 0; element < count; element++)
+                values[element] = ReadInteger(row, element);
+            return values;
+        }
+
+        var descriptor = CachedDescriptor(row);
         for (int element = 0; element < count; element++)
-            values[element] = ReadInteger(row, element);
+        {
+            if (IsNull(descriptor, element))
+                throw new FitsException($"Column '{Name}' row {row} is null.", new FitsLocation(_hduIndex, Column: Name));
+            values[element] = ReadHeapInteger(descriptor, element);
+        }
+
         return values;
     }
 
@@ -839,8 +875,22 @@ public sealed class FitsColumn
         EnsureRow(row);
         int count = Count(row);
         var values = new double[count];
+        if (!IsVariableLength)
+        {
+            for (int element = 0; element < count; element++)
+                values[element] = ReadReal(row, element);
+            return values;
+        }
+
+        var descriptor = CachedDescriptor(row);
         for (int element = 0; element < count; element++)
-            values[element] = ReadReal(row, element);
+        {
+            double value = IsNull(descriptor, element)
+                ? double.NaN
+                : ReadHeapReal(descriptor, element);
+            values[element] = _physical ? _zero + (_scale * value) : value;
+        }
+
         return values;
     }
 
@@ -877,6 +927,35 @@ public sealed class FitsColumn
     }
 
     internal byte[] ReadHeap(long offset, int count) => HeapSlice(offset, count).ToArray();
+
+    internal ReadOnlyMemory<byte> ReadHeapMemory(long offset, int count) => HeapMemory(offset, count);
+
+    private ReadOnlyMemory<byte> HeapMemory(long offset, int count)
+    {
+        if (offset < 0 || count < 0)
+        {
+            throw new FitsException($"Column '{Name}' has an invalid heap range.", new FitsLocation(_hduIndex, Column: Name));
+        }
+
+        long start;
+        long end;
+        try
+        {
+            start = checked((long)_heap + offset);
+            end = checked(start + count);
+        }
+        catch (OverflowException exception)
+        {
+            throw new FitsException($"Column '{Name}' has an overflowing heap range.", new FitsLocation(_hduIndex, Column: Name), exception);
+        }
+
+        if (start > _heapEnd || end > _heapEnd || end > _data.Length)
+        {
+            throw new FitsException($"Column '{Name}' references data outside the heap.", new FitsLocation(_hduIndex, Column: Name));
+        }
+
+        return _data.Slice(checked((int)start), count);
+    }
 
     internal void ValidateVariableArrays()
     {
@@ -986,8 +1065,14 @@ public sealed class FitsColumn
 
     private static long ParseAsciiInteger(ReadOnlySpan<byte> field)
     {
+        ReadOnlySpan<byte> token = TrimAscii(field);
+        if (Utf8Parser.TryParse(token, out long value, out int consumed) && consumed == token.Length)
+        {
+            return value;
+        }
+
         string text = AsciiText(field);
-        if (long.TryParse(text, NumberStyles.Integer, CultureInfo.InvariantCulture, out long value))
+        if (long.TryParse(text, NumberStyles.Integer, CultureInfo.InvariantCulture, out value))
         {
             return value;
         }
@@ -996,6 +1081,17 @@ public sealed class FitsColumn
     }
 
     private static string AsciiText(ReadOnlySpan<byte> field) => TrimString(field);
+
+    private static ReadOnlySpan<byte> TrimAscii(ReadOnlySpan<byte> field)
+    {
+        int start = 0;
+        int end = field.Length;
+        while (start < end && field[start] == (byte)' ')
+            start++;
+        while (end > start && field[end - 1] is (byte)' ' or 0)
+            end--;
+        return field[start..end];
+    }
 
     private static double ReadScalar(char code, ReadOnlySpan<byte> bytes)
     {
@@ -1027,9 +1123,13 @@ public sealed class FitsColumn
 
     private static int ReadBit(ReadOnlySpan<byte> bytes, int bitIndex)
     {
-        int bucket = bitIndex / 8;
-        int shift = 7 - (bitIndex % 8);
-        return (bytes[bucket] >> shift) & 1;
+        // bitIndex is validated as non-negative by the caller. For the complete
+        // FITS bit-column domain, the byte bucket is bitIndex / 8 and the
+        // remainder is bitIndex % 8; the mask formulation preserves the same
+        // MSB-first result without division or remainder in this hot path.
+        int bucket = bitIndex >> 3;
+        int mask = 0x80 >> (bitIndex & 7);
+        return (bytes[bucket] & mask) == 0 ? 0 : 1;
     }
 
     private static int ElementWidth(char code) => code switch

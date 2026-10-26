@@ -73,6 +73,7 @@ public sealed class FitsClock
         _applyReference = applyReference;
         _referenceModifiedJulianDate = referenceModifiedJulianDate;
         _offsetDays = offsetDays;
+        _offsetInUnits = offsetDays / unitDays;
         _pixelOffset = (pixelReference - 0.5) * resolution;
         _options = options ?? new FitsClockOptions();
     }
@@ -126,6 +127,7 @@ public sealed class FitsClock
     private readonly bool _applyReference;
     private readonly double _referenceModifiedJulianDate;
     private readonly double _offsetDays;
+    private readonly double _offsetInUnits;
     private readonly double _pixelOffset;
     private readonly FitsClockOptions _options;
 
@@ -209,10 +211,9 @@ public sealed class FitsClock
 
     public double ToModifiedJulianDate(double time)
     {
-        double elapsed = time * UnitDays;
         return _applyReference
-            ? _referenceModifiedJulianDate + ((_offsetDays / UnitDays + time) * UnitDays)
-            : elapsed;
+            ? _referenceModifiedJulianDate + ((_offsetInUnits + time) * UnitDays)
+            : time * UnitDays;
     }
 
     public double ToModifiedJulianDate(double time, string scale) =>
@@ -387,12 +388,20 @@ public sealed class FitsClock
     private static int LeapSecondsAt(double modifiedJulianDate)
     {
         DateTime instant = DateTimeOffset.UnixEpoch.AddDays(modifiedJulianDate - UnixModifiedJulianDate).UtcDateTime;
+        int low = 0;
+        int high = LeapSeconds.Length - 1;
         int offset = 0;
-        foreach (var entry in LeapSeconds)
+        while (low <= high)
         {
-            if (instant >= entry.Date)
+            int middle = low + ((high - low) / 2);
+            if (instant >= LeapSeconds[middle].Date)
             {
-                offset = entry.Offset;
+                offset = LeapSeconds[middle].Offset;
+                low = middle + 1;
+            }
+            else
+            {
+                high = middle - 1;
             }
         }
 
@@ -419,15 +428,26 @@ public sealed class FitsClock
         }
 
         DateTime instant = DateTimeOffset.UnixEpoch.AddDays(modifiedJulianDate - UnixModifiedJulianDate).UtcDateTime;
-        for (int index = Ut1Offsets.Length - 1; index >= 0; index--)
+        int low = 0;
+        int high = Ut1Offsets.Length - 1;
+        int selected = -1;
+        while (low <= high)
         {
-            if (instant >= Ut1Offsets[index].Date)
+            int middle = low + ((high - low) / 2);
+            if (instant >= Ut1Offsets[middle].Date)
             {
-                return Ut1Offsets[index].Dut1;
+                selected = middle;
+                low = middle + 1;
+            }
+            else
+            {
+                high = middle - 1;
             }
         }
 
-        throw new FitsException("UT1 conversion requires an observed DUT1 value for the requested epoch.", new FitsLocation(Keyword: "TIMESYS"));
+        return selected >= 0
+            ? Ut1Offsets[selected].Dut1
+            : throw new FitsException("UT1 conversion requires an observed DUT1 value for the requested epoch.", new FitsLocation(Keyword: "TIMESYS"));
     }
 
     private static double ConvertEphemeris(double modifiedJulianDate, string from, string to, IEphemerisProvider? provider)
@@ -469,7 +489,13 @@ public sealed class FitsClock
         double terrestrial = barycentric;
         for (int iteration = 0; iteration < 4; iteration++)
         {
-            terrestrial = barycentric - (ToTdb(terrestrial, provider) - terrestrial);
+            double next = barycentric - (ToTdb(terrestrial, provider) - terrestrial);
+            if (Math.Abs(next - terrestrial) < 1e-15)
+            {
+                return next;
+            }
+
+            terrestrial = next;
         }
 
         return terrestrial;

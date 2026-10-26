@@ -182,7 +182,7 @@ internal static class TileCompression
             double rowScale = losslessGzip || losslessRaw ? 1 : scale?.ReadReal(row) ?? 1;
             double rowZero = losslessGzip || losslessRaw ? 0 : zero?.ReadReal(row) ?? 0;
             var decoded = losslessGzip
-                ? new TileBytes(RequireLength(Gunzip(fallback!), checked(tilePixels * width)), width)
+                ? new TileBytes(GunzipExact(fallback!, checked(tilePixels * width)), width)
                 : losslessRaw
                 ? new TileBytes(RequireLength(fallback!, checked(tilePixels * width)), width)
                 : Decode(algorithm, compressed, tilePixels, bytePix, blockSize, width, smooth);
@@ -476,6 +476,38 @@ internal static class TileCompression
         }
     }
 
+    private static byte[] GunzipExact(byte[] compressed, int length)
+    {
+        try
+        {
+            var output = new byte[length];
+            using var input = new MemoryStream(compressed, writable: false);
+            using var gzip = new GZipStream(input, CompressionMode.Decompress);
+            int read = 0;
+            while (read < output.Length)
+            {
+                int count = gzip.Read(output.AsSpan(read));
+                if (count == 0)
+                {
+                    throw new FitsException($"Decoded image tile has {read} bytes; expected {length}.", new FitsLocation());
+                }
+
+                read += count;
+            }
+
+            if (gzip.ReadByte() >= 0)
+            {
+                throw new FitsException($"Decoded image tile is longer than the expected {length} bytes.", new FitsLocation());
+            }
+
+            return output;
+        }
+        catch (InvalidDataException exception)
+        {
+            throw new FitsException("A compressed image tile is not a valid GZIP stream.", new FitsLocation(), exception);
+        }
+    }
+
     private static bool TryContiguous(int[] axes, int[] origin, int[] span, out int start, out int count)
     {
         start = 0;
@@ -511,18 +543,30 @@ internal static class TileCompression
         }
 
         int count = shuffled.Length / width;
-        int sourceOffset = 0;
-        int destinationOffset = 0;
+        if (width == 4)
+        {
+            int destinationOffset = 0;
+            for (int item = 0; item < count; item++)
+            {
+                int sourceOffset = item;
+                destination[destinationOffset++] = shuffled[sourceOffset];
+                destination[destinationOffset++] = shuffled[sourceOffset + count];
+                destination[destinationOffset++] = shuffled[sourceOffset + (count * 2)];
+                destination[destinationOffset++] = shuffled[sourceOffset + (count * 3)];
+            }
+
+            return;
+        }
+
         for (int item = 0; item < count; item++)
         {
+            int sourceOffset = item;
+            int destinationOffset = item * width;
             for (int byteIndex = 0; byteIndex < width; byteIndex++)
             {
                 destination[destinationOffset + byteIndex] = shuffled[sourceOffset];
                 sourceOffset += count;
             }
-
-            destinationOffset += width;
-            sourceOffset = item + 1;
         }
     }
 

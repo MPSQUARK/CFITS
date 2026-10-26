@@ -257,7 +257,10 @@ public sealed class FitsContextGenerator : IIncrementalGenerator
             && IsSupportedImageElement(readableArray.ElementType);
         string keywords = string.Join(NewLine, type.Members
             .Where(static member => member.Role == MemberRole.Keyword)
-            .Select(static member => $"                {member.Symbol.Name} = {ReadKeyword(member)},"));
+            .Select(static member => $"                {member.Symbol.Name} = {ReadKeyword(member, "hdu.Header")},"));
+        string directKeywords = string.Join(NewLine, type.Members
+            .Where(static member => member.Role == MemberRole.Keyword)
+            .Select(static member => $"                    {member.Symbol.Name} = {ReadKeyword(member, "__cfitsHeader!")},"));
         string dataAssignment = "";
         if (data is not null && data.Symbol.Type is IArrayTypeSymbol array)
         {
@@ -272,6 +275,29 @@ public sealed class FitsContextGenerator : IIncrementalGenerator
             {{EmitKeywordWrites(type, "value")}}
                         });
             """;
+        string directRead = "";
+        if (hasReadableData && data?.Symbol.Type is IArrayTypeSymbol directArray)
+        {
+            string element = ElementName(directArray.ElementType);
+            string commas = directArray.Rank switch
+            {
+                1 => "",
+                2 => ",",
+                _ => ",,",
+            };
+            string nameArgument = string.IsNullOrEmpty(type.HduName) ? "null" : Literal(type.HduName!);
+            directRead = $$"""
+                        if (!options.VerifyChecksum && stream.CanSeek && CFITS.FitsDirectImage.TryRead<{{element}}>(stream, {{directArray.Rank}}, {{type.HduIndex}}, {{nameArgument}}, options, out System.Array? __cfitsRaw, out CFITS.FitsHeader? __cfitsHeader))
+                        {
+                            var __cfitsData = ({{element}}[{{commas}}])__cfitsRaw!;
+                            return new {{name}}
+                            {
+            {{directKeywords}}{{(directKeywords.Length > 0 ? NewLine : "")}}                    {{data.Symbol.Name}} = __cfitsData,
+                            };
+                        }
+
+            """;
+        }
         return $$"""
                 private sealed class {{type.InfoName}} : CFITS.FitsTypeInfo<{{name}}>
                 {
@@ -282,7 +308,7 @@ public sealed class FitsContextGenerator : IIncrementalGenerator
 
                     public override {{name}} Read(System.IO.Stream stream, CFITS.FitsOpenOptions options)
                     {
-                        using var document = CFITS.FitsDocument.Open(stream, options);
+            {{directRead}}            using var document = CFITS.FitsDocument.Open(stream, options);
                         return ReadDocument(document);
                     }
 
@@ -363,9 +389,7 @@ public sealed class FitsContextGenerator : IIncrementalGenerator
             dimensions = $$"""
                         int n2 = pixels.GetLength(0);
                         int n1 = pixels.GetLength(1);
-                        var stored = new {{element}}[n1 * n2];
-                        for (int y = 0; y < n2; y++) for (int x = 0; x < n1; x++) stored[x + (y * n1)] = pixels[y, x];
-                        builder.Image(new int[] { n1, n2 }, stored, header =>
+                        builder.Image(new int[] { n1, n2 }, CFITS.FitsEndian.AsContiguous(pixels), header =>
                 """;
         }
         else
@@ -374,9 +398,7 @@ public sealed class FitsContextGenerator : IIncrementalGenerator
                         int n3 = pixels.GetLength(0);
                         int n2 = pixels.GetLength(1);
                         int n1 = pixels.GetLength(2);
-                        var stored = new {{element}}[n1 * n2 * n3];
-                        for (int z = 0; z < n3; z++) for (int y = 0; y < n2; y++) for (int x = 0; x < n1; x++) stored[x + n1 * (y + (n2 * z))] = pixels[z, y, x];
-                        builder.Image(new int[] { n1, n2, n3 }, stored, header =>
+                        builder.Image(new int[] { n1, n2, n3 }, CFITS.FitsEndian.AsContiguous(pixels), header =>
                 """;
         }
 
@@ -661,13 +683,7 @@ public sealed class FitsContextGenerator : IIncrementalGenerator
             helpers.AppendLine("""
                     private static double[] ReadDoubleArray(CFITS.FitsColumn column, int row)
                     {
-                        var values = new double[column.Count(row)];
-                        for (int index = 0; index < values.Length; index++)
-                        {
-                            values[index] = column.ReadReal(row, index);
-                        }
-
-                        return values;
+                        return column.ReadRealVector(row);
                     }
                 """);
         }
@@ -757,7 +773,7 @@ public sealed class FitsContextGenerator : IIncrementalGenerator
         return member.Symbol.Type.SpecialType switch
         {
             SpecialType.System_Boolean => $"header.Logical({Literal(member.ColumnName)}, {value})",
-            SpecialType.System_Int32 or SpecialType.System_Int16 => $"header.Integer({Literal(member.ColumnName)}, {value})",
+            SpecialType.System_Byte or SpecialType.System_Int32 or SpecialType.System_Int16 => $"header.Integer({Literal(member.ColumnName)}, {value})",
             SpecialType.System_Int64 => $"header.Integer({Literal(member.ColumnName)}, {value})",
             SpecialType.System_Double or SpecialType.System_Single => $"header.Real({Literal(member.ColumnName)}, {value})",
             SpecialType.System_String => $"header.Text({Literal(member.ColumnName)}, {value} ?? \"\")",
@@ -765,19 +781,20 @@ public sealed class FitsContextGenerator : IIncrementalGenerator
         };
     }
 
-    private static string ReadKeyword(MemberModel member)
+    private static string ReadKeyword(MemberModel member, string header)
     {
         string keyword = member.ColumnName;
         return member.Symbol.Type.SpecialType switch
         {
-            SpecialType.System_Boolean => $"hdu.Header.GetBoolean({Literal(keyword)})",
-            SpecialType.System_Int32 => $"(int)hdu.Header.GetInt64({Literal(keyword)})",
-            SpecialType.System_Int16 => $"(short)hdu.Header.GetInt64({Literal(keyword)})",
-            SpecialType.System_Int64 => $"hdu.Header.GetInt64({Literal(keyword)})",
-            SpecialType.System_Double => $"hdu.Header.GetDouble({Literal(keyword)})",
-            SpecialType.System_Single => $"(float)hdu.Header.GetDouble({Literal(keyword)})",
-            SpecialType.System_String => $"hdu.Header.GetString({Literal(keyword)})",
-            _ => $"hdu.Header.GetString({Literal(keyword)})",
+            SpecialType.System_Boolean => $"{header}.GetBoolean({Literal(keyword)})",
+            SpecialType.System_Byte => $"(byte){header}.GetInt64({Literal(keyword)})",
+            SpecialType.System_Int32 => $"(int){header}.GetInt64({Literal(keyword)})",
+            SpecialType.System_Int16 => $"(short){header}.GetInt64({Literal(keyword)})",
+            SpecialType.System_Int64 => $"{header}.GetInt64({Literal(keyword)})",
+            SpecialType.System_Double => $"{header}.GetDouble({Literal(keyword)})",
+            SpecialType.System_Single => $"(float){header}.GetDouble({Literal(keyword)})",
+            SpecialType.System_String => $"{header}.GetString({Literal(keyword)})",
+            _ => $"{header}.GetString({Literal(keyword)})",
         };
     }
 

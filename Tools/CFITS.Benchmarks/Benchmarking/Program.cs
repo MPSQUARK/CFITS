@@ -33,6 +33,12 @@ public static class Program
             return;
         }
 
+        if (args.Contains("--header-targeted"))
+        {
+            HeaderParserBenchmarks.Run();
+            return;
+        }
+
         var job = Job.Default
             .WithWarmupCount(2)
             .WithIterationCount(6)

@@ -38,6 +38,39 @@ public sealed class BitpixByteVectorComplianceTests
     }
 
     [Fact]
+    public void WritesEverySupportedBitpixWithBoundaryAndSpecialValues()
+    {
+        AssertImage(
+            [0x00, 0xFF, 0x80],
+            8,
+            new byte[] { byte.MinValue, byte.MaxValue, 0x80 });
+        AssertImage(
+            [0x80, 0x00, 0x7F, 0xFF],
+            16,
+            new short[] { short.MinValue, short.MaxValue });
+        AssertImage(
+            [0x80, 0x00, 0x00, 0x00, 0x7F, 0xFF, 0xFF, 0xFF],
+            32,
+            new[] { int.MinValue, int.MaxValue });
+        AssertImage(
+            [0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+             0x7F, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF],
+            64,
+            new[] { long.MinValue, long.MaxValue });
+        AssertImage(
+            [0x7F, 0x80, 0x00, 0x00, 0xFF, 0x80, 0x00, 0x00,
+             0xFF, 0xC0, 0x00, 0x00],
+            -32,
+            new[] { float.PositiveInfinity, float.NegativeInfinity, float.NaN });
+        AssertImage(
+            [0x7F, 0xF0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+             0xFF, 0xF0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+             0xFF, 0xF8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
+            -64,
+            new[] { double.PositiveInfinity, double.NegativeInfinity, double.NaN });
+    }
+
+    [Fact]
     public void DifferentiallyChecksTableBoundariesAgainstBigEndianPrimitives()
     {
         using var document = FitsDocumentBuilder.Create()
@@ -83,6 +116,8 @@ public sealed class BitpixByteVectorComplianceTests
             16 => FitsDocumentBuilder.Create().Image([values.Length], (short[])(object)values).Build(),
             32 => FitsDocumentBuilder.Create().Image([values.Length], (int[])(object)values).Build(),
             64 => FitsDocumentBuilder.Create().Image([values.Length], (long[])(object)values).Build(),
+            -32 => FitsDocumentBuilder.Create().Image([values.Length], (float[])(object)values).Build(),
+            -64 => FitsDocumentBuilder.Create().Image([values.Length], (double[])(object)values).Build(),
             _ => throw new ArgumentOutOfRangeException(nameof(bitpix)),
         };
 

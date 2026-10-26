@@ -124,4 +124,38 @@ public sealed class HeaderTests
         Assert.Contains("NAXIS1", error.Message);
     }
 
+    [Theory]
+    [InlineData("9223372036854775807", long.MaxValue)]
+    [InlineData("-9223372036854775808", long.MinValue)]
+    [InlineData("+0", 0)]
+    public void ParsesIntegerBoundariesWithoutChangingValues(string text, long expected)
+    {
+        var file = new FitsFileBuilder()
+            .Card("SIMPLE", "T")
+            .Card("BITPIX", "8")
+            .Card("NAXIS", "0")
+            .Card("VALUE", text)
+            .End()
+            .Build();
+
+        using var document = FitsDocument.Parse(file);
+
+        Assert.Equal(expected, document.Hdus[0].Header.GetInt64("VALUE"));
+    }
+
+    [Fact]
+    public void RejectsAnIntegerOutsideThe64BitRange()
+    {
+        var file = new FitsFileBuilder()
+            .Card("SIMPLE", "T")
+            .Card("BITPIX", "8")
+            .Card("NAXIS", "0")
+            .Card("VALUE", "9223372036854775808")
+            .End()
+            .Build();
+
+        var error = Assert.Throws<FitsException>(() => FitsDocument.Parse(file));
+
+        Assert.Contains("64-bit", error.Message);
+    }
 }

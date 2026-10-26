@@ -1,5 +1,8 @@
+using System.Buffers;
 using System.Buffers.Binary;
 using System.IO.Compression;
+using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
 
 namespace CFITS;
 
@@ -35,6 +38,11 @@ public sealed class FitsDocumentBuilder
             return;
         }
 
+        WriteUnchecked(stream);
+    }
+
+    private void WriteUnchecked(Stream stream)
+    {
         foreach (var write in _writers)
         {
             write(stream);
@@ -47,28 +55,28 @@ public sealed class FitsDocumentBuilder
     }
 
     public FitsDocumentBuilder Image(ReadOnlySpan<int> axes, ReadOnlySpan<byte> values, Action<FitsHeaderBuilder>? header = null) =>
-        AddImage(8, axes, values, static (destination, value) => destination[0] = value, header);
+        AddImage(8, axes, values, header);
 
     public FitsDocumentBuilder Image(ReadOnlySpan<int> axes, ReadOnlySpan<short> values, Action<FitsHeaderBuilder>? header = null) =>
-        AddImage(16, axes, values, static (destination, value) => BinaryPrimitives.WriteInt16BigEndian(destination, value), header);
+        AddImage(16, axes, values, header);
 
     public FitsDocumentBuilder Image(ReadOnlySpan<int> axes, ReadOnlySpan<int> values, Action<FitsHeaderBuilder>? header = null) =>
-        AddImage(32, axes, values, static (destination, value) => BinaryPrimitives.WriteInt32BigEndian(destination, value), header);
+        AddImage(32, axes, values, header);
 
     public FitsDocumentBuilder Image(ReadOnlySpan<int> axes, ReadOnlySpan<long> values, Action<FitsHeaderBuilder>? header = null) =>
-        AddImage(64, axes, values, static (destination, value) => BinaryPrimitives.WriteInt64BigEndian(destination, value), header);
+        AddImage(64, axes, values, header);
 
     public FitsDocumentBuilder Image(ReadOnlySpan<int> axes, ReadOnlySpan<float> values, Action<FitsHeaderBuilder>? header = null) =>
-        AddImage(-32, axes, values, static (destination, value) => BinaryPrimitives.WriteSingleBigEndian(destination, value), header);
+        AddImage(-32, axes, values, header);
 
     public FitsDocumentBuilder Image(ReadOnlySpan<int> axes, ReadOnlySpan<double> values, Action<FitsHeaderBuilder>? header = null) =>
-        AddImage(-64, axes, values, static (destination, value) => BinaryPrimitives.WriteDoubleBigEndian(destination, value), header);
+        AddImage(-64, axes, values, header);
 
     public FitsDocumentBuilder GzipImage(ReadOnlySpan<int> axes, ReadOnlySpan<short> values) =>
-        AddGzipImage(16, axes, values, static (destination, value) => BinaryPrimitives.WriteInt16BigEndian(destination, value), shuffle: false);
+        AddGzipImage(16, axes, values, shuffle: false);
 
     public FitsDocumentBuilder GzipImage(ReadOnlySpan<int> axes, ReadOnlySpan<float> values, bool shuffle = false) =>
-        AddGzipImage(-32, axes, values, static (destination, value) => BinaryPrimitives.WriteSingleBigEndian(destination, value), shuffle);
+        AddGzipImage(-32, axes, values, shuffle);
 
     public FitsDocumentBuilder AsciiTable(AsciiTableBuilder table, Action<FitsHeaderBuilder>? header = null)
     {
@@ -199,27 +207,41 @@ public sealed class FitsDocumentBuilder
 
     public FitsDocument Build()
     {
-        using var stream = new MemoryStream();
-        foreach (var write in _writers)
+        if (_checksum)
         {
-            if (!_checksum)
+            using var stream = new MemoryStream();
+            foreach (var write in _writers)
             {
-                write(stream);
-                continue;
+                using var hdu = new MemoryStream();
+                write(hdu);
+                byte[] stamped = FitsChecksum.Stamp(hdu.ToArray());
+                stream.Write(stamped);
             }
 
-            using var hdu = new MemoryStream();
-            write(hdu);
-            byte[] stamped = FitsChecksum.Stamp(hdu.ToArray());
-            stream.Write(stamped);
+            if (_specialRecords is not null)
+            {
+                stream.Write(_specialRecords);
+            }
+
+            return FitsDocument.ParseOwned(stream.ToArray());
         }
 
-        if (_specialRecords is not null)
+        var measured = new LengthStream();
+        WriteUnchecked(measured);
+        if (measured.Length > int.MaxValue)
         {
-            stream.Write(_specialRecords);
+            throw new FitsException("The FITS file exceeds the supported data size.", new FitsLocation());
         }
 
-        return FitsDocument.Parse(stream.ToArray());
+        var owned = new byte[measured.Length];
+        var buffer = new BufferStream(owned);
+        WriteUnchecked(buffer);
+        if (buffer.Written != owned.Length)
+        {
+            throw new FitsException("The FITS file length did not match the measured length.", new FitsLocation());
+        }
+
+        return FitsDocument.ParseOwned(owned);
     }
 
     private void EnsurePrimary()
@@ -232,7 +254,8 @@ public sealed class FitsDocumentBuilder
         Image(ReadOnlySpan<int>.Empty, ReadOnlySpan<byte>.Empty, static header => header.Logical("EXTEND", true));
     }
 
-    private FitsDocumentBuilder AddImage<T>(int bitpix, ReadOnlySpan<int> axes, ReadOnlySpan<T> values, Encode<T> encode, Action<FitsHeaderBuilder>? header)
+    private FitsDocumentBuilder AddImage<T>(int bitpix, ReadOnlySpan<int> axes, ReadOnlySpan<T> values, Action<FitsHeaderBuilder>? header)
+        where T : unmanaged
     {
         int count = Product(axes);
         if (values.Length != count)
@@ -241,11 +264,8 @@ public sealed class FitsDocumentBuilder
         }
 
         int width = Math.Abs(bitpix) / 8;
-        var data = new byte[count * width];
-        for (int index = 0; index < count; index++)
-        {
-            encode(data.AsSpan(index * width, width), values[index]);
-        }
+        var retained = new T[values.Length];
+        values.CopyTo(retained);
 
         bool extension = _hasPrimary;
         var capturedAxes = axes.ToArray();
@@ -281,13 +301,21 @@ public sealed class FitsDocumentBuilder
                 cards.Remove("BLANK");
             }
 
-            WriteHdu(stream, cards.Build(), data, extra: null, extension);
+            cards.Build().Write(stream);
+            WritePixels(stream, retained);
+            int encoded = retained.Length * width;
+            int pad = (int)(FitsBlock.Pad(encoded) - encoded);
+            if (pad > 0)
+            {
+                stream.Write(Padding.AsSpan(0, pad));
+            }
         });
         _hasPrimary = true;
         return this;
     }
 
-    private FitsDocumentBuilder AddGzipImage<T>(int bitpix, ReadOnlySpan<int> axes, ReadOnlySpan<T> values, Encode<T> encode, bool shuffle)
+    private FitsDocumentBuilder AddGzipImage<T>(int bitpix, ReadOnlySpan<int> axes, ReadOnlySpan<T> values, bool shuffle)
+        where T : unmanaged
     {
         EnsurePrimary();
         int count = Product(axes);
@@ -298,10 +326,7 @@ public sealed class FitsDocumentBuilder
 
         int width = Math.Abs(bitpix) / 8;
         var raw = new byte[count * width];
-        for (int index = 0; index < count; index++)
-        {
-            encode(raw.AsSpan(index * width, width), values[index]);
-        }
+        Pixels.WriteBigEndian(values, raw);
 
         if (shuffle)
         {
@@ -483,7 +508,117 @@ public sealed class FitsDocumentBuilder
         int pad = (int)(FitsBlock.Pad(payload.Length) - payload.Length);
         if (pad > 0)
         {
-            stream.Write(new byte[pad]);
+            stream.Write(Padding.AsSpan(0, pad));
+        }
+    }
+
+    private static void WritePixels<T>(Stream stream, ReadOnlySpan<T> values)
+        where T : unmanaged
+    {
+        if (typeof(T) == typeof(byte))
+        {
+            stream.Write(MemoryMarshal.AsBytes(values));
+            return;
+        }
+
+        int width = Unsafe.SizeOf<T>();
+        byte[] rented = ArrayPool<byte>.Shared.Rent(16 * 1024);
+        try
+        {
+            int capacity = rented.Length / width * width;
+            for (int index = 0; index < values.Length;)
+            {
+                int count = Math.Min(values.Length - index, capacity / width);
+                Span<byte> destination = rented.AsSpan(0, count * width);
+                if (typeof(T) == typeof(short))
+                {
+                    FitsEndian.WriteInt16(MemoryMarshal.Cast<T, short>(values.Slice(index, count)), destination);
+                }
+                else if (typeof(T) == typeof(int))
+                {
+                    FitsEndian.WriteInt32(MemoryMarshal.Cast<T, int>(values.Slice(index, count)), destination);
+                }
+                else if (typeof(T) == typeof(long))
+                {
+                    FitsEndian.WriteInt64(MemoryMarshal.Cast<T, long>(values.Slice(index, count)), destination);
+                }
+                else if (typeof(T) == typeof(float))
+                {
+                    FitsEndian.WriteSingle(MemoryMarshal.Cast<T, float>(values.Slice(index, count)), destination);
+                }
+                else if (typeof(T) == typeof(double))
+                {
+                    FitsEndian.WriteDouble(MemoryMarshal.Cast<T, double>(values.Slice(index, count)), destination);
+                }
+                else
+                {
+                    throw new FitsException("The image element type is not supported.", new FitsLocation());
+                }
+
+                stream.Write(destination);
+                index += count;
+            }
+        }
+        finally
+        {
+            ArrayPool<byte>.Shared.Return(rented);
+        }
+    }
+
+    private sealed class LengthStream : Stream
+    {
+        private long _length;
+
+        public override long Length => _length;
+        public override bool CanRead => false;
+        public override bool CanSeek => false;
+        public override bool CanWrite => true;
+        public override long Position { get => _length; set => throw new NotSupportedException(); }
+
+        public override void Flush()
+        {
+        }
+
+        public override int Read(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+
+        public override void SetLength(long value) => throw new NotSupportedException();
+
+        public override void Write(byte[] buffer, int offset, int count) => _length += count;
+
+        public override void Write(ReadOnlySpan<byte> buffer) => _length += buffer.Length;
+    }
+
+    private sealed class BufferStream(byte[] buffer) : Stream
+    {
+        private int _written;
+
+        public int Written => _written;
+
+        public override bool CanRead => false;
+        public override bool CanSeek => false;
+        public override bool CanWrite => true;
+        public override long Length => _written;
+        public override long Position { get => _written; set => throw new NotSupportedException(); }
+
+        public override void Flush()
+        {
+        }
+
+        public override int Read(byte[] destination, int offset, int count) => throw new NotSupportedException();
+
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+
+        public override void SetLength(long value) => throw new NotSupportedException();
+
+        public override void Write(byte[] destination, int offset, int count) =>
+            Write(destination.AsSpan(offset, count));
+
+        public override void Write(ReadOnlySpan<byte> destination)
+        {
+            destination.CopyTo(buffer.AsSpan(_written));
+            _written += destination.Length;
         }
     }
 
@@ -503,5 +638,4 @@ public sealed class FitsDocumentBuilder
         return product;
     }
 
-    private delegate void Encode<T>(Span<byte> destination, T value);
 }

@@ -6,7 +6,8 @@ internal static class DataLayout
     {
         int? bitpix = null;
         int? naxis = null;
-        var axes = new Dictionary<int, int>();
+        var axes = new int[1000];
+        var axisSeen = new bool[1000];
         long? pcount = null;
         long? gcount = null;
         bool groups = false;
@@ -34,6 +35,7 @@ internal static class DataLayout
         string? randomGroupsEarlyKeyword = null;
         long randomGroupsEarlyKeywordPosition = headerOffset;
         int offset = 0;
+        int axisCount = 0;
         while (offset + FitsBlock.CardSize <= header.Length)
         {
             int cardOffset = offset;
@@ -55,7 +57,6 @@ internal static class DataLayout
             }
 
             HeaderKeyword kind = ClassifyKeyword(keyword, out int axis);
-            string keywordText = view.KeywordText();
             bool duplicate = kind switch
             {
                 HeaderKeyword.Simple => seenSimple,
@@ -69,7 +70,7 @@ internal static class DataLayout
                 HeaderKeyword.Bzero => seenBzero,
                 HeaderKeyword.Blank => seenBlank,
                 HeaderKeyword.Extend => seenExtend,
-                HeaderKeyword.Axis => axes.ContainsKey(axis),
+                HeaderKeyword.Axis => axis < axes.Length && axisSeen[axis],
                 _ => false,
             };
             switch (kind)
@@ -95,6 +96,7 @@ internal static class DataLayout
 
             if (kind == HeaderKeyword.Other && phase <= 3)
             {
+                string keywordText = view.KeywordText();
                 randomGroupsEarlyKeyword ??= keywordText;
                 if (randomGroupsEarlyKeyword == keywordText)
                 {
@@ -156,6 +158,13 @@ internal static class DataLayout
                     break;
                 case HeaderKeyword.Axis:
                     RequireOrder(phase, 3, view, hduIndex, headerOffset + cardOffset);
+                    if ((uint)axis >= (uint)axes.Length)
+                    {
+                        throw new FitsException(
+                            $"NAXIS{axis} is outside the supported axis range.",
+                            At(hduIndex, view.KeywordText(), headerOffset + cardOffset));
+                    }
+
                     if (axis != nextAxis)
                     {
                         throw new FitsException($"NAXIS{axis} is out of order.", At(hduIndex, $"NAXIS{axis}", headerOffset + cardOffset));
@@ -164,6 +173,8 @@ internal static class DataLayout
                     RequireKind(view, FitsValueKind.Integer, $"NAXIS{axis}", hduIndex, headerOffset + cardOffset);
                     nextAxis++;
                     axes[axis] = ToInt32(view.Integer, $"NAXIS{axis}", hduIndex, headerOffset + cardOffset);
+                    axisSeen[axis] = true;
+                    axisCount++;
                     break;
                 case HeaderKeyword.Bscale:
                     RequireKind(view, FitsValueKind.Integer, "BSCALE", hduIndex, headerOffset + cardOffset, FitsValueKind.Real);
@@ -220,11 +231,12 @@ internal static class DataLayout
         var ordered = new int[naxis.Value];
         for (int axis = 1; axis <= naxis.Value; axis++)
         {
-            if (!axes.TryGetValue(axis, out int length))
+            if (!axisSeen[axis])
             {
                 throw new FitsException($"NAXIS{axis} is missing.", At(hduIndex, $"NAXIS{axis}", headerOffset + offset));
             }
 
+            int length = axes[axis];
             if (length < 0)
             {
                 throw new FitsException($"NAXIS{axis} must not be negative.", At(hduIndex, $"NAXIS{axis}", headerOffset + offset));
@@ -233,13 +245,21 @@ internal static class DataLayout
             ordered[axis - 1] = length;
         }
 
-        if (naxis.Value == 0 && axes.Count > 0)
+        if (naxis.Value == 0 && axisCount > 0)
         {
             throw new FitsException("NAXIS1 and other axis keywords are not allowed when NAXIS is zero.", At(hduIndex, "NAXIS1", headerOffset + offset));
         }
-        if (axes.Count != naxis.Value)
+        if (axisCount != naxis.Value)
         {
-            int unexpectedAxis = axes.Keys.FirstOrDefault(axis => axis > naxis.Value);
+            int unexpectedAxis = 0;
+            for (int axis = naxis.Value + 1; axis < axisSeen.Length; axis++)
+            {
+                if (axisSeen[axis])
+                {
+                    unexpectedAxis = axis;
+                    break;
+                }
+            }
             throw new FitsException(
                 unexpectedAxis > 0
                     ? $"NAXIS{unexpectedAxis} is not allowed when NAXIS is {naxis.Value}."

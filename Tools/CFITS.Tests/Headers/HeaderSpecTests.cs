@@ -160,6 +160,66 @@ public sealed class HeaderSpecTests
     }
 
     [Fact]
+    public void PreservesExactKeywordsCommentsAndContinuationSemantics()
+    {
+        byte[] file = Header(
+            Card("SIMPLE", "= T"),
+            Card("BITPIX", "= 8"),
+            Card("NAXIS", "= 0"),
+            Card("VALUE", "= 'first&' / first comment"),
+            Card("CONTINUE", "  'second' / second comment"),
+            Card("COMMENT", "commentary"),
+            Card("HISTORY", "history"),
+            Card("", "blank commentary"));
+
+        using var document = FitsDocument.Parse(file);
+        FitsCard[] cards = document.Hdus[0].Header.Cards.ToArray();
+
+        Assert.Collection(
+            cards,
+            card => Assert.Equal(new FitsCard("SIMPLE", FitsValueKind.Logical, true, 0, 0, 0, null, "", null), card),
+            card => Assert.Equal(new FitsCard("BITPIX", FitsValueKind.Integer, false, 8, 8, 0, null, "", null), card),
+            card => Assert.Equal(new FitsCard("NAXIS", FitsValueKind.Integer, false, 0, 0, 0, null, "", null), card),
+            card => Assert.Equal(new FitsCard("VALUE", FitsValueKind.String, false, 0, 0, 0, "firstsecond", "first comment second comment", null), card),
+            card => Assert.Equal(new FitsCard("COMMENT", FitsValueKind.Commentary, false, 0, 0, 0, "commentary", "", null), card),
+            card => Assert.Equal(new FitsCard("HISTORY", FitsValueKind.Commentary, false, 0, 0, 0, "history", "", null), card),
+            card => Assert.Equal(new FitsCard("", FitsValueKind.Commentary, false, 0, 0, 0, "blank commentary", "", null), card));
+        Assert.Equal(file, document.ToArray());
+    }
+
+    [Fact]
+    public void ConvertsAnOrphanContinueToExactCommentary()
+    {
+        byte[] file = Header(
+            Card("SIMPLE", "= T"),
+            Card("BITPIX", "= 8"),
+            Card("NAXIS", "= 0"),
+            Card("CONTINUE", "  'orphan' / retained"));
+
+        using var document = FitsDocument.Parse(file);
+
+        Assert.Contains(document.Hdus[0].Header.Cards,
+            card => card == new FitsCard("COMMENT", FitsValueKind.Commentary, false, 0, 0, 0, "  'orphan' / retained", "", null));
+        Assert.Equal(file, document.ToArray());
+    }
+
+    [Theory]
+    [InlineData("  no opening quote")]
+    [InlineData("  'unterminated")]
+    [InlineData("  'value'/missing delimiter space")]
+    [InlineData("= 'not a continuation value'")]
+    public void RejectsMalformedContinueCards(string value)
+    {
+        byte[] file = Header(
+            Card("SIMPLE", "= T"),
+            Card("BITPIX", "= 8"),
+            Card("NAXIS", "= 0"),
+            Card("CONTINUE", value));
+
+        Assert.Throws<FitsException>(() => FitsDocument.Parse(file));
+    }
+
+    [Fact]
     public void TreatsAnOrphanContinueCardAsCommentary()
     {
         byte[] file = Header(
@@ -300,6 +360,31 @@ public sealed class HeaderSpecTests
         Assert.Equal(80, roundTrip.Length >= 320 ? 80 : 0);
         Assert.Equal("CONTINUE", Encoding.ASCII.GetString(roundTrip, 320, 8).Trim());
         Assert.Equal("CONTINUE", Encoding.ASCII.GetString(roundTrip, 400, 8).Trim());
+    }
+
+    [Fact]
+    public void PreservesLongStringValuesAndCardOrderingWhenCombiningContinuations()
+    {
+        byte[] file = Header(
+            Card("SIMPLE", "= T"),
+            Card("BITPIX", "= 8"),
+            Card("NAXIS", "= 0"),
+            Card("BEFORE", "= 1"),
+            Card("LONGSTR", "= 'first&' / first"),
+            Card("CONTINUE", "  'second&' / second"),
+            Card("CONTINUE", "  'third' / final"),
+            Card("AFTER", "= 2"),
+            Card("COMMENT", "kept"));
+
+        using var document = FitsDocument.Parse(file);
+        var cards = document.Hdus[0].Header.Cards;
+
+        Assert.Equal(
+            ["SIMPLE", "BITPIX", "NAXIS", "BEFORE", "LONGSTR", "AFTER", "COMMENT"],
+            cards.Select(card => card.Keyword));
+        Assert.Equal("firstsecondthird", cards[4].Text);
+        Assert.Equal("first second final", cards[4].Comment);
+        Assert.Equal(file, document.ToArray());
     }
 
     [Fact]

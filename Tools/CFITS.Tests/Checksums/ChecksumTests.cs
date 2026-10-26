@@ -65,6 +65,18 @@ public sealed class ChecksumTests
     }
 
     [Fact]
+    public void SumMatchesIndependentOnesComplementReference()
+    {
+        var random = new Random(8201);
+        for (int length = 0; length <= 257; length++)
+        {
+            byte[] bytes = new byte[length];
+            random.NextBytes(bytes);
+            Assert.Equal(ReferenceSum(bytes), FitsChecksum.Sum(bytes));
+        }
+    }
+
+    [Fact]
     public void StampedImageMatchesItsKeywordsAndAstropy()
     {
         var root = FindRoot();
@@ -167,5 +179,46 @@ public sealed class ChecksumTests
         }
 
         return new string(characters);
+    }
+
+    private static uint ReferenceSum(ReadOnlySpan<byte> bytes)
+    {
+        uint sum = 0;
+        int index = 0;
+        int aligned = bytes.Length & ~3;
+        while (index < aligned)
+        {
+            uint word = (uint)((bytes[index] << 24)
+                | (bytes[index + 1] << 16)
+                | (bytes[index + 2] << 8)
+                | bytes[index + 3]);
+            sum = AddReference(sum, word);
+            index += 4;
+        }
+
+        if (index != bytes.Length)
+        {
+            int remaining = bytes.Length - index;
+            uint word = (uint)(bytes[index] << 24);
+            if (remaining > 1)
+            {
+                word |= (uint)(bytes[index + 1] << 16);
+            }
+
+            if (remaining > 2)
+            {
+                word |= (uint)(bytes[index + 2] << 8);
+            }
+
+            sum = AddReference(sum, word);
+        }
+
+        return sum;
+    }
+
+    private static uint AddReference(uint left, uint right)
+    {
+        ulong result = (ulong)left + right;
+        return (uint)((result & uint.MaxValue) + (result >> 32));
     }
 }

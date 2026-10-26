@@ -101,7 +101,7 @@ public sealed class FitsDocument : IDisposable
                     headerOffset = reader.HeaderOffset;
                     break;
                 case FitsToken.Card:
-                    physical.Add(CardRecord.FromView(reader.Card));
+                    physical.Add(CardRecord.FromImage(owned.AsMemory(reader.CardOffset, FitsBlock.CardSize), reader.Card));
                     break;
                 case FitsToken.EndHeader:
                     var header = FitsHeader.FromPhysical(physical, reader.HduIndex);
@@ -114,6 +114,7 @@ public sealed class FitsDocument : IDisposable
                         reader.HduIndex,
                         header,
                         raw,
+                        padded,
                         reader.Shape,
                         options.ScaleMode,
                         owned.AsMemory(headerOffset, headerLength),
@@ -146,7 +147,7 @@ public sealed class FitsDocument : IDisposable
         {
             hdu.Header.Write(stream);
             stream.Write(hdu.RawData.Span);
-            WriteZeros(stream, FitsBlock.Pad(hdu.RawData.Length) - hdu.RawData.Length);
+            WriteZeros(stream, hdu.PaddedDataLength - hdu.RawData.Length);
         }
 
         if (!SpecialRecords.IsEmpty)
@@ -171,13 +172,14 @@ public sealed class FitsDocument : IDisposable
 
     public void Dispose() => _disposed = true;
 
+    private static readonly byte[] ZeroBlock = new byte[FitsBlock.Size];
+
     private static void WriteZeros(Stream stream, long count)
     {
-        Span<byte> zeros = stackalloc byte[FitsBlock.CardSize];
         while (count > 0)
         {
-            int size = (int)Math.Min(zeros.Length, count);
-            stream.Write(zeros[..size]);
+            int size = (int)Math.Min(ZeroBlock.Length, count);
+            stream.Write(ZeroBlock.AsSpan(0, size));
             count -= size;
         }
     }
@@ -187,7 +189,7 @@ public sealed class FitsDocument : IDisposable
         long length = SpecialRecords.Length;
         foreach (var hdu in _hdus)
         {
-            length += hdu.HeaderBytesLength + FitsBlock.Pad(hdu.RawData.Length);
+            length += hdu.HeaderBytesLength + hdu.PaddedDataLength;
         }
 
         return length <= int.MaxValue ? length : 0;
