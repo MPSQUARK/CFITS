@@ -1,3 +1,0 @@
-scenario,family,warmups,iterations,mean_ns,stddev_ns,allocated_bytes,stddev_allocated_bytes,status,notes
-pixel_endian_scalar,pixels,3,8,2372387.5,440095.47482823057,24,0,available,Paired scalar BinaryPrimitives loop over 1048576 int32 values
-pixel_endian_vector,pixels,3,8,703862.5,182250.18861444286,24,0,available,FitsEndian vector path over the same 1048576 int32 values; 70 percent faster than the scalar row
