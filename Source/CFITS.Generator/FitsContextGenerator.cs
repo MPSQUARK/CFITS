@@ -559,10 +559,8 @@ public sealed class FitsContextGenerator : IIncrementalGenerator
             {{writes}}
             {{unknownWrites}}
                         ordered.Sort(static (left, right) => left.Index.CompareTo(right.Index));
-                        var builder = CFITS.FitsDocumentBuilder.Create();
                         foreach (var item in ordered) builder.Hdu(item.Snapshot);
             {{specialWrite}}
-                        builder.Write(stream);
             """;
         return $$"""
                 private sealed class {{document.Symbol.Name}}Info : CFITS.FitsDocumentTypeInfo<{{root}}>
@@ -578,6 +576,14 @@ public sealed class FitsContextGenerator : IIncrementalGenerator
 
                     public override void Write(System.IO.Stream stream, {{root}} value)
                     {
+                        var builder = CFITS.FitsDocumentBuilder.Create();
+                        Write(builder, value);
+                        builder.Write(stream);
+                    }
+
+                    public override void Write(CFITS.FitsDocumentBuilder builder, {{root}} value)
+                    {
+                        System.ArgumentNullException.ThrowIfNull(builder);
             {{writeBody}}
                     }
                 }
@@ -608,7 +614,7 @@ public sealed class FitsContextGenerator : IIncrementalGenerator
             .Where(static member => member.Child is not null)
             .OrderBy(static member => member.Child!.HduIndex)
             .ToArray();
-        var lines = new List<string> { "                        var builder = CFITS.FitsDocumentBuilder.Create();" };
+        var lines = new List<string>();
         foreach (DocumentMemberModel member in children)
         {
             if (member.Child!.HduIndex > 0)
@@ -619,7 +625,6 @@ public sealed class FitsContextGenerator : IIncrementalGenerator
             lines.Add($"                        {member.Child.InfoName}.WriteToBuilder(builder, value.{member.Property.Name});");
         }
 
-        lines.Add("                        builder.Write(stream);");
         return string.Join(NewLine, lines);
     }
 

@@ -49,20 +49,32 @@ public sealed class FitsClock
             ["CY"] = 36525,
         }.ToFrozenDictionary(StringComparer.OrdinalIgnoreCase);
 
-    private FitsClock(string scale, double referenceModifiedJulianDate, double offsetDays, double unitDays, double resolution, double pixelReference, bool applyReference, string referencePosition, (double X, double Y, double Z)? observerPosition)
+    private FitsClock(string scale, double referenceModifiedJulianDate, double offsetDays, double unitDays, double resolution, double pixelReference, bool applyReference, string referencePosition, (double X, double Y, double Z)? observerPosition, (double Longitude, double Latitude, double Height)? observerGeodeticPosition, string? observerOrbit, string? referenceDirection, double scaleError, double relativeError, double absoluteError, double? start, double? stop, double? elapsed, double? exposure, string? ephemerisReference, FitsClockOptions? options)
     {
         Scale = scale;
         ReferenceModifiedJulianDate = referenceModifiedJulianDate;
         OffsetDays = offsetDays;
         UnitDays = unitDays;
         Resolution = resolution;
+        ScaleError = scaleError;
+        RelativeError = relativeError;
+        AbsoluteError = absoluteError;
+        Start = start;
+        Stop = stop;
+        Elapsed = elapsed;
+        Exposure = exposure;
+        EphemerisReference = ephemerisReference;
         PixelReference = pixelReference;
         ReferencePosition = referencePosition;
         ObserverPosition = observerPosition;
+        ObserverGeodeticPosition = observerGeodeticPosition;
+        ObserverOrbit = observerOrbit;
+        ReferenceDirection = referenceDirection;
         _applyReference = applyReference;
         _referenceModifiedJulianDate = referenceModifiedJulianDate;
         _offsetDays = offsetDays;
         _pixelOffset = (pixelReference - 0.5) * resolution;
+        _options = options ?? new FitsClockOptions();
     }
 
     public string Scale { get; }
@@ -75,36 +87,92 @@ public sealed class FitsClock
 
     public double Resolution { get; }
 
+    public double BinWidth => Resolution;
+
+    public double ScaleError { get; }
+
+    public double RelativeError { get; }
+
+    public double AbsoluteError { get; }
+
+    public double? Start { get; }
+
+    public double? Stop { get; }
+
+    public double? Elapsed { get; }
+
+    public double? Exposure { get; }
+
+    public string? EphemerisReference { get; }
+
     public double PixelReference { get; }
+
+    public double BinReferencePixel => PixelReference;
 
     public string ReferencePosition { get; }
 
     public (double X, double Y, double Z)? ObserverPosition { get; }
 
+    public (double Longitude, double Latitude, double Height)? ObserverGeodeticPosition { get; }
+
+    public string? ObserverOrbit { get; }
+
+    public string? ReferenceDirection { get; }
+
+    public string? EarthOrientationVersion => _options.EarthOrientation?.Version;
+
+    public string? EphemerisVersion => _options.Ephemeris?.Version;
+
     private readonly bool _applyReference;
     private readonly double _referenceModifiedJulianDate;
     private readonly double _offsetDays;
     private readonly double _pixelOffset;
+    private readonly FitsClockOptions _options;
 
-    public static FitsClock FromHeader(FitsHeader header)
+    public static FitsClock FromHeader(FitsHeader header) => FromHeader(header, null, null);
+
+    public static FitsClock FromHeader(FitsHeader header, FitsClockOptions options) =>
+        FromHeader(header, null, options);
+
+    public static FitsClock FromHeader(FitsHeader header, int axis)
     {
-        string scale = header.TryGetCard("TIMESYS", out var timeScale) ? timeScale.GetString() ?? "UTC" : "UTC";
+        if (axis < 1)
+        {
+            throw new FitsException("A time axis number must be positive.", new FitsLocation());
+        }
+
+        return FromHeader(header, (int?)axis, null);
+    }
+
+    public static FitsClock FromHeader(FitsHeader header, int axis, FitsClockOptions options)
+    {
+        if (axis < 1)
+        {
+            throw new FitsException("A time axis number must be positive.", new FitsLocation());
+        }
+
+        return FromHeader(header, (int?)axis, options);
+    }
+
+    private static FitsClock FromHeader(FitsHeader header, int? axis, FitsClockOptions? options)
+    {
+        string scale = Text(header, "TIMESYS", axis) ?? "UTC";
         scale = Canonical(scale);
-        ValidateScale(scale);
-        double reference = Reference(header);
-        string unit = header.TryGetCard("TIMEUNIT", out var timeUnit) ? timeUnit.GetString() ?? "s" : "s";
+        ValidateScale(scale, options?.Ephemeris);
+        double reference = Reference(header, axis);
+        string unit = axis.HasValue
+            ? Text(header, $"CUNIT{axis.Value}", null) ?? Text(header, "TIMEUNIT", axis) ?? "s"
+            : Text(header, "TIMEUNIT", null) ?? "s";
         double unitDays = DaysPerUnit(unit.Trim(), reference);
-        double offset = header.TryGetCard("TIMEOFFS", out var correction)
-            ? Finite(correction.GetDouble(), "TIMEOFFS") * unitDays
-            : 0;
-        double resolution = header.TryGetCard("TIMEDEL", out var step)
+        double offset = Offset(header, axis, unitDays);
+        double resolution = Card(header, "TIMEDEL", axis, out var step)
             ? Finite(step.GetDouble(), "TIMEDEL")
             : 0;
         if (resolution < 0)
         {
             throw new FitsException("TIMEDEL must not be negative.", new FitsLocation(Keyword: "TIMEDEL"));
         }
-        double pixel = header.TryGetCard("TIMEPIXR", out var phase)
+        double pixel = Card(header, "TIMEPIXR", axis, out var phase)
             ? Finite(phase.GetDouble(), "TIMEPIXR")
             : 0.5;
         if (pixel is < 0 or > 1)
@@ -112,7 +180,31 @@ public sealed class FitsClock
             throw new FitsException("TIMEPIXR must be between zero and one.", new FitsLocation(Keyword: "TIMEPIXR"));
         }
 
-        return new FitsClock(scale, reference, offset, unitDays, resolution, pixel, scale != "LOCAL", GetReferencePosition(header), GetObserverPosition(header));
+        double scaleError = Error(header, "TIMSYER", axis);
+        double relativeError = Error(header, "TIMRDER", axis, "TIERRELA");
+        double absoluteError = Error(header, "TIERABSO", axis);
+        return new FitsClock(
+            scale,
+            reference,
+            offset,
+            unitDays,
+            resolution,
+            pixel,
+            scale != "LOCAL",
+            GetReferencePosition(header, axis),
+            GetObserverPosition(header, axis),
+            GetObserverGeodeticPosition(header, axis),
+            Text(header, "OBSORBIT", axis),
+            Text(header, "TREFDIR", axis) ?? Text(header, "TRDIR", axis),
+            scaleError,
+            relativeError,
+            absoluteError,
+            Optional(header, "TSTART", axis),
+            Optional(header, "TSTOP", axis),
+            Optional(header, "TELAPSE", axis),
+            Optional(header, "XPOSURE", axis),
+            Text(header, "PLEPHEM", axis) ?? Text(header, "EPHEM", axis) ?? "DE405",
+            options);
     }
 
     public double ToModifiedJulianDate(double time)
@@ -124,7 +216,7 @@ public sealed class FitsClock
     }
 
     public double ToModifiedJulianDate(double time, string scale) =>
-        ConvertModifiedJulianDate(ToModifiedJulianDate(time), Scale, scale);
+        ConvertModifiedJulianDate(ToModifiedJulianDate(time), Scale, scale, _options);
 
     public DateTimeOffset ToDateTimeOffset(double time)
     {
@@ -171,12 +263,15 @@ public sealed class FitsClock
     }
 
     public static double ConvertModifiedJulianDate(double modifiedJulianDate, string fromScale, string toScale)
+        => ConvertModifiedJulianDate(modifiedJulianDate, fromScale, toScale, null);
+
+    public static double ConvertModifiedJulianDate(double modifiedJulianDate, string fromScale, string toScale, FitsClockOptions? options)
     {
         string from = Canonical(fromScale);
         string to = Canonical(toScale);
         if (from is "TCB" or "TDB" || to is "TCB" or "TDB")
         {
-            throw EphemerisRequired(fromScale, toScale);
+            return ConvertEphemeris(modifiedJulianDate, from, to, options?.Ephemeris);
         }
 
         if (from == to)
@@ -198,12 +293,12 @@ public sealed class FitsClock
 
             if (from == "UTC" && to == "UT1")
             {
-                return modifiedJulianDate + Ut1OffsetAt(modifiedJulianDate) / 86400d;
+                return modifiedJulianDate + Ut1OffsetAt(modifiedJulianDate, options?.EarthOrientation) / 86400d;
             }
 
             if (from == "UT1" && to == "UTC")
             {
-                return modifiedJulianDate - Ut1OffsetAt(modifiedJulianDate) / 86400d;
+                return modifiedJulianDate - Ut1OffsetAt(modifiedJulianDate, options?.EarthOrientation) / 86400d;
             }
 
             if (from == "UTC")
@@ -214,8 +309,8 @@ public sealed class FitsClock
 
             if (from == "UT1")
             {
-                double utc = modifiedJulianDate - Ut1OffsetAt(modifiedJulianDate) / 86400d;
-                return ConvertModifiedJulianDate(utc, "UTC", to);
+                double utc = modifiedJulianDate - Ut1OffsetAt(modifiedJulianDate, options?.EarthOrientation) / 86400d;
+                return ConvertModifiedJulianDate(utc, "UTC", to, options);
             }
 
             if (to == "UTC")
@@ -309,8 +404,20 @@ public sealed class FitsClock
         return offset;
     }
 
-    private static double Ut1OffsetAt(double modifiedJulianDate)
+    private static double Ut1OffsetAt(double modifiedJulianDate, IEarthOrientationProvider? provider)
     {
+        if (provider is not null)
+        {
+            if (!provider.TryGetUt1MinusUtc(modifiedJulianDate, out double supplied))
+            {
+                throw new FitsException(
+                    $"Earth-orientation provider '{provider.Version}' has no data for MJD {modifiedJulianDate:R}.",
+                    new FitsLocation(Keyword: "TIMESYS"));
+            }
+
+            return Finite(supplied, "UT1 provider result");
+        }
+
         DateTime instant = DateTimeOffset.UnixEpoch.AddDays(modifiedJulianDate - UnixModifiedJulianDate).UtcDateTime;
         for (int index = Ut1Offsets.Length - 1; index >= 0; index--)
         {
@@ -323,33 +430,117 @@ public sealed class FitsClock
         throw new FitsException("UT1 conversion requires an observed DUT1 value for the requested epoch.", new FitsLocation(Keyword: "TIMESYS"));
     }
 
-    private static double Reference(FitsHeader header)
+    private static double ConvertEphemeris(double modifiedJulianDate, string from, string to, IEphemerisProvider? provider)
     {
-        if (header.TryGetCard("MJDREF", out var modified))
+        if (provider is null)
+        {
+            throw EphemerisRequired(from, to);
+        }
+
+        if (from == to)
+        {
+            return modifiedJulianDate;
+        }
+
+        double terrestrial = from switch
+        {
+            "TT" => modifiedJulianDate,
+            "TDB" => TdbToTt(modifiedJulianDate, provider),
+            "TCB" => TdbToTt(TcbToTdb(modifiedJulianDate, provider), provider),
+            _ => ConvertModifiedJulianDate(modifiedJulianDate, from, "TT", new FitsClockOptions(Ephemeris: provider)),
+        };
+        double tdb = ToTdb(terrestrial, provider);
+        return to switch
+        {
+            "TT" => terrestrial,
+            "TDB" => tdb,
+            "TCB" => ToTcb(tdb, provider),
+            _ => ConvertModifiedJulianDate(terrestrial, "TT", to, new FitsClockOptions(Ephemeris: provider)),
+        };
+    }
+
+    private static double ToTdb(double terrestrial, IEphemerisProvider provider) =>
+        provider.TryGetTdbMinusTt(terrestrial, out double seconds)
+            ? terrestrial + (Finite(seconds, "TDB-TT provider result") / 86400d)
+            : throw EphemerisRequired("TT", "TDB");
+
+    private static double TdbToTt(double barycentric, IEphemerisProvider provider)
+    {
+        double terrestrial = barycentric;
+        for (int iteration = 0; iteration < 4; iteration++)
+        {
+            terrestrial = barycentric - (ToTdb(terrestrial, provider) - terrestrial);
+        }
+
+        return terrestrial;
+    }
+
+    private static double TcbToTdb(double barycentric, IEphemerisProvider provider)
+    {
+        if (!provider.TryGetTcbMinusTdb(barycentric, out double seconds))
+        {
+            throw EphemerisRequired("TCB", "TDB");
+        }
+
+        return barycentric - (Finite(seconds, "TCB-TDB provider result") / 86400d);
+    }
+
+    private static double ToTcb(double barycentric, IEphemerisProvider provider)
+    {
+        if (!provider.TryGetTcbMinusTdb(barycentric, out double seconds))
+        {
+            throw EphemerisRequired("TDB", "TCB");
+        }
+
+        return barycentric + (Finite(seconds, "TCB-TDB provider result") / 86400d);
+    }
+
+    private static double Reference(FitsHeader header, int? axis)
+    {
+        bool hasMjd = Card(header, "MJDREF", axis, out var modified);
+        bool hasMjdInteger = Card(header, "MJDREFI", axis, out var modifiedInteger);
+        bool hasMjdFraction = Card(header, "MJDREFF", axis, out var modifiedFraction);
+        if (hasMjd && hasMjdInteger && hasMjdFraction)
+        {
+            return Finite(modifiedInteger.GetDouble(), "MJDREFI")
+                + Finite(modifiedFraction.GetDouble(), "MJDREFF");
+        }
+
+        if (hasMjd)
         {
             return Finite(modified.GetDouble(), "MJDREF");
         }
 
-        if (header.TryGetCard("MJDREFI", out modified))
+        if (hasMjdInteger)
         {
-            double integer = Finite(modified.GetDouble(), "MJDREFI");
-            double fraction = header.TryGetCard("MJDREFF", out var fractional) ? Finite(fractional.GetDouble(), "MJDREFF") : 0;
+            double integer = Finite(modifiedInteger.GetDouble(), "MJDREFI");
+            double fraction = hasMjdFraction ? Finite(modifiedFraction.GetDouble(), "MJDREFF") : 0;
             return integer + fraction;
         }
 
-        if (header.TryGetCard("JDREF", out var julian))
+        bool hasJd = Card(header, "JDREF", axis, out var julian);
+        bool hasJdInteger = Card(header, "JDREFI", axis, out var julianInteger);
+        bool hasJdFraction = Card(header, "JDREFF", axis, out var julianFraction);
+        if (hasJd && hasJdInteger && hasJdFraction)
+        {
+            return Finite(julianInteger.GetDouble(), "JDREFI")
+                + Finite(julianFraction.GetDouble(), "JDREFF")
+                - 2400000.5;
+        }
+
+        if (hasJd)
         {
             return Finite(julian.GetDouble(), "JDREF") - 2400000.5;
         }
 
-        if (header.TryGetCard("JDREFI", out julian))
+        if (hasJdInteger)
         {
-            double integer = Finite(julian.GetDouble(), "JDREFI");
-            double fraction = header.TryGetCard("JDREFF", out var fractional) ? Finite(fractional.GetDouble(), "JDREFF") : 0;
+            double integer = Finite(julianInteger.GetDouble(), "JDREFI");
+            double fraction = hasJdFraction ? Finite(julianFraction.GetDouble(), "JDREFF") : 0;
             return integer + fraction - 2400000.5;
         }
 
-        if (header.TryGetCard("DATEREF", out var date) && date.GetString() is string text)
+        if (Card(header, "DATEREF", axis, out var date) && date.GetString() is string text)
         {
             return ModifiedJulianDate(text);
         }
@@ -357,27 +548,43 @@ public sealed class FitsClock
         return 0;
     }
 
-    private static string GetReferencePosition(FitsHeader header)
+    private static string GetReferencePosition(FitsHeader header, int? axis)
     {
-        if (!header.TryGetCard("TIMEREF", out var reference))
+        if (!Card(header, "TREFPOS", axis, out var reference)
+            && !Card(header, "TRPOS", axis, out reference)
+            && !Card(header, "TIMEREF", axis, out reference))
         {
-            return "GEOCENTER";
+            return "TOPOCENTER";
         }
 
         string value = reference.GetString()?.Trim().ToUpperInvariant() ?? "";
-        if (value is not ("TOPOCENTER" or "GEOCENTER" or "BARYCENTER"))
+        string normalized = value.Length >= 3 ? value[..3] : value;
+        string canonical = normalized switch
         {
-            throw new FitsException($"TIMEREF '{value}' is not a supported FITS reference position.", new FitsLocation(Keyword: "TIMEREF"));
+            "TOP" => "TOPOCENTER",
+            "GEO" => "GEOCENTER",
+            "BAR" => "BARYCENTER",
+            "REL" => "RELOCATABLE",
+            "CUS" => "CUSTOM",
+            "HEL" => "HELIOCENTER",
+            "GAL" => "GALACTIC",
+            "EMB" => "EMBARYCENTER",
+            "MER" or "VEN" or "MAR" or "JUP" or "SAT" or "URA" or "NEP" => value,
+            _ => "",
+        };
+        if (canonical.Length == 0)
+        {
+            throw new FitsException($"TREFPOS '{value}' is not a supported FITS reference position.", new FitsLocation(Keyword: reference.Keyword));
         }
 
-        return value;
+        return canonical;
     }
 
-    private static (double X, double Y, double Z)? GetObserverPosition(FitsHeader header)
+    private static (double X, double Y, double Z)? GetObserverPosition(FitsHeader header, int? axis)
     {
-        bool hasX = header.TryGetCard("OBSGEO-X", out var xCard);
-        bool hasY = header.TryGetCard("OBSGEO-Y", out var yCard);
-        bool hasZ = header.TryGetCard("OBSGEO-Z", out var zCard);
+        bool hasX = Card(header, "OBSGEO-X", axis, out var xCard);
+        bool hasY = Card(header, "OBSGEO-Y", axis, out var yCard);
+        bool hasZ = Card(header, "OBSGEO-Z", axis, out var zCard);
         if (!hasX && !hasY && !hasZ)
         {
             return null;
@@ -394,14 +601,35 @@ public sealed class FitsClock
             Finite(zCard.GetDouble(), "OBSGEO-Z"));
     }
 
-    private static void ValidateScale(string scale)
+    private static (double Longitude, double Latitude, double Height)? GetObserverGeodeticPosition(FitsHeader header, int? axis)
     {
-        if (scale is "TDB" or "TCB")
+        bool hasLongitude = Card(header, "OBSGEO-L", axis, out var longitude);
+        bool hasLatitude = Card(header, "OBSGEO-B", axis, out var latitude);
+        bool hasHeight = Card(header, "OBSGEO-H", axis, out var height);
+        if (!hasLongitude && !hasLatitude && !hasHeight)
+        {
+            return null;
+        }
+
+        if (!hasLongitude || !hasLatitude || !hasHeight)
+        {
+            throw new FitsException("OBSGEO-L, OBSGEO-B, and OBSGEO-H must be supplied together.", new FitsLocation(Keyword: "OBSGEO-L"));
+        }
+
+        return (
+            Finite(longitude.GetDouble(), "OBSGEO-L"),
+            Finite(latitude.GetDouble(), "OBSGEO-B"),
+            Finite(height.GetDouble(), "OBSGEO-H"));
+    }
+
+    private static void ValidateScale(string scale, IEphemerisProvider? ephemeris)
+    {
+        if (scale is "TDB" or "TCB" && ephemeris is null)
         {
             throw EphemerisRequired(scale, scale);
         }
 
-        if (scale is not ("UTC" or "UT1" or "TAI" or "TT" or "ET" or "TCG" or "GPS" or "LOCAL"))
+        if (scale is not ("UTC" or "UT1" or "TAI" or "TT" or "ET" or "TCG" or "GPS" or "LOCAL" or "TDB" or "TCB"))
         {
             throw new FitsException($"Time scale '{scale}' is not supported.", new FitsLocation(Keyword: "TIMESYS"));
         }
@@ -431,9 +659,72 @@ public sealed class FitsClock
 
         return unit.ToUpperInvariant() switch
         {
+            "MS" => 1d / 86_400_000d,
+            "US" => 1d / 86_400_000_000d,
+            "NS" => 1d / 86_400_000_000_000d,
+            "DAY" or "DAYS" => 1,
             "TA" => TropicalYearInDays((referenceModifiedJulianDate - 51544.5) / 36525d),
             "BA" => BesselianYearInDays((referenceModifiedJulianDate - 15019.5) / 36525d),
             _ => throw new FitsException($"TIMEUNIT '{unit}' is not a recognized time unit.", new FitsLocation(Keyword: "TIMEUNIT")),
         };
+    }
+
+    private static double Offset(FitsHeader header, int? axis, double unitDays)
+    {
+        if (Card(header, "TIMEOFFS", axis, out var offset))
+        {
+            return Finite(offset.GetDouble(), "TIMEOFFS") * unitDays;
+        }
+
+        return Card(header, "TIMEZERO", axis, out var legacy)
+            ? Finite(legacy.GetDouble(), "TIMEZERO") * unitDays
+            : 0;
+    }
+
+    private static double Error(FitsHeader header, string keyword, int? axis)
+        => Error(header, keyword, axis, null);
+
+    private static double Error(FitsHeader header, string keyword, int? axis, string? legacyKeyword)
+    {
+        if (!Card(header, keyword, axis, out var card)
+            && (legacyKeyword is null || !Card(header, legacyKeyword, axis, out card)))
+        {
+            return 0;
+        }
+
+        double value = Finite(card.GetDouble(), keyword);
+        if (value < 0)
+        {
+            throw new FitsException($"{keyword} must not be negative.", new FitsLocation(Keyword: keyword));
+        }
+
+        return value;
+    }
+
+    private static double? Optional(FitsHeader header, string keyword, int? axis)
+    {
+        return Card(header, keyword, axis, out var card)
+            ? Finite(card.GetDouble(), keyword)
+            : null;
+    }
+
+    private static string? Text(FitsHeader header, string keyword, int? axis)
+    {
+        if (axis.HasValue && header.TryGetCard(keyword + axis.Value, out var axisCard))
+        {
+            return axisCard.GetString();
+        }
+
+        return header.TryGetCard(keyword, out var card) ? card.GetString() : null;
+    }
+
+    private static bool Card(FitsHeader header, string keyword, int? axis, out FitsCard card)
+    {
+        if (axis.HasValue && header.TryGetCard(keyword + axis.Value, out card))
+        {
+            return true;
+        }
+
+        return header.TryGetCard(keyword, out card);
     }
 }

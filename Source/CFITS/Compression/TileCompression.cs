@@ -12,6 +12,11 @@ internal static class TileCompression
     public static FitsImage Decompress(FitsHeader header, FitsTable table, FitsScaleMode mode)
     {
         int bitpix = checked((int)header.GetInt64("ZBITPIX"));
+        if (bitpix is not (8 or 16 or 32 or 64 or -32 or -64))
+        {
+            throw new FitsException($"ZBITPIX {bitpix} is not a legal FITS value.", new FitsLocation(Keyword: "ZBITPIX"));
+        }
+
         int axesCount = checked((int)header.GetInt64("ZNAXIS"));
         if (axesCount < 0 || axesCount > 999)
         {
@@ -45,6 +50,14 @@ internal static class TileCompression
         {
             throw new FitsException($"Compression algorithm '{algorithm}' is not supported.", new FitsLocation(Keyword: "ZCMPTYPE"));
         }
+        if (algorithm == "HCOMPRESS_1" && (axesCount != 2 || bitpix < 0))
+        {
+            throw new FitsException("HCOMPRESS_1 requires a two-dimensional integer image.", new FitsLocation(Keyword: "ZCMPTYPE"));
+        }
+        if (algorithm == "PLIO_1" && bitpix < 0)
+        {
+            throw new FitsException("PLIO_1 requires an integer image.", new FitsLocation(Keyword: "ZCMPTYPE"));
+        }
 
         int pixels = axes.Length == 0 ? 0 : 1;
         foreach (int axis in axes)
@@ -75,12 +88,49 @@ internal static class TileCompression
         }
         FitsColumn? scale = table.Columns.FirstOrDefault(column => column.Name.Equals("ZSCALE", StringComparison.OrdinalIgnoreCase));
         FitsColumn? zero = table.Columns.FirstOrDefault(column => column.Name.Equals("ZZERO", StringComparison.OrdinalIgnoreCase));
+        if ((scale is null) != (zero is null))
+        {
+            throw new FitsException("ZSCALE and ZZERO must be present together.", new FitsLocation());
+        }
+
+        FitsColumn? mask = table.Columns.FirstOrDefault(column => column.Name.Equals("NULL_PIXEL_MASK", StringComparison.OrdinalIgnoreCase));
+        string maskAlgorithm = header.TryGetCard("ZMASKCMP", out var maskCard)
+            ? NormalizeAlgorithm(maskCard.GetString() ?? "")
+            : "";
+        if (mask is not null && maskAlgorithm is not ("NOCOMPRESS" or "GZIP_1" or "GZIP_2" or "RICE_1" or "RICE_ONE" or "PLIO_1"))
+        {
+            throw new FitsException("NULL_PIXEL_MASK requires a supported ZMASKCMP algorithm.", new FitsLocation(Keyword: "ZMASKCMP"));
+        }
+        ValidateSettings(header);
         int blockSize = Setting(header, "BLOCKSIZE", 32);
         int bytePix = Setting(header, "BYTEPIX", rice ? 4 : width);
         int smooth = Setting(header, "SMOOTH", 0);
         string quantize = header.TryGetCard("ZQUANTIZ", out var quantizeCard) ? quantizeCard.GetString() ?? "NO_DITHER" : "NO_DITHER";
-        int ditherSeed = header.TryGetCard("ZDITHER0", out var seedCard) ? checked((int)seedCard.GetInt64()) : 0;
+        quantize = quantize.Trim().Replace(' ', '_').ToUpperInvariant();
+        if (quantize is not ("NO_DITHER" or "SUBTRACTIVE_DITHER_1" or "SUBTRACTIVE_DITHER_2"))
+        {
+            throw new FitsException($"Quantization algorithm '{quantize}' is not supported.", new FitsLocation(Keyword: "ZQUANTIZ"));
+        }
+        int ditherSeed = 0;
+        if (header.TryGetCard("ZDITHER0", out var seedCard))
+        {
+            long seed = seedCard.GetInt64();
+            if (seed is < 1 or > 10000)
+            {
+                throw new FitsException("ZDITHER0 must be from 1 through 10000.", new FitsLocation(Keyword: "ZDITHER0"));
+            }
+
+            ditherSeed = checked((int)seed);
+        }
         long? blank = header.TryGetCard("ZBLANK", out var blankCard) && blankCard.Kind == FitsValueKind.Integer ? blankCard.Integer : null;
+        if (blank is long marker && !ValidBlank(bitpix, marker))
+        {
+            throw new FitsException("ZBLANK is outside the compressed image pixel domain.", new FitsLocation(Keyword: "ZBLANK"));
+        }
+        if (mask is not null && bitpix > 0 && !blank.HasValue)
+        {
+            throw new FitsException("A masked integer compressed image must define ZBLANK.", new FitsLocation(Keyword: "ZBLANK"));
+        }
 
         int rows = table.RowCount;
         if (rows != expectedTiles)
@@ -116,6 +166,18 @@ internal static class TileCompression
             {
                 fallback = uncompressed!.ReadVariableBytes(row);
             }
+            else
+            {
+                if (gzip is not null && gzip.ReadVariableBytes(row).Length != 0)
+                {
+                    throw new FitsException("A fallback image column must be empty when COMPRESSED_DATA contains a tile.", new FitsLocation());
+                }
+
+                if (uncompressed is not null && uncompressed.ReadVariableBytes(row).Length != 0)
+                {
+                    throw new FitsException("A fallback image column must be empty when COMPRESSED_DATA contains a tile.", new FitsLocation());
+                }
+            }
 
             double rowScale = losslessGzip || losslessRaw ? 1 : scale?.ReadReal(row) ?? 1;
             double rowZero = losslessGzip || losslessRaw ? 0 : zero?.ReadReal(row) ?? 0;
@@ -124,11 +186,21 @@ internal static class TileCompression
                 : losslessRaw
                 ? new TileBytes(RequireLength(fallback!, checked(tilePixels * width)), width)
                 : Decode(algorithm, compressed, tilePixels, bytePix, blockSize, width, smooth);
+            int[] tileOrigin = (int[])origin.Clone();
             WriteTile(raw, axes, origin, span, bitpix, decoded.Bytes, decoded.Width, quantize, ditherSeed, row + 1, rowScale, rowZero, blank);
+            if (mask is not null)
+            {
+                byte[] maskBytes = mask.ReadVariableBytes(row);
+                if (maskBytes.Length != 0)
+                {
+                    TileBytes decodedMask = Decode(maskAlgorithm, maskBytes, tilePixels, 1, blockSize, 1, 0);
+                    ApplyMask(raw, axes, tileOrigin, span, bitpix, decodedMask.Bytes, blank);
+                }
+            }
         }
 
         var shape = new HduShape { Bitpix = bitpix, Axes = axes, Gcount = 1 };
-        return FitsImage.Create(header, raw, shape, mode);
+        return FitsImage.Create(ImageHeader(bitpix, axes, blank), raw, shape, mode);
     }
 
     private readonly record struct TileBytes(byte[] Bytes, int Width);
@@ -195,6 +267,65 @@ internal static class TileCompression
         throw new FitsException($"Compression algorithm '{algorithm}' is not supported yet.", new FitsLocation());
     }
 
+    private static void ApplyMask(byte[] destination, int[] axes, int[] origin, int[] span, int bitpix, byte[] mask, long? blank)
+    {
+        int tilePixels = 1;
+        foreach (int length in span)
+        {
+            tilePixels = checked(tilePixels * length);
+        }
+
+        if (mask.Length != tilePixels)
+        {
+            throw new FitsException($"A null-pixel mask has {mask.Length} pixels; expected {tilePixels}.", new FitsLocation());
+        }
+
+        int width = Math.Abs(bitpix) / 8;
+        int address = 0;
+        int stride = 1;
+        var coordinates = new int[axes.Length];
+        for (int axis = 0; axis < axes.Length; axis++)
+        {
+            address = checked(address + (origin[axis] * stride));
+            stride = checked(stride * axes[axis]);
+        }
+
+        for (int tileIndex = 0; tileIndex < tilePixels; tileIndex++)
+        {
+            if (mask[tileIndex] != 0)
+            {
+                int offset = checked(address * width);
+                if (bitpix > 0)
+                {
+                    WriteInteger(destination.AsSpan(offset, width), blank!.Value);
+                }
+                else if (bitpix == -32)
+                {
+                    System.Buffers.Binary.BinaryPrimitives.WriteSingleBigEndian(destination.AsSpan(offset, 4), float.NaN);
+                }
+                else
+                {
+                    System.Buffers.Binary.BinaryPrimitives.WriteDoubleBigEndian(destination.AsSpan(offset, 8), double.NaN);
+                }
+            }
+
+            int coordinateStride = 1;
+            for (int axis = 0; axis < axes.Length; axis++)
+            {
+                coordinates[axis]++;
+                address += coordinateStride;
+                if (coordinates[axis] < span[axis])
+                {
+                    break;
+                }
+
+                coordinates[axis] = 0;
+                address -= span[axis] * coordinateStride;
+                coordinateStride = checked(coordinateStride * axes[axis]);
+            }
+        }
+    }
+
     private static byte[] Pack(uint[] values, int pixels, int bytePix)
     {
         var bytes = new byte[pixels * bytePix];
@@ -211,8 +342,8 @@ internal static class TileCompression
     private static void WriteTile(byte[] destination, int[] axes, int[] origin, int[] span, int bitpix, byte[] decoded, int bytePix, string quantize, int seed, int tileNumber, double scale, double zero, long? blank)
     {
         bool floating = bitpix < 0;
-        bool dither = quantize.Contains("SUBTRACTIVE", StringComparison.OrdinalIgnoreCase);
-        bool restoreZero = quantize.Contains('2');
+        bool dither = quantize is "SUBTRACTIVE_DITHER_1" or "SUBTRACTIVE_DITHER_2";
+        bool restoreZero = quantize == "SUBTRACTIVE_DITHER_2";
         int ditherIndex = 0;
         int sequence = 0;
         if (dither)
@@ -464,6 +595,91 @@ internal static class TileCompression
 
         return fallback;
     }
+
+    private static void ValidateSettings(FitsHeader header)
+    {
+        for (int index = 1; index < 1000; index++)
+        {
+            bool hasName = header.TryGetCard($"ZNAME{index}", out var name);
+            bool hasValue = header.TryGetCard($"ZVAL{index}", out var value);
+            if (!hasName && !hasValue)
+            {
+                return;
+            }
+
+            if (!hasName || !hasValue)
+            {
+                throw new FitsException($"ZNAME{index} and ZVAL{index} must be present together.", new FitsLocation(Keyword: hasName ? $"ZVAL{index}" : $"ZNAME{index}"));
+            }
+
+            string setting = name.GetString()?.Trim().ToUpperInvariant() ?? "";
+            if (setting is not ("BLOCKSIZE" or "BYTEPIX" or "NOISEBIT" or "SCALE" or "SMOOTH"))
+            {
+                throw new FitsException($"Compression setting '{setting}' is not supported.", new FitsLocation(Keyword: $"ZNAME{index}"));
+            }
+
+            if (value.Kind is not (FitsValueKind.Logical or FitsValueKind.Integer or FitsValueKind.Real))
+            {
+                throw new FitsException($"ZVAL{index} must be numeric or logical.", new FitsLocation(Keyword: $"ZVAL{index}"));
+            }
+
+            double numeric = value.Kind == FitsValueKind.Logical ? (value.Logical ? 1 : 0) : value.GetDouble();
+            if (!double.IsFinite(numeric) || numeric < 0 || numeric > int.MaxValue || Math.Truncate(numeric) != numeric)
+            {
+                throw new FitsException($"ZVAL{index} must be a non-negative integer.", new FitsLocation(Keyword: $"ZVAL{index}"));
+            }
+
+            if ((setting is "BLOCKSIZE" or "BYTEPIX" or "NOISEBIT") && numeric == 0)
+            {
+                throw new FitsException($"ZVAL{index} must be positive for {setting}.", new FitsLocation(Keyword: $"ZVAL{index}"));
+            }
+        }
+
+        throw new FitsException("Compression settings exceed the supported count.", new FitsLocation(Keyword: "ZNAME"));
+    }
+
+    private static FitsHeader ImageHeader(int bitpix, int[] axes, long? blank)
+    {
+        var builder = FitsHeader.Builder()
+            .Integer("BITPIX", bitpix)
+            .Integer("NAXIS", axes.Length);
+        for (int axis = 0; axis < axes.Length; axis++)
+        {
+            builder.Integer($"NAXIS{axis + 1}", axes[axis]);
+        }
+
+        if (bitpix > 0 && blank is long marker)
+        {
+            builder.Integer("BLANK", marker);
+        }
+
+        return builder.Build();
+    }
+
+    private static bool ValidBlank(int bitpix, long value)
+    {
+        if (bitpix < 0)
+        {
+            return true;
+        }
+
+        if (bitpix == 8)
+        {
+            return value is >= 0 and <= byte.MaxValue;
+        }
+
+        if (bitpix == 64)
+        {
+            return true;
+        }
+
+        long minimum = -(1L << (bitpix - 1));
+        long maximum = (1L << (bitpix - 1)) - 1;
+        return value >= minimum && value <= maximum;
+    }
+
+    private static string NormalizeAlgorithm(string algorithm) =>
+        algorithm.Trim().Replace(' ', '_').ToUpperInvariant();
 
     private static void TileOrigin(int row, int[] counts, int[] tile, int[] origin)
     {

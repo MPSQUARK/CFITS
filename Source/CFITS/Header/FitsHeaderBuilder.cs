@@ -51,6 +51,13 @@ public sealed class FitsHeaderBuilder
             throw new FitsException($"Reserved header slot {slot} does not exist.", new FitsLocation());
         }
 
+        if (card.Kind == FitsValueKind.String && CardImages.Format(card).Length != FitsBlock.CardSize)
+        {
+            throw new FitsException(
+                "A reserved header slot can contain only one physical card.",
+                new FitsLocation(Keyword: card.Keyword));
+        }
+
         _reserved[slot].Card = card;
         return this;
     }

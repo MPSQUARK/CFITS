@@ -1,0 +1,19 @@
+{
+  "Provenance": "Astropy 8.0.2; CFITSIO-compatible FITS wire format",
+  "Fixtures": [
+    { "Path": "SampleData/Generated/groups.fits", "Sha256": "ca6905937d9b1ec75aa1da9e7b110b4ca53f3f793696f37918993353dfed43f4" },
+    { "Path": "SampleData/Compressed/linear.fits", "Sha256": "8bc21ed3dcbb8630c07913dd8ea6bf8100a8e22aae13f113b6d7b74c4c403786" },
+    { "Path": "SampleData/Compressed/tan.fits", "Sha256": "9fab8cce9079b027d5291e84cfea482b8c58231c296fceba93af023090274b44" },
+    { "Path": "SampleData/Compressed/sin.fits", "Sha256": "ebf37df5aea86faa18d8cc3154758a63d2830087a82e4ee58e3e84fbf83adc60" },
+    { "Path": "SampleData/Compressed/arc.fits", "Sha256": "6a4b23277a9c4e768b281ba55da05a2020573876ee27f648e8ae95804383dc2c" },
+    { "Path": "SampleData/Compressed/zea.fits", "Sha256": "38c7d4fa2f51c29c3454f5c5a4e7efd438576345450e98390896e4ee315ae212" },
+    { "Path": "SampleData/Compressed/stg.fits", "Sha256": "c7a19ecf4179fab826fd9e2859f92bb11cc1823f60b5021d438db776f7f0ccdf" },
+    { "Path": "SampleData/Compressed/car.fits", "Sha256": "e82f71b94c449cc1c1f12a76c24db5c280eb330d71071d4ea8bc8a268e86482e" },
+    { "Path": "SampleData/Compressed/pc.fits", "Sha256": "cdc8ac9bc8109d0e432390590a5ec56ac7ff7993e8536dfacff9badcb9162b89" },
+    { "Path": "SampleData/Compressed/gzip.fits", "Sha256": "10ec293d39e408b1dab061ac78b6b344a03200373f31c0ec74df91119af55df8" },
+    { "Path": "SampleData/Compressed/gzip2.fits", "Sha256": "68fd119fe0636db21df92ad6d75d952635d94ba98c6d43fbc632affb577a0f1a" },
+    { "Path": "SampleData/Compressed/rice.fits", "Sha256": "b7607e73eb279326959c9c81559c90151982a903b6d1b6ee5b101bc916bc9fa9" },
+    { "Path": "SampleData/Compressed/hcomp.fits", "Sha256": "e49a8c634eac7c3494597407d3c5f2821357f55caef0a10cd787a88cad77f012" },
+    { "Path": "SampleData/Compressed/tiled.fits", "Sha256": "cf8d3fe79dc7d9991fafe6f30dba3a083309ba913189cf41f9ee4ca2dbfab1ac" }
+  ]
+}

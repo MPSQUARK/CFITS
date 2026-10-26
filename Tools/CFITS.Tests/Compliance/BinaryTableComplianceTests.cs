@@ -1,3 +1,5 @@
+using System.Buffers.Binary;
+
 namespace CFITS.Tests;
 
 public sealed class BinaryTableComplianceTests
@@ -46,8 +48,21 @@ public sealed class BinaryTableComplianceTests
         bytes.AsSpan(pcountCard + 10, 20).Fill((byte)' ');
         bytes[pcountCard + 29] = (byte)'0';
 
-        using var document = FitsDocument.Parse(bytes);
-        Assert.Throws<FitsException>(() => document.Hdus[1].Table!.Column("VALUES").ReadInteger(0));
+        Assert.Throws<FitsException>(() => FitsDocument.Parse(bytes));
+    }
+
+    [Fact]
+    public void RejectsVariableDescriptorsOutsideTheHeapDuringParsing()
+    {
+        using var source = FitsDocumentBuilder.Create()
+            .BinaryTable(new BinaryTableBuilder().AddVariable("VALUES", new[] { new[] { 1 } }))
+            .Build();
+        byte[] bytes = source.ToArray();
+        const int extensionDataOffset = 5760;
+        BinaryPrimitives.WriteInt32BigEndian(bytes.AsSpan(extensionDataOffset), 2);
+        BinaryPrimitives.WriteInt32BigEndian(bytes.AsSpan(extensionDataOffset + 4), 4);
+
+        Assert.Throws<FitsException>(() => FitsDocument.Parse(bytes));
     }
 
     [Fact]

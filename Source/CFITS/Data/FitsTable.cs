@@ -44,7 +44,40 @@ public sealed class FitsTable
 
     internal static FitsTable Create(FitsHeader header, ReadOnlyMemory<byte> data, bool ascii, HduShape shape, FitsScaleMode mode)
     {
-        int fields = checked((int)header.GetInt64("TFIELDS"));
+        if (shape.Axes.Length != 2)
+        {
+            throw new FitsException("Table extensions require NAXIS = 2.", new FitsLocation(header.HduIndex, "NAXIS"));
+        }
+
+        if (shape.Bitpix != 8)
+        {
+            throw new FitsException("Table extensions require BITPIX = 8.", new FitsLocation(header.HduIndex, "BITPIX"));
+        }
+
+        string expectedExtension = ascii ? "TABLE" : "BINTABLE";
+        if (!header.TryGetCard("XTENSION", out var extensionCard)
+            || extensionCard.Kind != FitsValueKind.String
+            || !string.Equals(extensionCard.GetString()?.Trim(), expectedExtension, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new FitsException($"A table extension must have XTENSION = '{expectedExtension}'.", new FitsLocation(header.HduIndex, "XTENSION"));
+        }
+
+        if (header.GetInt64("GCOUNT") != 1)
+        {
+            throw new FitsException("Table extensions require GCOUNT = 1.", new FitsLocation(header.HduIndex, "GCOUNT"));
+        }
+
+        if (ascii && header.GetInt64("PCOUNT") != 0)
+        {
+            throw new FitsException("ASCII table extensions require PCOUNT = 0.", new FitsLocation(header.HduIndex, "PCOUNT"));
+        }
+
+        if (!header.TryGetCard("TFIELDS", out var fieldsCard) || fieldsCard.Kind != FitsValueKind.Integer)
+        {
+            throw new FitsException("The table header is missing or has an invalid TFIELDS keyword.", new FitsLocation(header.HduIndex, "TFIELDS"));
+        }
+
+        int fields = checked((int)fieldsCard.Integer);
         if (fields < 1 || fields > 999)
         {
             throw new FitsException("TFIELDS must be between 1 and 999.", new FitsLocation(header.HduIndex, "TFIELDS"));
@@ -71,14 +104,26 @@ public sealed class FitsTable
         int previousAsciiEnd = 0;
         for (int field = 1; field <= fields; field++)
         {
-            string format = header.GetString($"TFORM{field}").Trim();
+            string formatKeyword = $"TFORM{field}";
+            if (!header.TryGetCard(formatKeyword, out var formatCard) || formatCard.Kind != FitsValueKind.String)
+            {
+                throw new FitsException($"The table header is missing or has an invalid {formatKeyword} keyword.", new FitsLocation(header.HduIndex, formatKeyword));
+            }
+
+            string format = formatCard.GetString()!.Trim();
             string name = header.TryGetCard($"TTYPE{field}", out var typeCard) ? typeCard.GetString() ?? $"Column{field}" : $"Column{field}";
             var spec = ColumnFormats.Parse(format, ascii);
             int offset = binaryCursor;
             int asciiStart = 0;
             if (ascii)
             {
-                long columnStart = header.GetInt64($"TBCOL{field}");
+                string columnKeyword = $"TBCOL{field}";
+                if (!header.TryGetCard(columnKeyword, out var columnCard) || columnCard.Kind != FitsValueKind.Integer)
+                {
+                    throw new FitsException($"The table header is missing or has an invalid {columnKeyword} keyword.", new FitsLocation(header.HduIndex, columnKeyword));
+                }
+
+                long columnStart = columnCard.Integer;
                 if (columnStart < 1 || columnStart > int.MaxValue)
                 {
                     throw new FitsException($"TBCOL{field} must identify a positive column position.", new FitsLocation(header.HduIndex, $"TBCOL{field}"));
@@ -171,6 +216,14 @@ public sealed class FitsTable
         if (!ascii && binaryCursor > stride)
         {
             throw new FitsException("Binary-table columns are wider than NAXIS1.", new FitsLocation(header.HduIndex));
+        }
+
+        if (!ascii)
+        {
+            foreach (var column in columns)
+            {
+                column.ValidateVariableArrays();
+            }
         }
 
         return new FitsTable(ascii, rows, columns);

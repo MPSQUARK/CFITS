@@ -54,8 +54,10 @@ public sealed class FitsWorld
     private readonly Projection _projectionKind;
     private readonly double[] _euler;
     private readonly double[] _pv;
+    private readonly string?[] _axisAlgorithms;
+    private readonly IReadOnlyList<WcsAxisMetadata> _axisMetadata;
 
-    private FitsWorld(double[] referencePixel, double[] referenceValue, double[] scale, double[] matrix, bool scaledMatrix, int longitude, int latitude, string? projection, double[] euler, double[] pv)
+    private FitsWorld(double[] referencePixel, double[] referenceValue, double[] scale, double[] matrix, bool scaledMatrix, int longitude, int latitude, string? projection, double[] euler, double[] pv, string?[] axisAlgorithms, IReadOnlyList<WcsAxisMetadata> axisMetadata)
     {
         _referencePixel = referencePixel;
         _referenceValue = referenceValue;
@@ -67,9 +69,13 @@ public sealed class FitsWorld
         _projectionKind = ProjectionOf(projection);
         _euler = euler;
         _pv = pv;
+        _axisAlgorithms = axisAlgorithms;
+        _axisMetadata = axisMetadata;
     }
 
     public int Axes => _referencePixel.Length;
+
+    public IReadOnlyList<WcsAxisMetadata> AxisMetadata => _axisMetadata;
 
     public static FitsWorld FromHeader(FitsHeader header, char version = ' ')
     {
@@ -91,7 +97,7 @@ public sealed class FitsWorld
             {
                 throw new FitsException("CDELT must be a finite, non-zero increment.", new FitsLocation(Keyword: $"CDELT{axis}"));
             }
-            type[axis - 1] = header.TryGetCard(Name($"CTYPE{axis}", version), out var kind) ? kind.GetString() ?? "" : "";
+            type[axis - 1] = Text(header, $"CTYPE{axis}", version);
             for (int other = 1; other <= count; other++)
             {
                 if (header.TryGetCard(Name($"CD{axis}_{other}", version), out _))
@@ -155,6 +161,18 @@ public sealed class FitsWorld
                 continue;
             }
 
+            if (!IsLongitude(coordinate) && !IsLatitude(coordinate))
+            {
+                if ((IsSpectral(coordinate) || IsTime(coordinate)) && IsAxisAlgorithm(algorithm))
+                {
+                    continue;
+                }
+
+                throw new FitsException(
+                    $"Projection or coordinate algorithm '{algorithm}' is only valid for a celestial longitude/latitude axis.",
+                    new FitsLocation(Keyword: $"CTYPE{axis + 1}"));
+            }
+
             if (projection is null)
             {
                 projection = algorithm;
@@ -192,6 +210,12 @@ public sealed class FitsWorld
 
                 latitude = axis;
             }
+            else
+            {
+                throw new FitsException(
+                    $"Projection '{algorithm}' is only valid for a celestial longitude/latitude axis.",
+                    new FitsLocation(Keyword: $"CTYPE{axis + 1}"));
+            }
         }
 
         if ((longitude >= 0) != (latitude >= 0))
@@ -218,8 +242,45 @@ public sealed class FitsWorld
                 pv[index] = Read(header, $"PV{latitude + 1}_{keywordParameter}", version, ProjectionDefault(active, keywordParameter));
                 EnsureFinite(pv[index], $"PV{latitude + 1}_{keywordParameter}");
             }
+
+            ValidateProjectionParameters(active!, pv, latitude + 1);
         }
-        return new FitsWorld(referencePixel, referenceValue, scale, matrix, cd, longitude, latitude, active, euler, pv);
+        var metadata = new WcsAxisMetadata[count];
+        var axisAlgorithms = new string?[count];
+        string? referenceSystem = Text(header, "SPECSYS", version);
+        string? velocitySystem = Text(header, "SSYSOBS", version);
+        double? restFrequency = OptionalFinite(header, "RESTFRQ", version);
+        double? restWavelength = OptionalFinite(header, "RESTWAV", version);
+        int? velocityReference = OptionalInteger(header, "VELREF", version);
+        for (int axis = 0; axis < count; axis++)
+        {
+            string coordinate = type[axis];
+            bool hasProjection = TryProjection(coordinate, out string coordinateName, out string algorithmName);
+            bool celestial = hasProjection && (IsLongitude(coordinateName) || IsLatitude(coordinateName));
+            string? axisAlgorithm = hasProjection && (IsSpectral(coordinateName) || IsTime(coordinateName))
+                ? algorithmName
+                : null;
+            axisAlgorithms[axis] = axisAlgorithm;
+            metadata[axis] = new WcsAxisMetadata(
+                axis + 1,
+                coordinate,
+                Text(header, $"CUNIT{axis + 1}", version),
+                celestial,
+                IsSpectral(coordinate),
+                IsTime(coordinate),
+                celestial ? algorithmName : null,
+                (IsSpectral(coordinate) || IsTime(coordinate)) && hasProjection ? algorithmName : null,
+                Text(header, $"CNAME{axis + 1}", version),
+                OptionalFinite(header, $"CRDER{axis + 1}", version),
+                OptionalFinite(header, $"CSYER{axis + 1}", version),
+                string.IsNullOrEmpty(referenceSystem) ? null : referenceSystem,
+                restFrequency,
+                restWavelength,
+                string.IsNullOrEmpty(velocitySystem) ? null : velocitySystem,
+                velocityReference);
+        }
+
+        return new FitsWorld(referencePixel, referenceValue, scale, matrix, cd, longitude, latitude, active, euler, pv, axisAlgorithms, metadata);
     }
 
     public double[] PixelToWorld(ReadOnlySpan<double> pixel)
@@ -257,6 +318,7 @@ public sealed class FitsWorld
             }
 
             world[axis] = _referenceValue[axis] + intermediate;
+            world[axis] = ApplySpectralForward(world[axis], axis);
         }
 
         if (_projectionKind == Projection.None)
@@ -276,6 +338,7 @@ public sealed class FitsWorld
         else
         {
             var native = Native(_projectionKind, planeX, planeY, _pv);
+            EnsureProjectionResult(native.Phi, native.Theta, _projectionKind);
             phi = native.Phi;
             theta = native.Theta;
         }
@@ -316,9 +379,18 @@ public sealed class FitsWorld
         {
             var native = InverseSpherical(world[_longitude], world[_latitude], _euler);
             var plane = Plane(_projectionKind, native.Phi, native.Theta, _pv);
+            EnsureProjectionResult(plane.X, plane.Y, _projectionKind);
             for (int axis = 0; axis < Axes; axis++)
             {
                 intermediate[axis] = axis == _longitude ? plane.X : axis == _latitude ? plane.Y : world[axis] - _referenceValue[axis];
+            }
+        }
+
+        for (int axis = 0; axis < Axes; axis++)
+        {
+            if (axis != _longitude && axis != _latitude)
+            {
+                intermediate[axis] = ApplySpectralInverse(world[axis], axis) - _referenceValue[axis];
             }
         }
 
@@ -342,6 +414,7 @@ public sealed class FitsWorld
         double pv1 = pv[0];
         double pv2 = pv[1];
         double radius = Math.Sqrt((x * x) + (y * y));
+        ValidateNativeDomain(projection, x, y, radius, pv1);
         double phi = double.RadiansToDegrees(Math.Atan2(x, -y));
         double theta = projection switch
         {
@@ -412,6 +485,29 @@ public sealed class FitsWorld
         }
 
         return (phi, theta);
+    }
+
+    private static void ValidateNativeDomain(Projection projection, double x, double y, double radius, double pv1)
+    {
+        const double tolerance = 1e-12;
+        double radialArgument = radius * RadiansPerDegree;
+        bool invalid = projection switch
+        {
+            Projection.Sin => radialArgument > 1 + tolerance,
+            Projection.Zea => radialArgument > 2 + tolerance,
+            Projection.Ait => ((x * x) / (16 * DegreesPerRadian * DegreesPerRadian))
+                + ((y * y) / (4 * DegreesPerRadian * DegreesPerRadian)) > 1 + tolerance,
+            Projection.Cea => Math.Abs(y * RadiansPerDegree * pv1) > 1 + tolerance,
+            Projection.Hpx => Math.Abs(y) > 67.5 + tolerance,
+            _ => false,
+        };
+
+        if (invalid)
+        {
+            throw new FitsException(
+                $"The {projection} projection coordinate is outside its mathematical domain.",
+                new FitsLocation());
+        }
     }
 
     private static (double Phi, double Theta) InverseSpherical(double longitude, double latitude, double[] euler)
@@ -952,7 +1048,12 @@ public sealed class FitsWorld
             return ValidAxisCount(count, Name("WCSAXES", version));
         }
 
-        if (version == ' ' && header.TryGetCard("NAXIS", out var axes))
+        if (version != ' ' && header.TryGetCard("WCSAXES", out count))
+        {
+            return ValidAxisCount(count, "WCSAXES");
+        }
+
+        if (header.TryGetCard("NAXIS", out var axes))
         {
             return ValidAxisCount(axes, "NAXIS");
         }
@@ -980,7 +1081,7 @@ public sealed class FitsWorld
         }
 
         coordinate = type[..4];
-        algorithm = type[5..8].Trim();
+        algorithm = type[5..8].Trim().ToUpperInvariant();
         return algorithm.Length > 0;
     }
 
@@ -992,7 +1093,8 @@ public sealed class FitsWorld
 
     private static double Read(FitsHeader header, string keyword, char version, double fallback)
     {
-        if (!header.TryGetCard(Name(keyword, version), out var card))
+        if (!header.TryGetCard(Name(keyword, version), out var card) &&
+            (version == ' ' || !header.TryGetCard(keyword, out card)))
         {
             return fallback;
         }
@@ -1000,11 +1102,139 @@ public sealed class FitsWorld
         return card.Kind is FitsValueKind.Real or FitsValueKind.Integer ? card.GetDouble() : fallback;
     }
 
+    private static string Text(FitsHeader header, string keyword, char version)
+    {
+        if (header.TryGetCard(Name(keyword, version), out var card) ||
+            (version != ' ' && header.TryGetCard(keyword, out card)))
+        {
+            return card.GetString() ?? "";
+        }
+
+        return "";
+    }
+
+    private static double? OptionalFinite(FitsHeader header, string keyword, char version)
+    {
+        if (!header.TryGetCard(Name(keyword, version), out var card) &&
+            (version == ' ' || !header.TryGetCard(keyword, out card)))
+        {
+            return null;
+        }
+
+        if (card.Kind is not (FitsValueKind.Real or FitsValueKind.Integer))
+        {
+            throw new FitsException($"{keyword} must be numeric.", new FitsLocation(Keyword: keyword));
+        }
+
+        double value = card.GetDouble();
+        EnsureFinite(value, keyword);
+        return value;
+    }
+
+    private static int? OptionalInteger(FitsHeader header, string keyword, char version)
+    {
+        if (!header.TryGetCard(Name(keyword, version), out var card) &&
+            (version == ' ' || !header.TryGetCard(keyword, out card)))
+        {
+            return null;
+        }
+
+        if (card.Kind != FitsValueKind.Integer)
+        {
+            throw new FitsException($"{keyword} must be an integer.", new FitsLocation(Keyword: keyword));
+        }
+
+        return checked((int)card.Integer);
+    }
+
+    private static bool IsSpectral(string type) =>
+        type.StartsWith("FREQ", StringComparison.OrdinalIgnoreCase)
+        || type.StartsWith("ENER", StringComparison.OrdinalIgnoreCase)
+        || type.StartsWith("WAVE", StringComparison.OrdinalIgnoreCase)
+        || type.StartsWith("AWAV", StringComparison.OrdinalIgnoreCase)
+        || type.StartsWith("VELO", StringComparison.OrdinalIgnoreCase)
+        || type.StartsWith("VRAD", StringComparison.OrdinalIgnoreCase)
+        || type.StartsWith("VOPT", StringComparison.OrdinalIgnoreCase)
+        || type.StartsWith("BETA", StringComparison.OrdinalIgnoreCase)
+        || type.StartsWith("ZOPT", StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsSpectralAlgorithm(string algorithm) =>
+        algorithm is "LOG" or "TAB" or "F2W" or "W2F" or "V2F" or "F2V"
+            or "GRW" or "GRZ" or "GRA";
+
+    private static bool IsAxisAlgorithm(string algorithm) =>
+        IsSpectralAlgorithm(algorithm);
+
+    private double ApplySpectralForward(double value, int axis)
+    {
+        if (_axisAlgorithms[axis] != "LOG")
+        {
+            return value;
+        }
+
+        double reference = _referenceValue[axis];
+        if (reference == 0)
+        {
+            throw new FitsException("A logarithmic spectral or time axis requires a non-zero CRVAL.", new FitsLocation(Keyword: $"CRVAL{axis + 1}"));
+        }
+
+        double result = reference * Math.Exp((value - reference) / reference);
+        EnsureFinite(result, $"CTYPE{axis + 1}");
+        return result;
+    }
+
+    private double ApplySpectralInverse(double value, int axis)
+    {
+        if (_axisAlgorithms[axis] != "LOG")
+        {
+            return value;
+        }
+
+        double reference = _referenceValue[axis];
+        if (reference == 0 || !double.IsFinite(value) || value / reference <= 0)
+        {
+            throw new FitsException("A logarithmic spectral or time coordinate must have the same sign as CRVAL.", new FitsLocation());
+        }
+
+        return reference + (reference * Math.Log(value / reference));
+    }
+
+    private static void ValidateProjectionParameters(string projection, double[] pv, int axis)
+    {
+        if (projection is "CEA" && pv[0] == 0)
+        {
+            throw new FitsException("PV" + axis + "_1 must be non-zero for CEA.", new FitsLocation(Keyword: "PV" + axis + "_1"));
+        }
+
+        if (projection is "CYP" && pv[1] == 0)
+        {
+            throw new FitsException("PV" + axis + "_2 must be non-zero for CYP.", new FitsLocation(Keyword: "PV" + axis + "_2"));
+        }
+
+        if (projection is "AZP" or "SZP" && Math.Abs(pv[1]) == 90)
+        {
+            throw new FitsException("The AZP/SZP gamma parameter must not be ±90 degrees.", new FitsLocation(Keyword: "PV" + axis + "_2"));
+        }
+    }
+
+    private static bool IsTime(string type) =>
+        type.StartsWith("TIME", StringComparison.OrdinalIgnoreCase);
+
     private static void EnsureFinite(double value, string keyword)
     {
         if (!double.IsFinite(value))
         {
             throw new FitsException($"{keyword} must be finite.", new FitsLocation(Keyword: keyword));
+        }
+    }
+
+    private static void EnsureProjectionResult(double x, double y, Projection projection)
+    {
+        if (!double.IsFinite(x) || !double.IsFinite(y))
+        {
+            throw new FitsException(
+                $"The {projection} projection is outside its mathematical domain.",
+                new FitsLocation());
         }
     }
 

@@ -3,12 +3,12 @@ namespace CFITS.Tests;
 public sealed class RandomGroupsEdgeComplianceTests
 {
     [Fact]
-    public void RejectsZeroGroupsBecauseGcountMustBePositive()
+    public void RejectsGroupDataThatCannotFillTheDeclaredShape()
     {
         var error = Assert.Throws<FitsException>(() => FitsDocumentBuilder.Create()
-            .RandomGroups(16, [2], 1, Array.Empty<double>(), Array.Empty<double>())
+            .RandomGroups(16, [2], 1, [7], [11])
             .Build());
-        Assert.Contains("GCOUNT", error.Message);
+        Assert.Contains("data", error.Message, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]

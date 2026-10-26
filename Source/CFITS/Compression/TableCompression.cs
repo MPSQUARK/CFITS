@@ -17,6 +17,10 @@ internal static class TableCompression
         {
             throw new FitsException("ZTILELEN must contain at least one row.", new FitsLocation(Keyword: "ZTILELEN"));
         }
+        if (header.TryGetCard("ZPCOUNT", out var heapCard) && heapCard.GetInt64() < 0)
+        {
+            throw new FitsException("ZPCOUNT must not be negative.", new FitsLocation(Keyword: "ZPCOUNT"));
+        }
 
         int expectedTiles = rows == 0 ? 0 : checked((rows + tileLength - 1) / tileLength);
         if (compressed.RowCount != expectedTiles)
@@ -39,13 +43,21 @@ internal static class TableCompression
             cursor = checked(cursor + specs[field].Width);
         }
 
+        for (int field = 0; field < fields; field++)
+        {
+            if (!compressed.Columns[field].IsVariableLength)
+            {
+                throw new FitsException($"Compressed column '{compressed.Columns[field].Name}' must use a P or Q descriptor.", new FitsLocation(Column: compressed.Columns[field].Name));
+            }
+        }
+
         if (rows > 0 && cursor != rowWidth)
         {
             throw new FitsException("The ZFORMn widths do not add up to ZNAXIS1.", new FitsLocation(Keyword: "ZNAXIS1"));
         }
 
         int bodyLength = checked(rowWidth * rows);
-        int declaredHeap = header.TryGetCard("ZPCOUNT", out var heapCard) ? checked((int)heapCard.GetInt64()) : 0;
+        int declaredHeap = header.TryGetCard("ZPCOUNT", out heapCard) ? checked((int)heapCard.GetInt64()) : 0;
         if (declaredHeap < 0)
         {
             throw new FitsException("ZPCOUNT must not be negative.", new FitsLocation(Keyword: "ZPCOUNT"));
@@ -111,9 +123,10 @@ internal static class TableCompression
 
     private static void ExpandVariable(FitsColumn column, ColumnSpec spec, string algorithm, char element, byte[] stored, int start, int tileRows, int offset, int rowWidth, int blockSize, Span<byte> body, Span<byte> heap)
     {
-        byte[] bundle = Gunzip(stored);
+        string name = algorithm.Trim().Replace(' ', '_').ToUpperInvariant();
+        byte[] bundle = name == "NOCOMPRESS" ? stored : Gunzip(stored);
         int originalDescriptor = spec.Width;
-        const int compressedDescriptor = 16;
+        int compressedDescriptor = DescriptorWidth(column.Format);
         int needed = checked((tileRows * compressedDescriptor) + (tileRows * originalDescriptor));
         if (bundle.Length < needed)
         {
@@ -123,8 +136,9 @@ internal static class TableCompression
         for (int row = 0; row < tileRows; row++)
         {
             int compressedAt = checked(row * compressedDescriptor);
-            long compressedCount = ReadDescriptorValue(bundle.AsSpan(compressedAt, 8), 8);
-            long compressedOffset = ReadDescriptorValue(bundle.AsSpan(compressedAt + 8, 8), 8);
+            int halfDescriptor = compressedDescriptor / 2;
+            long compressedCount = ReadDescriptorValue(bundle.AsSpan(compressedAt, halfDescriptor), halfDescriptor);
+            long compressedOffset = ReadDescriptorValue(bundle.AsSpan(compressedAt + halfDescriptor, halfDescriptor), halfDescriptor);
             int originalAt = checked((tileRows * compressedDescriptor) + (row * originalDescriptor));
             bundle.AsSpan(originalAt, originalDescriptor).CopyTo(body.Slice(((start + row) * rowWidth) + offset, originalDescriptor));
             if (compressedCount < 0 || compressedOffset < 0 || compressedCount > int.MaxValue)
@@ -163,6 +177,17 @@ internal static class TableCompression
         8 => BinaryPrimitives.ReadInt64BigEndian(bytes),
         _ => throw new FitsException("A compressed variable-length descriptor has an invalid width.", new FitsLocation()),
     };
+
+    private static int DescriptorWidth(string format)
+    {
+        ColumnSpec compressed = ColumnFormats.Parse(format, ascii: false);
+        if (!compressed.Variable || compressed.Code is not ('P' or 'Q'))
+        {
+            throw new FitsException($"Compressed column '{format}' must use a P or Q descriptor.", new FitsLocation());
+        }
+
+        return compressed.Width;
+    }
 
     private static void Place(Span<byte> heap, long offset, byte[] plain)
     {
@@ -247,6 +272,12 @@ internal static class TableCompression
     private static FitsHeader LogicalHeader(FitsHeader source, int fields, string[] names, int heapStart, int heapLength)
     {
         var builder = FitsHeader.Builder();
+        builder.Text("XTENSION", "BINTABLE");
+        builder.Integer("BITPIX", 8);
+        builder.Integer("NAXIS", 2);
+        builder.Integer("NAXIS1", source.GetInt64("ZNAXIS1"));
+        builder.Integer("NAXIS2", source.GetInt64("ZNAXIS2"));
+        builder.Integer("GCOUNT", 1);
         builder.Integer("TFIELDS", fields);
         builder.Integer("PCOUNT", heapLength);
         builder.Integer("THEAP", heapStart);
@@ -255,27 +286,77 @@ internal static class TableCompression
             int number = field + 1;
             builder.Text($"TFORM{number}", source.GetString($"ZFORM{number}").Trim());
             builder.Text($"TTYPE{number}", names[field]);
+        }
+
+        foreach (var card in source.Cards)
+        {
+            if (IsRestoredTableCard(card.Keyword))
+            {
+                CopyCard(builder, card);
+            }
+        }
+
+        for (int field = 0; field < fields; field++)
+        {
+            int number = field + 1;
             CopyReal(source, builder, $"TSCAL{number}");
             CopyReal(source, builder, $"TZERO{number}");
             if (source.TryGetCard($"TNULL{number}", out var nullCard))
             {
-                if (nullCard.Kind == FitsValueKind.Integer)
-                {
-                    builder.Integer($"TNULL{number}", nullCard.Integer);
-                }
-                else if (nullCard.GetString() is string text)
-                {
-                    builder.Text($"TNULL{number}", text);
-                }
+                CopyCard(builder, nullCard);
             }
 
-            if (source.TryGetCard($"TDIM{number}", out var dimensions) && dimensions.GetString() is string shape)
+            if (source.TryGetCard($"TDIM{number}", out var dimensions))
             {
-                builder.Text($"TDIM{number}", shape);
+                CopyCard(builder, dimensions);
             }
         }
 
         return builder.Build();
+    }
+
+    private static bool IsRestoredTableCard(string keyword)
+    {
+        if (keyword.StartsWith("Z", StringComparison.OrdinalIgnoreCase)
+            || keyword is "XTENSION" or "BITPIX" or "NAXIS" or "NAXIS1" or "NAXIS2"
+            or "PCOUNT" or "GCOUNT" or "TFIELDS" or "THEAP")
+        {
+            return false;
+        }
+
+        return !keyword.StartsWith("TFORM", StringComparison.OrdinalIgnoreCase)
+            && !keyword.StartsWith("TTYPE", StringComparison.OrdinalIgnoreCase)
+            && !keyword.StartsWith("TSCAL", StringComparison.OrdinalIgnoreCase)
+            && !keyword.StartsWith("TZERO", StringComparison.OrdinalIgnoreCase)
+            && !keyword.StartsWith("TNULL", StringComparison.OrdinalIgnoreCase)
+            && !keyword.StartsWith("TDIM", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static void CopyCard(FitsHeaderBuilder builder, FitsCard card)
+    {
+        switch (card.Kind)
+        {
+            case FitsValueKind.Logical:
+                builder.Logical(card.Keyword, card.Logical, card.Comment);
+                break;
+            case FitsValueKind.Integer:
+                builder.Integer(card.Keyword, card.Integer, card.Comment);
+                break;
+            case FitsValueKind.Real:
+                builder.Real(card.Keyword, card.Real, card.Comment);
+                break;
+            case FitsValueKind.String:
+                builder.Text(card.Keyword, card.Text ?? "", card.Comment);
+                break;
+            case FitsValueKind.Commentary:
+                if (card.Keyword == "COMMENT")
+                    builder.Comment(card.Text ?? "");
+                else if (card.Keyword == "HISTORY")
+                    builder.History(card.Text ?? "");
+                else
+                    builder.Blank(card.Text ?? "");
+                break;
+        }
     }
 
     private static void CopyReal(FitsHeader source, FitsHeaderBuilder builder, string keyword)
@@ -297,6 +378,11 @@ internal static class TableCompression
 
             if (string.Equals(name.GetString(), "BLOCKSIZE", StringComparison.OrdinalIgnoreCase) && header.TryGetCard($"ZVAL{index}", out var value) && value.Kind == FitsValueKind.Integer)
             {
+                if (value.Integer <= 0)
+                {
+                    throw new FitsException("BLOCKSIZE must be positive.", new FitsLocation(Keyword: $"ZVAL{index}"));
+                }
+
                 return checked((int)value.Integer);
             }
         }

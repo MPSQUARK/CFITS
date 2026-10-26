@@ -184,9 +184,30 @@ internal static class ColumnFormats
             throw new FitsException($"ASCII TFORM '{format}' is missing a precision.", new FitsLocation());
         }
 
-        if (dot > 0 && (!int.TryParse(format[(dot + 1)..], NumberStyles.None, CultureInfo.InvariantCulture, out int precision) || precision < 0))
+        if (dot > 0)
         {
-            throw new FitsException($"ASCII TFORM '{format}' has an invalid precision.", new FitsLocation());
+            int end = format.Length;
+            int exponent = format.IndexOf('E', dot + 1);
+            if (exponent < 0)
+                exponent = format.IndexOf('e', dot + 1);
+            if (exponent >= 0)
+            {
+                if (code is not ('E' or 'D')
+                    || !int.TryParse(format[(exponent + 1)..], NumberStyles.None, CultureInfo.InvariantCulture, out int exponentWidth)
+                    || exponentWidth <= 0)
+                    throw new FitsException($"ASCII TFORM '{format}' has an invalid exponent width.", new FitsLocation());
+                end = exponent;
+            }
+
+            if (!int.TryParse(format[(dot + 1)..end], NumberStyles.None, CultureInfo.InvariantCulture, out int precision)
+                || precision < 0)
+                throw new FitsException($"ASCII TFORM '{format}' has an invalid precision.", new FitsLocation());
+            if (precision >= width)
+                throw new FitsException($"ASCII TFORM '{format}' has a precision wider than its field.", new FitsLocation());
+            if (end == format.Length && exponent < 0)
+                return new ColumnSpec { Code = code, Repeat = 1, Width = width, Ascii = true };
+            if (end != format.Length && exponent < 0)
+                throw new FitsException($"ASCII TFORM '{format}' contains trailing characters.", new FitsLocation());
         }
 
         return new ColumnSpec { Code = code, Repeat = 1, Width = width, Ascii = true };

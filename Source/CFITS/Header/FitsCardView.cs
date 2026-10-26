@@ -385,7 +385,7 @@ public readonly ref struct FitsCardView
                 continue;
             }
 
-            if (current is (byte)'E' or (byte)'e' or (byte)'D' or (byte)'d')
+            if (current is (byte)'E' or (byte)'D')
             {
                 if (exponent || !hasDigits)
                 {
@@ -439,7 +439,9 @@ public readonly ref struct FitsCardView
             chars[i] = current is (byte)'D' or (byte)'d' ? 'E' : (char)current;
         }
 
-        if (!double.TryParse(chars, NumberStyles.Float, CultureInfo.InvariantCulture, out double real))
+        if (!double.TryParse(chars, NumberStyles.Float, CultureInfo.InvariantCulture, out double real)
+            || double.IsNaN(real)
+            || double.IsInfinity(real))
         {
             throw new FitsException("A header number is outside the range of a 64-bit value.", new FitsLocation(Position: position));
         }

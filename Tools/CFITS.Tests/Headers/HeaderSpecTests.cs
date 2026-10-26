@@ -160,6 +160,35 @@ public sealed class HeaderSpecTests
     }
 
     [Fact]
+    public void TreatsAnOrphanContinueCardAsCommentary()
+    {
+        byte[] file = Header(
+            Card("SIMPLE", "= T"),
+            Card("BITPIX", "= 8"),
+            Card("NAXIS", "= 0"),
+            Card("CONTINUE", "  'fragment'"));
+
+        using var document = FitsDocument.Parse(file);
+
+        Assert.Contains(document.Hdus[0].Header.Cards,
+            card => card is { Keyword: "COMMENT", Kind: FitsValueKind.Commentary, Text: "  'fragment'" });
+    }
+
+    [Fact]
+    public void TreatsAnAmpersandWithoutAFollowingContinueAsLiteral()
+    {
+        byte[] file = Header(
+            Card("SIMPLE", "= T"),
+            Card("BITPIX", "= 8"),
+            Card("NAXIS", "= 0"),
+            Card("LONGSTR", "= 'fragment&'"));
+
+        using var document = FitsDocument.Parse(file);
+
+        Assert.Equal("fragment&", document.Hdus[0].Header.GetString("LONGSTR"));
+    }
+
+    [Fact]
     public void ReservesHeaderSpaceThenReplacesCardsWithoutMovingData()
     {
         using var document = FitsDocumentBuilder.Create()
@@ -176,6 +205,19 @@ public sealed class HeaderSpecTests
         Assert.Equal("SDSS", document.Hdus[0].Header.GetString("ORIGIN"));
         Assert.Equal(4, document.Hdus[0].Header.GetInt64("VERSION"));
         Assert.Equal(2, document.Hdus[0].Header.Cards.Count(card => card.Keyword is "ORIGIN" or "VERSION"));
+    }
+
+    [Fact]
+    public void RejectsAReservedReplacementThatNeedsMultiplePhysicalCards()
+    {
+        var error = Assert.Throws<FitsException>(() =>
+            FitsDocumentBuilder.Create()
+                .Image([1], new byte[] { 7 }, header => header
+                    .Reserve(1)
+                    .ReplaceText(0, "LONGSTR", new string('x', 100)))
+                .Build());
+
+        Assert.Contains("reserved", error.Message, StringComparison.OrdinalIgnoreCase);
     }
 
     [Theory]
@@ -224,6 +266,40 @@ public sealed class HeaderSpecTests
             ? reparsed.Hdus[0].Header.Cards.Single(card => card.Keyword == "LONGSTR").Comment
             : null);
         Assert.Equal(bytes, reparsed.ToArray());
+    }
+
+    [Fact]
+    public void WritesAnEmptyLongStringWithAnOversizedCommentAsARejectedCard()
+    {
+        var error = Assert.Throws<FitsException>(() =>
+            FitsDocumentBuilder.Create()
+                .Image(Array.Empty<int>(), Array.Empty<byte>(), header =>
+                    header.Text("LONGSTR", "", new string('c', 48)))
+                .Build());
+
+        Assert.Contains("comment", error.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void PreservesContinuationCommentsAndPhysicalCardGeometry()
+    {
+        byte[] file = Header(
+            Card("SIMPLE", "= T"),
+            Card("BITPIX", "= 8"),
+            Card("NAXIS", "= 0"),
+            Card("LONGSTR", "= 'first&' / first"),
+            Card("CONTINUE", "  'second&' / second"),
+            Card("CONTINUE", "  'third' / final"));
+
+        using var document = FitsDocument.Parse(file);
+        byte[] roundTrip = document.ToArray();
+
+        Assert.Equal(file, roundTrip);
+        Assert.Equal("firstsecondthird", document.Hdus[0].Header.GetString("LONGSTR"));
+        Assert.Equal("first second final", document.Hdus[0].Header.Cards.Single(card => card.Keyword == "LONGSTR").Comment);
+        Assert.Equal(80, roundTrip.Length >= 320 ? 80 : 0);
+        Assert.Equal("CONTINUE", Encoding.ASCII.GetString(roundTrip, 320, 8).Trim());
+        Assert.Equal("CONTINUE", Encoding.ASCII.GetString(roundTrip, 400, 8).Trim());
     }
 
     [Fact]

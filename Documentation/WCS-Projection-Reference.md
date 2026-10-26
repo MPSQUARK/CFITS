@@ -21,6 +21,14 @@ The FITS `PV2_m` cards use the zero-based polynomial index `m` for ZPN.
 Angles in the projection equations below are in radians unless explicitly
 identified as degrees.
 
+`FitsWorld.AxisMetadata` exposes the declared `CTYPE`/`CUNIT` values and
+classifies celestial, spectral, and time axes without changing the numeric
+coordinate units. Alternate WCS descriptions use their suffixed keywords and
+fall back to the primary `WCSAXES` and axis calibration keywords when an
+alternate keyword is absent. Projection algorithms are accepted only on
+celestial longitude/latitude axes; unsupported or mismatched celestial
+projections are rejected at header interpretation time.
+
 - **AZP**: with `mu = PV2_1`, `gamma = PV2_2`, and
   `r = (mu + 1) cos(theta) / (mu + sin(theta) +
   cos(theta) cos(phi) tan(gamma))`, the native plane is

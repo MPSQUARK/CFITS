@@ -21,6 +21,37 @@ public sealed class ChecksumTests
         }
     }
 
+    [Fact]
+    public void EncodingMatchesTheOfficialFITSReferenceVector()
+    {
+        // FITS checksum proposal Appendix A.4: accumulated checksum
+        // 868229149 encodes to hcHjjc9ghcEghc9g.
+        Assert.Equal("hcHjjc9ghcEghc9g", FitsChecksum.Encode(868229149));
+    }
+
+    [Fact]
+    public void StampingPlacesIntegrityKeywordsBeforeEndAndKeepsThemCardAligned()
+    {
+        using var document = FitsDocumentBuilder.Create()
+            .Image([1], new byte[] { 7 })
+            .Checksum()
+            .Build();
+
+        byte[] bytes = document.ToArray();
+        int end = bytes.AsSpan().IndexOf("END     "u8);
+        int datasum = bytes.AsSpan().IndexOf("DATASUM "u8);
+        int checksum = bytes.AsSpan().IndexOf("CHECKSUM"u8);
+
+        Assert.True(datasum >= 0 && checksum >= 0 && end >= 0);
+        Assert.Equal(0, datasum % 80);
+        Assert.Equal(0, checksum % 80);
+        Assert.True(datasum < end);
+        Assert.True(checksum < end);
+        Assert.Equal((byte)'\'', bytes[checksum + 10]);
+        Assert.Equal((byte)'\'', bytes[checksum + 27]);
+        Assert.True(document.Hdus[0].Integrity.IsValid);
+    }
+
     [Theory]
     [InlineData(1, 0x01000000u)]
     [InlineData(2, 0x01020000u)]

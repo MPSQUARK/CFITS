@@ -1,3 +1,5 @@
+using System.Text;
+
 namespace CFITS;
 
 /// <summary>Header keywords in file order. Lookup returns the last value for a name.</summary>
@@ -62,11 +64,38 @@ public sealed class FitsHeader
 
             if (open is not null)
             {
-                open = null;
+                // An ampersand is a continuation marker only when the next
+                // physical card is a conforming CONTINUE card. Otherwise it
+                // remains the literal final character of the string.
+                open.Card = open.Card with { Text = (open.Card.Text ?? "") + "&" };
+                open.Continues = false;
+            }
+
+            if (record.Card.Keyword == "CONTINUE")
+            {
+                // The convention requires readers that do not find a
+                // preceding continued value to treat CONTINUE as commentary.
+                record.Card = record.Card with
+                {
+                    Keyword = "COMMENT",
+                    Kind = FitsValueKind.Commentary,
+                    Text = Encoding.ASCII.GetString(record.Images[0], 8, FitsBlock.CardSize - 8).TrimEnd(),
+                    Comment = "",
+                };
+                logical.Add(record);
+                continue;
             }
 
             logical.Add(record);
             open = record.Continues ? record : null;
+        }
+
+        if (open is not null)
+        {
+            // The final physical card is also a valid place for a literal
+            // ampersand; no following CONTINUE card means no continuation.
+            open.Card = open.Card with { Text = (open.Card.Text ?? "") + "&" };
+            open.Continues = false;
         }
 
         return new FitsHeader(logical, hduIndex);

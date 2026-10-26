@@ -86,6 +86,13 @@ public sealed class FitsDocumentBuilder
         return this;
     }
 
+    internal FitsDocument BinaryOrAsciiRawTable(FitsHeader tableHeader, byte[] tableData, bool ascii)
+    {
+        EnsurePrimary();
+        _writers.Add(stream => WriteHdu(stream, tableHeader, tableData, extra: null, extension: true));
+        return Build();
+    }
+
     /// <summary>Adds an already encoded HDU without changing its header or payload.</summary>
     public FitsDocumentBuilder Hdu(FitsHduSnapshot snapshot)
     {
@@ -123,6 +130,11 @@ public sealed class FitsDocumentBuilder
             throw new FitsException("Random groups occupy the primary HDU.", new FitsLocation());
         }
 
+        if (bitpix is not (8 or 16 or 32 or 64 or -32 or -64))
+        {
+            throw new FitsException($"BITPIX {bitpix} is not a legal FITS value.", new FitsLocation(Keyword: "BITPIX"));
+        }
+
         if (dataAxes.Length == 0)
         {
             throw new FitsException("Random groups require at least one positive data axis.", new FitsLocation());
@@ -136,8 +148,18 @@ public sealed class FitsDocumentBuilder
             }
         }
 
-        int dataPerGroup = Product(dataAxes);
-        if (parameterCount < 0 || (parameterCount > 0 && parameters.Length % parameterCount != 0))
+        int dataPerGroup;
+        try
+        {
+            dataPerGroup = Product(dataAxes);
+        }
+        catch (OverflowException error)
+        {
+            throw new FitsException("Random-group axes exceed the supported data size.", new FitsLocation(Keyword: "NAXIS"), error);
+        }
+        if (parameterCount < 0
+            || (parameterCount == 0 && parameters.Length != 0)
+            || (parameterCount > 0 && parameters.Length % parameterCount != 0))
         {
             throw new FitsException("Group parameters do not fill a whole number of groups.", new FitsLocation());
         }
@@ -152,9 +174,18 @@ public sealed class FitsDocumentBuilder
         {
             groups = data.Length / dataPerGroup;
         }
-        if (data.Length != groups * dataPerGroup)
+        long expectedData = checked((long)groups * dataPerGroup);
+        if (data.Length != expectedData)
         {
             throw new FitsException("Group data does not match the axes and group count.", new FitsLocation());
+        }
+        try
+        {
+            _ = checked((long)groups * ((long)parameterCount + dataPerGroup) * (Math.Abs(bitpix) / 8));
+        }
+        catch (OverflowException error)
+        {
+            throw new FitsException("Random-group data exceeds the supported data size.", new FitsLocation(), error);
         }
 
         var axes = dataAxes.ToArray();
@@ -414,9 +445,9 @@ public sealed class FitsDocumentBuilder
             dataPerGroup = 0;
         }
 
-        int valuesPerGroup = parameterCount + dataPerGroup;
+        int valuesPerGroup = checked(parameterCount + dataPerGroup);
         int width = Math.Abs(bitpix) / 8;
-        var payload = new byte[groups * valuesPerGroup * width];
+        var payload = new byte[checked(groups * valuesPerGroup * width)];
         for (int group = 0; group < groups; group++)
         {
             for (int parameter = 0; parameter < parameterCount; parameter++)

@@ -813,7 +813,7 @@ public sealed class FitsColumn
         }
     }
 
-    internal byte[] ReadVariableBytes(int row)
+    public byte[] ReadVariableBytes(int row)
     {
         var descriptor = CachedDescriptor(row);
         if (descriptor.Count == 0)
@@ -821,22 +821,93 @@ public sealed class FitsColumn
             return [];
         }
 
-        int byteCount;
+        return HeapSlice(descriptor.Offset, VariableByteCount(descriptor.Count)).ToArray();
+    }
+
+    public long[] ReadIntegerVector(int row)
+    {
+        EnsureRow(row);
+        int count = Count(row);
+        var values = new long[count];
+        for (int element = 0; element < count; element++)
+            values[element] = ReadInteger(row, element);
+        return values;
+    }
+
+    public double[] ReadRealVector(int row)
+    {
+        EnsureRow(row);
+        int count = Count(row);
+        var values = new double[count];
+        for (int element = 0; element < count; element++)
+            values[element] = ReadReal(row, element);
+        return values;
+    }
+
+    public bool[] ReadBitVector(int row)
+    {
+        EnsureRow(row);
+        int count = Count(row);
+        var values = new bool[count];
+        for (int element = 0; element < count; element++)
+            values[element] = ReadInteger(row, element) != 0;
+        return values;
+    }
+
+    public int[]? ReadVariableDimensions(int row)
+    {
+        EnsureRow(row);
+        if (Dimensions is null)
+            return null;
+
+        long product = 1;
         try
         {
-            byteCount = _spec.ElementCode == 'X'
-                ? (descriptor.Count / 8) + (descriptor.Count % 8 == 0 ? 0 : 1)
-                : checked(descriptor.Count * _elementWidth);
+            foreach (int dimension in Dimensions)
+                product = checked(product * dimension);
+        }
+        catch (OverflowException exception)
+        {
+            throw new FitsException($"Column '{Name}' has overflowing TDIM dimensions.", new FitsLocation(_hduIndex, Column: Name), exception);
+        }
+
+        if (IsVariableLength && product != Count(row))
+            return null;
+        return Dimensions.ToArray();
+    }
+
+    internal byte[] ReadHeap(long offset, int count) => HeapSlice(offset, count).ToArray();
+
+    internal void ValidateVariableArrays()
+    {
+        if (!IsVariableLength)
+        {
+            return;
+        }
+
+        for (int row = 0; row < _rows; row++)
+        {
+            var descriptor = CachedDescriptor(row);
+            if (descriptor.Count > 0)
+            {
+                HeapSlice(descriptor.Offset, VariableByteCount(descriptor.Count));
+            }
+        }
+    }
+
+    private int VariableByteCount(int count)
+    {
+        try
+        {
+            return _spec.ElementCode == 'X'
+                ? (count / 8) + (count % 8 == 0 ? 0 : 1)
+                : checked(count * _elementWidth);
         }
         catch (OverflowException exception)
         {
             throw new FitsException($"Column '{Name}' has an overflowing variable-array size.", new FitsLocation(_hduIndex, Column: Name), exception);
         }
-
-        return HeapSlice(descriptor.Offset, byteCount).ToArray();
     }
-
-    internal byte[] ReadHeap(long offset, int count) => HeapSlice(offset, count).ToArray();
 
     private bool IsAsciiNull(ReadOnlySpan<byte> field)
     {
@@ -950,7 +1021,6 @@ public sealed class FitsColumn
             'I' => BinaryPrimitives.ReadInt16BigEndian(bytes),
             'J' => BinaryPrimitives.ReadInt32BigEndian(bytes),
             'K' => BinaryPrimitives.ReadInt64BigEndian(bytes),
-            'X' => bytes[0] & 1,
             _ => throw new FitsException($"Column type {code} is not an integer.", new FitsLocation()),
         };
     }

@@ -474,4 +474,28 @@ public sealed class GeneratedSerializerTests
         Assert.Equal(value.Events[0].Time, result.Events[0].Time);
         Assert.Equal(value.Events[0].Channel, result.Events[0].Channel);
     }
+
+    [Fact]
+    public void GeneratedDocumentCanWriteIntoAnExistingBuilder()
+    {
+        var value = new DirectCompositeFile
+        {
+            Image = new Exposure
+            {
+                ExposureSeconds = 8.5,
+                Pixels = new float[,] { { 1, 2 }, { 3, 4 } },
+            },
+            Events = [new EventRow { Time = 6.25, Channel = 11 }],
+        };
+
+        using var direct = new MemoryStream();
+        FitsSerializer.Write(direct, value, AppFitsContext.Default.DirectCompositeFile);
+
+        var builder = FitsDocumentBuilder.Create();
+        FitsSerializer.Write(builder, value, AppFitsContext.Default.DirectCompositeFile);
+        using var composed = new MemoryStream();
+        builder.Write(composed);
+
+        Assert.Equal(direct.ToArray(), composed.ToArray());
+    }
 }

@@ -57,6 +57,18 @@ public sealed class IntegrityAndPaddingComplianceTests
     }
 
     [Fact]
+    public void RejectsAnHduThatEndsBeforeItsDataPadding()
+    {
+        using var document = FitsDocumentBuilder.Create()
+            .Image([1], new byte[] { 42 })
+            .Build();
+        byte[] bytes = document.ToArray();
+        byte[] truncated = bytes.AsSpan(0, bytes.Length - (2880 - 1)).ToArray();
+
+        Assert.Throws<FitsException>(() => FitsDocument.Parse(truncated));
+    }
+
+    [Fact]
     public void RejectsDuplicateIntegrityKeywords()
     {
         using var document = FitsDocumentBuilder.Create()

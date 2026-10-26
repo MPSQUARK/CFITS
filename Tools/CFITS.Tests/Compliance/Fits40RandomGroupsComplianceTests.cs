@@ -89,6 +89,37 @@ public sealed class Fits40RandomGroupsComplianceTests
         Assert.Contains("data", error.Message, StringComparison.OrdinalIgnoreCase);
     }
 
+    [Fact]
+    public void RejectsParametersWhenTheParameterCountIsZero()
+    {
+        var error = Assert.Throws<FitsException>(() => FitsDocumentBuilder.Create()
+            .RandomGroups(
+                bitpix: 16,
+                dataAxes: [1],
+                parameterCount: 0,
+                parameters: [7],
+                data: [11])
+            .Build());
+
+        Assert.Contains("parameter", error.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void RejectsZeroParameterScaling()
+    {
+        var error = Assert.Throws<FitsException>(() => FitsDocumentBuilder.Create()
+            .RandomGroups(
+                bitpix: 16,
+                dataAxes: [1],
+                parameterCount: 1,
+                parameters: [7],
+                data: [11],
+                header: header => header.Real("PSCAL1", 0))
+            .Build());
+
+        Assert.Contains("PSCAL1", error.Message);
+    }
+
     private static byte[] Header(params string[] cards)
     {
         byte[] header = Encoding.ASCII.GetBytes(string.Concat(cards.Append(Card("END", ""))));

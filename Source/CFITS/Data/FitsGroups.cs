@@ -74,6 +74,36 @@ public sealed class FitsGroups
         return _parameterZero[parameter] + (_parameterScale[parameter] * stored);
     }
 
+    /// <summary>
+    /// Reads the derived value for a named parameter. Repeated PTYPEn names
+    /// represent addends and are summed as required by FITS Section 6.1.2.
+    /// </summary>
+    public double ReadParameter(int group, string name)
+    {
+        ArgumentNullException.ThrowIfNull(name);
+        ValidateGroup(group);
+
+        double sum = 0;
+        bool found = false;
+        for (int parameter = 0; parameter < ParameterCount; parameter++)
+        {
+            if (!string.Equals(Names[parameter], name, StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            sum += ReadParameter(group, parameter);
+            found = true;
+        }
+
+        if (!found)
+        {
+            throw new FitsException($"The random-group parameter '{name}' is not defined.", new FitsLocation());
+        }
+
+        return sum;
+    }
+
     public double ReadData(int group, int index)
     {
         ValidateGroup(group);
@@ -113,9 +143,27 @@ public sealed class FitsGroups
         var scales = new double[parameters];
         var zeros = new double[parameters];
         var names = new string?[parameters];
+        for (int parameter = parameters + 1; parameter <= 999; parameter++)
+        {
+            string suffix = parameter.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            if (header.TryGetCard($"PTYPE{suffix}", out _)
+                || header.TryGetCard($"PSCAL{suffix}", out _)
+                || header.TryGetCard($"PZERO{suffix}", out _))
+            {
+                throw new FitsException(
+                    $"Random-group parameter keyword {suffix} exceeds PCOUNT.",
+                    new FitsLocation(header.HduIndex, $"PTYPE{suffix}"));
+            }
+        }
+
         for (int i = 0; i < parameters; i++)
         {
             scales[i] = header.TryGetCard($"PSCAL{i + 1}", out var scale) ? scale.GetDouble() : 1;
+            if (scales[i] == 0)
+            {
+                throw new FitsException($"PSCAL{i + 1} must not be zero.", new FitsLocation(header.HduIndex, $"PSCAL{i + 1}"));
+            }
+
             zeros[i] = header.TryGetCard($"PZERO{i + 1}", out var zero) ? zero.GetDouble() : 0;
             names[i] = header.TryGetCard($"PTYPE{i + 1}", out var type) ? type.GetString() : null;
         }

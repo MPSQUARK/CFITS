@@ -37,6 +37,43 @@ public sealed class BitpixByteVectorComplianceTests
         Assert.True(double.IsNaN(doubleDocument.Hdus[0].Image!.ReadPhysical(2)));
     }
 
+    [Fact]
+    public void DifferentiallyChecksTableBoundariesAgainstBigEndianPrimitives()
+    {
+        using var document = FitsDocumentBuilder.Create()
+            .BinaryTable(new BinaryTableBuilder()
+                .Add("BYTE", new byte[] { byte.MinValue, byte.MaxValue })
+                .Add("SHORT", new short[] { short.MinValue, short.MaxValue })
+                .Add("INTEGER", new[] { int.MinValue, int.MaxValue })
+                .Add("LONG", new[] { long.MinValue, long.MaxValue })
+                .Add("SINGLE", new[] { float.NegativeInfinity, float.PositiveInfinity })
+                .Add("DOUBLE", new[] { double.NegativeInfinity, double.PositiveInfinity }))
+            .Build();
+
+        var raw = document.Hdus[1].RawData.Span;
+        Assert.Equal(0, raw[0]);
+        Assert.Equal(byte.MaxValue, raw[27]);
+        Assert.Equal(short.MinValue, BinaryPrimitives.ReadInt16BigEndian(raw[1..]));
+        Assert.Equal(short.MaxValue, BinaryPrimitives.ReadInt16BigEndian(raw[28..]));
+        Assert.Equal(int.MinValue, BinaryPrimitives.ReadInt32BigEndian(raw[3..]));
+        Assert.Equal(int.MaxValue, BinaryPrimitives.ReadInt32BigEndian(raw[30..]));
+        Assert.Equal(long.MinValue, BinaryPrimitives.ReadInt64BigEndian(raw[7..]));
+        Assert.Equal(long.MaxValue, BinaryPrimitives.ReadInt64BigEndian(raw[34..]));
+        Assert.Equal(float.NegativeInfinity, BinaryPrimitives.ReadSingleBigEndian(raw[15..]));
+        Assert.Equal(float.PositiveInfinity, BinaryPrimitives.ReadSingleBigEndian(raw[42..]));
+        Assert.Equal(double.NegativeInfinity, BinaryPrimitives.ReadDoubleBigEndian(raw[19..]));
+        Assert.Equal(double.PositiveInfinity, BinaryPrimitives.ReadDoubleBigEndian(raw[46..]));
+
+        using var parsed = FitsDocument.Parse(document.ToArray());
+        var table = parsed.Hdus[1].Table!;
+        Assert.Equal(byte.MaxValue, table.Column("BYTE").ReadInteger(1));
+        Assert.Equal(short.MinValue, table.Column("SHORT").ReadInteger(0));
+        Assert.Equal(int.MaxValue, table.Column("INTEGER").ReadInteger(1));
+        Assert.Equal(long.MinValue, table.Column("LONG").ReadInteger(0));
+        Assert.Equal(float.PositiveInfinity, table.Column("SINGLE").ReadReal(1));
+        Assert.Equal(double.NegativeInfinity, table.Column("DOUBLE").ReadReal(0));
+    }
+
     private static void AssertImage<T>(byte[] expected, int bitpix, T[] values)
         where T : unmanaged
     {

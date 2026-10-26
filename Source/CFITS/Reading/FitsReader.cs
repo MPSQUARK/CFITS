@@ -172,7 +172,28 @@ public ref struct FitsReader
         }
 
         long padded = FitsBlock.Pad(_dataLength);
-        _offset = (int)(_dataOffset + Math.Min(padded, available));
+        if (available < padded)
+        {
+            throw new FitsException("The file ends before the data array padding is complete.", new FitsLocation(_hduIndex, "NAXIS", Position: _dataOffset + _dataLength));
+        }
+
+        if (_shape.Groups)
+        {
+            int dataLength = checked((int)_dataLength);
+            int paddedLength = checked((int)padded);
+            ReadOnlySpan<byte> padding = _source.Slice(checked((int)_dataOffset + dataLength), paddedLength - dataLength);
+            for (int index = 0; index < padding.Length; index++)
+            {
+                if (padding[index] != 0)
+                {
+                    throw new FitsException(
+                        "Random-groups data padding must contain zero values.",
+                        new FitsLocation(_hduIndex, "NAXIS", Position: _dataOffset + _dataLength + index));
+                }
+            }
+        }
+
+        _offset = checked((int)(_dataOffset + padded));
         _state = State.Between;
     }
 

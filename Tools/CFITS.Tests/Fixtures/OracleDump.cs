@@ -248,19 +248,34 @@ internal static class OracleDump
     private static Dictionary<string, object?> Groups(FitsHdu hdu)
     {
         var groups = hdu.Groups ?? throw new InvalidOperationException("Missing groups.");
-        var columns = new Dictionary<string, object?>();
+        var parameters = new Dictionary<string, List<double>>(StringComparer.Ordinal);
         for (int parameter = 0; parameter < groups.ParameterCount; parameter++)
         {
             string name = groups.Names[parameter] ?? $"P{parameter + 1}";
-            var values = new List<object?>();
-            for (int group = 0; group < groups.Count; group++)
+            if (!parameters.TryGetValue(name, out List<double>? values))
             {
-                values.Add(FormatFloat(groups.ReadParameter(group, parameter)));
+                values = [];
+                parameters.Add(name, values);
             }
 
-            columns[name] = values;
+            for (int group = 0; group < groups.Count; group++)
+            {
+                double value = groups.ReadParameter(group, parameter);
+                if (values.Count <= group)
+                {
+                    values.Add(value);
+                }
+                else
+                {
+                    values[group] += value;
+                }
+            }
         }
 
+        var columns = parameters.ToDictionary(
+            pair => pair.Key,
+            pair => (object?)pair.Value.Select(FormatFloat).ToList(),
+            StringComparer.Ordinal);
         var data = new List<object?>();
         for (int group = 0; group < groups.Count; group++)
         {
