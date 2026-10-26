@@ -7,62 +7,13 @@ namespace CFITS.Data;
 
 internal static class Pixels
 {
-    private delegate double ReadValue(ReadOnlySpan<byte> source);
-    private delegate long ReadIntegerValue(ReadOnlySpan<byte> source);
-    private delegate void CopyValues(ReadOnlySpan<byte> raw, int length, double scale, double zero, long? blank, Span<double> destination);
-    private delegate void CopyFloatValues(ReadOnlySpan<byte> raw, int length, double scale, double zero, long? blank, Span<float> destination);
-    private delegate void CopyDouble2DValues(ReadOnlySpan<byte> raw, int length, double scale, double zero, long? blank, double[,] destination, int n1);
-    private delegate void CopyDouble3DValues(ReadOnlySpan<byte> raw, int length, double scale, double zero, long? blank, double[,,] destination, int n1, int n2);
-    private delegate void CopyFloat2DValues(ReadOnlySpan<byte> raw, int length, double scale, double zero, long? blank, float[,] destination, int n1);
-    private delegate void CopyFloat3DValues(ReadOnlySpan<byte> raw, int length, double scale, double zero, long? blank, float[,,] destination, int n1, int n2);
-    private delegate double SumValues(ReadOnlySpan<byte> raw, int length, double scale, double zero, long? blank);
-    private delegate void WriteValue(Span<byte> destination, double value);
+    public static int Width(int bitpix) => PixelFormats.Width(bitpix);
 
-    private sealed class PixelFormat
-    {
-        public required int Width { get; init; }
-        public required ReadValue Read { get; init; }
-        public ReadIntegerValue? ReadInteger { get; init; }
-        public required CopyValues Copy { get; init; }
-        public required CopyFloatValues CopyFloat { get; init; }
-        public required CopyDouble2DValues CopyDouble2D { get; init; }
-        public required CopyDouble3DValues CopyDouble3D { get; init; }
-        public required CopyFloat2DValues CopyFloat2D { get; init; }
-        public required CopyFloat3DValues CopyFloat3D { get; init; }
-        public required SumValues Sum { get; init; }
-        public required WriteValue Write { get; init; }
-    }
+    public static double Read(ReadOnlySpan<byte> raw, int bitpix, int index) =>
+        PixelFormats.Resolve(bitpix).Read(raw, index);
 
-    private static readonly PixelFormat?[] Formats = CreateFormats();
-
-    public static int Width(int bitpix) => GetFormat(bitpix).Width;
-
-    public static double Read(ReadOnlySpan<byte> raw, int bitpix, int index)
-    {
-        PixelFormat format = GetFormat(bitpix);
-        int offset = index * format.Width;
-        return bitpix switch
-        {
-            8 => raw[offset],
-            16 => ReadBigEndian<short>(raw, offset),
-            32 => ReadBigEndian<int>(raw, offset),
-            64 => ReadBigEndian<long>(raw, offset),
-            -32 => ReadBigEndian<float>(raw, offset),
-            -64 => ReadBigEndian<double>(raw, offset),
-            _ => format.Read(raw.Slice(offset, format.Width)),
-        };
-    }
-
-    public static long ReadInteger(ReadOnlySpan<byte> raw, int bitpix, int index)
-    {
-        PixelFormat format = GetFormat(bitpix);
-        if (format.ReadInteger is not ReadIntegerValue reader)
-        {
-            throw new FitsException("Stored integers are only defined for integer BITPIX.", new FitsLocation(Keyword: "BITPIX"));
-        }
-
-        return ReadIntegerAt(raw, bitpix, index);
-    }
+    public static long ReadInteger(ReadOnlySpan<byte> raw, int bitpix, int index) =>
+        PixelFormats.Resolve(bitpix).ReadInteger(raw, index);
 
     public static void CopyStored(ReadOnlySpan<byte> raw, int bitpix, int length, Span<byte> destination)
     {
@@ -142,7 +93,7 @@ internal static class Pixels
 
     public static void Write(Span<byte> raw, int bitpix, int index, double stored)
     {
-        PixelFormat format = GetFormat(bitpix);
+        IPixelFormat format = PixelFormats.Resolve(bitpix);
         format.Write(raw.Slice(index * format.Width, format.Width), stored);
     }
 
@@ -182,7 +133,7 @@ internal static class Pixels
             throw new FitsException("The destination is shorter than the image.", new FitsLocation());
         }
 
-        GetFormat(bitpix).Copy(raw, length, scale, zero, blank, destination);
+        PixelFormats.Resolve(bitpix).Copy(raw, length, scale, zero, blank, destination);
     }
 
     public static void Copy(ReadOnlySpan<byte> raw, int bitpix, int length, double scale, double zero, long? blank, Span<float> destination)
@@ -192,56 +143,23 @@ internal static class Pixels
             throw new FitsException("The destination is shorter than the image.", new FitsLocation());
         }
 
-        GetFormat(bitpix).CopyFloat(raw, length, scale, zero, blank, destination);
+        PixelFormats.Resolve(bitpix).Copy(raw, length, scale, zero, blank, destination);
     }
 
-    public static void Copy(ReadOnlySpan<byte> raw, int bitpix, int length, double scale, double zero, long? blank, double[,] destination, int n1)
-    {
-        GetFormat(bitpix).CopyDouble2D(raw, length, scale, zero, blank, destination, n1);
-    }
+    public static void Copy(ReadOnlySpan<byte> raw, int bitpix, int length, double scale, double zero, long? blank, double[,] destination, int n1) =>
+        PixelFormats.Resolve(bitpix).Copy(raw, length, scale, zero, blank, destination, n1);
 
-    public static void Copy(ReadOnlySpan<byte> raw, int bitpix, int length, double scale, double zero, long? blank, double[,,] destination, int n1, int n2)
-    {
-        GetFormat(bitpix).CopyDouble3D(raw, length, scale, zero, blank, destination, n1, n2);
-    }
+    public static void Copy(ReadOnlySpan<byte> raw, int bitpix, int length, double scale, double zero, long? blank, double[,,] destination, int n1, int n2) =>
+        PixelFormats.Resolve(bitpix).Copy(raw, length, scale, zero, blank, destination, n1, n2);
 
-    public static void Copy(ReadOnlySpan<byte> raw, int bitpix, int length, double scale, double zero, long? blank, float[,] destination, int n1)
-    {
-        GetFormat(bitpix).CopyFloat2D(raw, length, scale, zero, blank, destination, n1);
-    }
+    public static void Copy(ReadOnlySpan<byte> raw, int bitpix, int length, double scale, double zero, long? blank, float[,] destination, int n1) =>
+        PixelFormats.Resolve(bitpix).Copy(raw, length, scale, zero, blank, destination, n1);
 
-    public static void Copy(ReadOnlySpan<byte> raw, int bitpix, int length, double scale, double zero, long? blank, float[,,] destination, int n1, int n2)
-    {
-        GetFormat(bitpix).CopyFloat3D(raw, length, scale, zero, blank, destination, n1, n2);
-    }
+    public static void Copy(ReadOnlySpan<byte> raw, int bitpix, int length, double scale, double zero, long? blank, float[,,] destination, int n1, int n2) =>
+        PixelFormats.Resolve(bitpix).Copy(raw, length, scale, zero, blank, destination, n1, n2);
 
-    public static double Sum(ReadOnlySpan<byte> raw, int bitpix, int length, double scale, double zero, long? blank)
-    {
-        return GetFormat(bitpix).Sum(raw, length, scale, zero, blank);
-    }
-
-    private static PixelFormat?[] CreateFormats()
-    {
-        var formats = new PixelFormat?[129];
-        formats[8 + 64] = CreateInteger<byte>(WriteByte);
-        formats[16 + 64] = CreateInteger<short>(WriteShort);
-        formats[32 + 64] = CreateInteger<int>(WriteInt);
-        formats[64 + 64] = CreateInteger<long>(WriteLong);
-        formats[-32 + 64] = CreateReal<float>(WriteFloat);
-        formats[-64 + 64] = CreateReal<double>(WriteDouble);
-        return formats;
-    }
-
-    private static PixelFormat GetFormat(int bitpix)
-    {
-        int index = bitpix + 64;
-        if ((uint)index < (uint)Formats.Length && Formats[index] is { } format)
-        {
-            return format;
-        }
-
-        throw new FitsException($"BITPIX {bitpix} is not a legal FITS value.", new FitsLocation(Keyword: "BITPIX"));
-    }
+    public static double Sum(ReadOnlySpan<byte> raw, int bitpix, int length, double scale, double zero, long? blank) =>
+        PixelFormats.Resolve(bitpix).Sum(raw, length, scale, zero, blank);
 
     private static long ReadIntegerAt(ReadOnlySpan<byte> raw, int bitpix, int index)
     {
@@ -256,61 +174,47 @@ internal static class Pixels
         };
     }
 
-    private static PixelFormat CreateInteger<T>(WriteValue write)
-        where T : unmanaged, IBinaryInteger<T>
+    internal static void WriteBigEndian<T>(Span<byte> destination, T value)
+        where T : unmanaged
     {
-        int width = Unsafe.SizeOf<T>();
-        return new PixelFormat
+        if (typeof(T) == typeof(byte))
         {
-            Width = width,
-            Read = source => double.CreateChecked(ReadBigEndian<T>(source, 0)),
-            ReadInteger = source => long.CreateChecked(ReadBigEndian<T>(source, 0)),
-            Copy = CopyInteger<T>,
-            CopyFloat = CopyInteger<T>,
-            CopyDouble2D = CopyInteger2D<T>,
-            CopyDouble3D = CopyInteger3D<T>,
-            CopyFloat2D = CopyInteger2DFloat<T>,
-            CopyFloat3D = CopyInteger3DFloat<T>,
-            Sum = SumInteger<T>,
-            Write = write,
-        };
-    }
+            destination[0] = Unsafe.As<T, byte>(ref value);
+            return;
+        }
 
-    private static PixelFormat CreateReal<T>(WriteValue write)
-        where T : unmanaged, IFloatingPointIeee754<T>
-    {
-        int width = Unsafe.SizeOf<T>();
-        return new PixelFormat
+        if (typeof(T) == typeof(short))
         {
-            Width = width,
-            Read = source => double.CreateChecked(ReadBigEndian<T>(source, 0)),
-            Copy = CopyReal<T>,
-            CopyFloat = CopyReal<T>,
-            CopyDouble2D = CopyReal2D<T>,
-            CopyDouble3D = CopyReal3D<T>,
-            CopyFloat2D = CopyReal2DFloat<T>,
-            CopyFloat3D = CopyReal3DFloat<T>,
-            Sum = SumReal<T>,
-            Write = write,
-        };
+            BinaryPrimitives.WriteInt16BigEndian(destination, Unsafe.As<T, short>(ref value));
+            return;
+        }
+
+        if (typeof(T) == typeof(int))
+        {
+            BinaryPrimitives.WriteInt32BigEndian(destination, Unsafe.As<T, int>(ref value));
+            return;
+        }
+
+        if (typeof(T) == typeof(long))
+        {
+            BinaryPrimitives.WriteInt64BigEndian(destination, Unsafe.As<T, long>(ref value));
+            return;
+        }
+
+        if (typeof(T) == typeof(float))
+        {
+            BinaryPrimitives.WriteSingleBigEndian(destination, Unsafe.As<T, float>(ref value));
+            return;
+        }
+
+        if (typeof(T) == typeof(double))
+        {
+            BinaryPrimitives.WriteDoubleBigEndian(destination, Unsafe.As<T, double>(ref value));
+            return;
+        }
+
+        throw new FitsException("The image element type is not supported.", new FitsLocation());
     }
-
-    private static void WriteByte(Span<byte> destination, double value) => destination[0] = (byte)value;
-
-    private static void WriteShort(Span<byte> destination, double value) =>
-        BinaryPrimitives.WriteInt16BigEndian(destination, (short)value);
-
-    private static void WriteInt(Span<byte> destination, double value) =>
-        BinaryPrimitives.WriteInt32BigEndian(destination, (int)value);
-
-    private static void WriteLong(Span<byte> destination, double value) =>
-        BinaryPrimitives.WriteInt64BigEndian(destination, (long)value);
-
-    private static void WriteFloat(Span<byte> destination, double value) =>
-        BinaryPrimitives.WriteSingleBigEndian(destination, (float)value);
-
-    private static void WriteDouble(Span<byte> destination, double value) =>
-        BinaryPrimitives.WriteDoubleBigEndian(destination, value);
 
     public static void WriteInt16BigEndian(ReadOnlySpan<short> values, Span<byte> destination)
     {
@@ -384,7 +288,7 @@ internal static class Pixels
         }
     }
 
-    private static void CopyInteger<T>(ReadOnlySpan<byte> raw, int length, double scale, double zero, long? blank, Span<double> destination)
+    internal static void CopyInteger<T>(ReadOnlySpan<byte> raw, int length, double scale, double zero, long? blank, Span<double> destination)
         where T : unmanaged, IBinaryInteger<T>
     {
         int width = Unsafe.SizeOf<T>();
@@ -422,7 +326,7 @@ internal static class Pixels
         }
     }
 
-    private static void CopyInteger<T>(ReadOnlySpan<byte> raw, int length, double scale, double zero, long? blank, Span<float> destination)
+    internal static void CopyInteger<T>(ReadOnlySpan<byte> raw, int length, double scale, double zero, long? blank, Span<float> destination)
         where T : unmanaged, IBinaryInteger<T>
     {
         int width = Unsafe.SizeOf<T>();
@@ -460,7 +364,7 @@ internal static class Pixels
         }
     }
 
-    private static void CopyReal<T>(ReadOnlySpan<byte> raw, int length, double scale, double zero, long? blank, Span<double> destination)
+    internal static void CopyReal<T>(ReadOnlySpan<byte> raw, int length, double scale, double zero, long? blank, Span<double> destination)
         where T : unmanaged, IFloatingPointIeee754<T>
     {
         int width = Unsafe.SizeOf<T>();
@@ -484,7 +388,7 @@ internal static class Pixels
         }
     }
 
-    private static void CopyReal<T>(ReadOnlySpan<byte> raw, int length, double scale, double zero, long? blank, Span<float> destination)
+    internal static void CopyReal<T>(ReadOnlySpan<byte> raw, int length, double scale, double zero, long? blank, Span<float> destination)
         where T : unmanaged, IFloatingPointIeee754<T>
     {
         int width = Unsafe.SizeOf<T>();
@@ -508,7 +412,7 @@ internal static class Pixels
         }
     }
 
-    private static void CopyInteger2D<T>(ReadOnlySpan<byte> raw, int length, double scale, double zero, long? blank, double[,] destination, int n1)
+    internal static void CopyInteger2D<T>(ReadOnlySpan<byte> raw, int length, double scale, double zero, long? blank, double[,] destination, int n1)
         where T : unmanaged, IBinaryInteger<T>
     {
         int width = Unsafe.SizeOf<T>();
@@ -528,7 +432,7 @@ internal static class Pixels
         }
     }
 
-    private static void CopyInteger3D<T>(ReadOnlySpan<byte> raw, int length, double scale, double zero, long? blank, double[,,] destination, int n1, int n2)
+    internal static void CopyInteger3D<T>(ReadOnlySpan<byte> raw, int length, double scale, double zero, long? blank, double[,,] destination, int n1, int n2)
         where T : unmanaged, IBinaryInteger<T>
     {
         int width = Unsafe.SizeOf<T>();
@@ -553,7 +457,7 @@ internal static class Pixels
         }
     }
 
-    private static void CopyInteger2DFloat<T>(ReadOnlySpan<byte> raw, int length, double scale, double zero, long? blank, float[,] destination, int n1)
+    internal static void CopyInteger2DFloat<T>(ReadOnlySpan<byte> raw, int length, double scale, double zero, long? blank, float[,] destination, int n1)
         where T : unmanaged, IBinaryInteger<T>
     {
         int width = Unsafe.SizeOf<T>();
@@ -575,7 +479,7 @@ internal static class Pixels
         }
     }
 
-    private static void CopyInteger3DFloat<T>(ReadOnlySpan<byte> raw, int length, double scale, double zero, long? blank, float[,,] destination, int n1, int n2)
+    internal static void CopyInteger3DFloat<T>(ReadOnlySpan<byte> raw, int length, double scale, double zero, long? blank, float[,,] destination, int n1, int n2)
         where T : unmanaged, IBinaryInteger<T>
     {
         int width = Unsafe.SizeOf<T>();
@@ -602,7 +506,7 @@ internal static class Pixels
         }
     }
 
-    private static void CopyReal2D<T>(ReadOnlySpan<byte> raw, int length, double scale, double zero, long? blank, double[,] destination, int n1)
+    internal static void CopyReal2D<T>(ReadOnlySpan<byte> raw, int length, double scale, double zero, long? blank, double[,] destination, int n1)
         where T : unmanaged, IFloatingPointIeee754<T>
     {
         int width = Unsafe.SizeOf<T>();
@@ -641,7 +545,7 @@ internal static class Pixels
         }
     }
 
-    private static void CopyReal3D<T>(ReadOnlySpan<byte> raw, int length, double scale, double zero, long? blank, double[,,] destination, int n1, int n2)
+    internal static void CopyReal3D<T>(ReadOnlySpan<byte> raw, int length, double scale, double zero, long? blank, double[,,] destination, int n1, int n2)
         where T : unmanaged, IFloatingPointIeee754<T>
     {
         int width = Unsafe.SizeOf<T>();
@@ -690,7 +594,7 @@ internal static class Pixels
         }
     }
 
-    private static void CopyReal2DFloat<T>(ReadOnlySpan<byte> raw, int length, double scale, double zero, long? blank, float[,] destination, int n1)
+    internal static void CopyReal2DFloat<T>(ReadOnlySpan<byte> raw, int length, double scale, double zero, long? blank, float[,] destination, int n1)
         where T : unmanaged, IFloatingPointIeee754<T>
     {
         int width = Unsafe.SizeOf<T>();
@@ -729,7 +633,7 @@ internal static class Pixels
         }
     }
 
-    private static void CopyReal3DFloat<T>(ReadOnlySpan<byte> raw, int length, double scale, double zero, long? blank, float[,,] destination, int n1, int n2)
+    internal static void CopyReal3DFloat<T>(ReadOnlySpan<byte> raw, int length, double scale, double zero, long? blank, float[,,] destination, int n1, int n2)
         where T : unmanaged, IFloatingPointIeee754<T>
     {
         int width = Unsafe.SizeOf<T>();
@@ -778,7 +682,7 @@ internal static class Pixels
         }
     }
 
-    private static double SumInteger<T>(ReadOnlySpan<byte> raw, int length, double scale, double zero, long? blank)
+    internal static double SumInteger<T>(ReadOnlySpan<byte> raw, int length, double scale, double zero, long? blank)
         where T : unmanaged, IBinaryInteger<T>
     {
         double sum = 0;
@@ -828,7 +732,7 @@ internal static class Pixels
         return sum;
     }
 
-    private static double SumReal<T>(ReadOnlySpan<byte> raw, int length, double scale, double zero, long? blank)
+    internal static double SumReal<T>(ReadOnlySpan<byte> raw, int length, double scale, double zero, long? blank)
         where T : unmanaged, IFloatingPointIeee754<T>
     {
         var total = new Float64NeumaierState();
@@ -919,11 +823,11 @@ internal static class Pixels
         return sum;
     }
 
-    private static T ReadBigEndian<T>(ReadOnlySpan<byte> raw, int offset) where T : unmanaged =>
+    internal static T ReadBigEndian<T>(ReadOnlySpan<byte> raw, int offset) where T : unmanaged =>
         ReadBigEndian<T>(raw, offset, Unsafe.SizeOf<T>());
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static T ReadBigEndian<T>(ReadOnlySpan<byte> raw, int offset, int width)
+    internal static T ReadBigEndian<T>(ReadOnlySpan<byte> raw, int offset, int width)
         where T : unmanaged
     {
         if (!BitConverter.IsLittleEndian || width == sizeof(byte))
