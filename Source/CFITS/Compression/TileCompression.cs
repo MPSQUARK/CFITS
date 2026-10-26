@@ -30,7 +30,7 @@ internal static class TileCompression
     internal static FitsImage Decompress(FitsHeader header, FitsTable table, FitsScaleMode mode, byte[]? storage)
     {
         int bitpix = checked((int)header.GetInt64("ZBITPIX"));
-        if (bitpix is not (8 or 16 or 32 or 64 or -32 or -64))
+        if (!FitsBitpix.IsLegal(bitpix))
         {
             throw new FitsException($"ZBITPIX {bitpix} is not a legal FITS value.", new FitsLocation(Keyword: "ZBITPIX"));
         }
@@ -104,20 +104,20 @@ internal static class TileCompression
         }
 
         var data = table.Column("COMPRESSED_DATA");
-        FitsColumn? gzip = table.Columns.FirstOrDefault(column => column.Name.Equals("GZIP_COMPRESSED_DATA", StringComparison.OrdinalIgnoreCase));
-        FitsColumn? uncompressed = table.Columns.FirstOrDefault(column => column.Name.Equals("UNCOMPRESSED_DATA", StringComparison.OrdinalIgnoreCase));
+        FitsColumn? gzip = FindColumn(table, "GZIP_COMPRESSED_DATA");
+        FitsColumn? uncompressed = FindColumn(table, "UNCOMPRESSED_DATA");
         if (gzip is not null && uncompressed is not null)
         {
             throw new FitsException("A compressed image cannot contain both GZIP_COMPRESSED_DATA and UNCOMPRESSED_DATA.", new FitsLocation());
         }
-        FitsColumn? scale = table.Columns.FirstOrDefault(column => column.Name.Equals("ZSCALE", StringComparison.OrdinalIgnoreCase));
-        FitsColumn? zero = table.Columns.FirstOrDefault(column => column.Name.Equals("ZZERO", StringComparison.OrdinalIgnoreCase));
+        FitsColumn? scale = FindColumn(table, "ZSCALE");
+        FitsColumn? zero = FindColumn(table, "ZZERO");
         if ((scale is null) != (zero is null))
         {
             throw new FitsException("ZSCALE and ZZERO must be present together.", new FitsLocation());
         }
 
-        FitsColumn? mask = table.Columns.FirstOrDefault(column => column.Name.Equals("NULL_PIXEL_MASK", StringComparison.OrdinalIgnoreCase));
+        FitsColumn? mask = FindColumn(table, "NULL_PIXEL_MASK");
         string maskAlgorithm = header.TryGetCard("ZMASKCMP", out var maskCard)
             ? NormalizeAlgorithm(maskCard.GetString() ?? "")
             : "";
@@ -944,5 +944,19 @@ internal static class TileCompression
         }
 
         return values;
+    }
+
+    private static FitsColumn? FindColumn(FitsTable table, string name)
+    {
+        IReadOnlyList<FitsColumn> columns = table.Columns;
+        for (int index = 0; index < columns.Count; index++)
+        {
+            if (columns[index].Name.Equals(name, StringComparison.OrdinalIgnoreCase))
+            {
+                return columns[index];
+            }
+        }
+
+        return null;
     }
 }

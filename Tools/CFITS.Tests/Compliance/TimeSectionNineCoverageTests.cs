@@ -228,6 +228,8 @@ public sealed class TimeSectionNineCoverageTests
         Assert.Equal(1d / 86400d, leap - before, 10);
         Assert.Equal(after, leap, 12);
         Assert.Equal(37d / 86400d, FitsClock.ConvertModifiedJulianDate(after, "UTC", "TAI") - after, 10);
+        double future = FitsClock.ModifiedJulianDate("2030-06-01T00:00:00Z");
+        Assert.Equal(37d / 86400d, FitsClock.ConvertModifiedJulianDate(future, "UTC", "TAI") - future, 10);
     }
 
     [Fact]

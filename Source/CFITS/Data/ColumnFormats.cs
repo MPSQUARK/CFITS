@@ -33,7 +33,7 @@ internal static class ColumnFormats
             }
 
             char element = trimmed[index++];
-            if (element is not ('L' or 'X' or 'B' or 'I' or 'J' or 'K' or 'A' or 'E' or 'D' or 'C' or 'M'))
+            if (!ColumnCodes.IsBinaryElement(element))
             {
                 throw new FitsException($"TFORM '{format}' has an unknown variable-array element type.", new FitsLocation());
             }
@@ -71,7 +71,7 @@ internal static class ColumnFormats
             };
         }
 
-        if (code is not ('L' or 'X' or 'B' or 'I' or 'J' or 'K' or 'A' or 'E' or 'D' or 'C' or 'M'))
+        if (!ColumnCodes.IsBinaryElement(code))
         {
             throw new FitsException($"TFORM '{format}' has an unknown type code.", new FitsLocation());
         }
@@ -136,8 +136,9 @@ internal static class ColumnFormats
     public static void ValidateDimensions(int[] dimensions, ColumnSpec spec)
     {
         long product = 1;
-        foreach (int dimension in dimensions)
+        for (int index = 0; index < dimensions.Length; index++)
         {
+            int dimension = dimensions[index];
             try
             {
                 product = checked(product * dimension);
@@ -237,11 +238,11 @@ internal static class ColumnFormats
     private static int Width(char code, int repeat) => code switch
     {
         'L' or 'B' or 'A' => repeat > 0 ? repeat : throw InvalidRepeat(),
-        'X' => checked((repeat + 7) / 8),
-        'I' => checked(repeat * 2),
-        'J' or 'E' => checked(repeat * 4),
-        'K' or 'D' or 'C' => checked(repeat * 8),
-        'M' => checked(repeat * 16),
+        'X' => checked((repeat + 7) >> 3),
+        'I' => checked(repeat << 1),
+        'J' or 'E' => checked(repeat << 2),
+        'K' or 'D' or 'C' => checked(repeat << 3),
+        'M' => checked(repeat << 4),
         _ => throw new FitsException($"Column type {code} has no width.", new FitsLocation()),
     };
 

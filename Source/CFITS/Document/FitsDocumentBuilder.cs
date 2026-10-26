@@ -138,7 +138,7 @@ public sealed class FitsDocumentBuilder
             throw new FitsException("Random groups occupy the primary HDU.", new FitsLocation());
         }
 
-        if (bitpix is not (8 or 16 or 32 or 64 or -32 or -64))
+        if (!FitsBitpix.IsLegal(bitpix))
         {
             throw new FitsException($"BITPIX {bitpix} is not a legal FITS value.", new FitsLocation(Keyword: "BITPIX"));
         }

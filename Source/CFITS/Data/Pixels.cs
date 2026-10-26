@@ -256,20 +256,10 @@ internal static class Pixels
         };
     }
 
-    private static int WidthFromBitpix(int bitpix)
-    {
-        if (bitpix is not (8 or 16 or 32 or 64 or -32 or -64))
-        {
-            throw new FitsException($"BITPIX {bitpix} is not a legal FITS value.", new FitsLocation(Keyword: "BITPIX"));
-        }
-
-        return (bitpix < 0 ? -bitpix : bitpix) >> 3;
-    }
-
     private static PixelFormat CreateInteger<T>(WriteValue write)
         where T : unmanaged, IBinaryInteger<T>
     {
-        int width = WidthFromBitpix(Unsafe.SizeOf<T>() << 3);
+        int width = Unsafe.SizeOf<T>();
         return new PixelFormat
         {
             Width = width,
@@ -289,7 +279,7 @@ internal static class Pixels
     private static PixelFormat CreateReal<T>(WriteValue write)
         where T : unmanaged, IFloatingPointIeee754<T>
     {
-        int width = WidthFromBitpix(Unsafe.SizeOf<T>() << 3);
+        int width = Unsafe.SizeOf<T>();
         return new PixelFormat
         {
             Width = width,

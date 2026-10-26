@@ -166,7 +166,16 @@ public sealed class FitsColumn
         return ReadStoredInteger(row, element);
     }
 
-    public bool TryCopyInteger(Span<long> destination)
+    public bool TryCopyInteger(Span<long> destination) => CopyFixedInteger(destination);
+
+    public bool TryCopyInteger(Span<int> destination) => CopyFixedInteger(destination);
+
+    public bool TryCopyInteger(Span<short> destination) => CopyFixedInteger(destination);
+
+    public bool TryCopyInteger(Span<byte> destination) => CopyFixedInteger(destination);
+
+    private bool CopyFixedInteger<T>(Span<T> destination)
+        where T : unmanaged, INumber<T>
     {
         EnsureBulkDestination(destination);
         if (!IsFixedScalarInteger())
@@ -174,224 +183,85 @@ public sealed class FitsColumn
             return false;
         }
 
-        // The validated table buffer makes every row start representable as an
-        // int; advancing by the fixed stride preserves row * stride + offset
-        // without repeating the multiplication in this bulk hot path.
-        int start = _offset;
         switch (_spec.Code)
         {
             case 'B':
-                for (int row = 0; row < _rows; row++)
-                {
-                    long stored = _data.Span[start];
-                    if (_null is long marker && stored == marker)
-                        throw NullAt(row);
-                    destination[row] = stored;
-                    start += _stride;
-                }
+                CopyByteRows(destination);
                 break;
             case 'I':
-                for (int row = 0; row < _rows; row++)
-                {
-                    long stored = BinaryPrimitives.ReadInt16BigEndian(_data.Span.Slice(start, 2));
-                    if (_null is long marker && stored == marker)
-                        throw NullAt(row);
-                    destination[row] = stored;
-                    start += _stride;
-                }
+                CopyInt16Rows(destination);
                 break;
             case 'J':
-                for (int row = 0; row < _rows; row++)
-                {
-                    long stored = BinaryPrimitives.ReadInt32BigEndian(_data.Span.Slice(start, 4));
-                    if (_null is long marker && stored == marker)
-                        throw NullAt(row);
-                    destination[row] = stored;
-                    start += _stride;
-                }
+                CopyInt32Rows(destination);
                 break;
             case 'K':
-                for (int row = 0; row < _rows; row++)
-                {
-                    long stored = BinaryPrimitives.ReadInt64BigEndian(_data.Span.Slice(start, 8));
-                    if (_null is long marker && stored == marker)
-                        throw NullAt(row);
-                    destination[row] = stored;
-                    start += _stride;
-                }
+                CopyInt64Rows(destination);
                 break;
         }
 
         return true;
     }
 
-    public bool TryCopyInteger(Span<int> destination)
+    private void CopyByteRows<T>(Span<T> destination)
+        where T : INumber<T>
     {
-        EnsureBulkDestination(destination);
-        if (!IsFixedScalarInteger())
-        {
-            return false;
-        }
-
         int start = _offset;
-        switch (_spec.Code)
+        ReadOnlySpan<byte> data = _data.Span;
+        for (int row = 0; row < _rows; row++)
         {
-            case 'B':
-                for (int row = 0; row < _rows; row++)
-                {
-                    long stored = _data.Span[start];
-                    if (_null is long marker && stored == marker)
-                        throw NullAt(row);
-                    destination[row] = (int)stored;
-                    start += _stride;
-                }
-                break;
-            case 'I':
-                for (int row = 0; row < _rows; row++)
-                {
-                    long stored = BinaryPrimitives.ReadInt16BigEndian(_data.Span.Slice(start, 2));
-                    if (_null is long marker && stored == marker)
-                        throw NullAt(row);
-                    destination[row] = (int)stored;
-                    start += _stride;
-                }
-                break;
-            case 'J':
-                for (int row = 0; row < _rows; row++)
-                {
-                    long stored = BinaryPrimitives.ReadInt32BigEndian(_data.Span.Slice(start, 4));
-                    if (_null is long marker && stored == marker)
-                        throw NullAt(row);
-                    destination[row] = (int)stored;
-                    start += _stride;
-                }
-                break;
-            case 'K':
-                for (int row = 0; row < _rows; row++)
-                {
-                    long stored = BinaryPrimitives.ReadInt64BigEndian(_data.Span.Slice(start, 8));
-                    if (_null is long marker && stored == marker)
-                        throw NullAt(row);
-                    destination[row] = (int)stored;
-                    start += _stride;
-                }
-                break;
+            Store(destination, row, data[start]);
+            start += _stride;
         }
-
-        return true;
     }
 
-    public bool TryCopyInteger(Span<short> destination)
+    private void CopyInt16Rows<T>(Span<T> destination)
+        where T : INumber<T>
     {
-        EnsureBulkDestination(destination);
-        if (!IsFixedScalarInteger())
-        {
-            return false;
-        }
-
         int start = _offset;
-        switch (_spec.Code)
+        ReadOnlySpan<byte> data = _data.Span;
+        for (int row = 0; row < _rows; row++)
         {
-            case 'B':
-                for (int row = 0; row < _rows; row++)
-                {
-                    long stored = _data.Span[start];
-                    if (_null is long marker && stored == marker)
-                        throw NullAt(row);
-                    destination[row] = (short)stored;
-                    start += _stride;
-                }
-                break;
-            case 'I':
-                for (int row = 0; row < _rows; row++)
-                {
-                    long stored = BinaryPrimitives.ReadInt16BigEndian(_data.Span.Slice(start, 2));
-                    if (_null is long marker && stored == marker)
-                        throw NullAt(row);
-                    destination[row] = (short)stored;
-                    start += _stride;
-                }
-                break;
-            case 'J':
-                for (int row = 0; row < _rows; row++)
-                {
-                    long stored = BinaryPrimitives.ReadInt32BigEndian(_data.Span.Slice(start, 4));
-                    if (_null is long marker && stored == marker)
-                        throw NullAt(row);
-                    destination[row] = (short)stored;
-                    start += _stride;
-                }
-                break;
-            case 'K':
-                for (int row = 0; row < _rows; row++)
-                {
-                    long stored = BinaryPrimitives.ReadInt64BigEndian(_data.Span.Slice(start, 8));
-                    if (_null is long marker && stored == marker)
-                        throw NullAt(row);
-                    destination[row] = (short)stored;
-                    start += _stride;
-                }
-                break;
+            Store(destination, row, BinaryPrimitives.ReadInt16BigEndian(data.Slice(start, sizeof(short))));
+            start += _stride;
         }
-
-        return true;
     }
 
-    public bool TryCopyInteger(Span<byte> destination)
+    private void CopyInt32Rows<T>(Span<T> destination)
+        where T : INumber<T>
     {
-        EnsureBulkDestination(destination);
-        if (!IsFixedScalarInteger())
-        {
-            return false;
-        }
-
         int start = _offset;
-        switch (_spec.Code)
+        ReadOnlySpan<byte> data = _data.Span;
+        for (int row = 0; row < _rows; row++)
         {
-            case 'B':
-                for (int row = 0; row < _rows; row++)
-                {
-                    long stored = _data.Span[start];
-                    if (_null is long marker && stored == marker)
-                        throw NullAt(row);
-                    destination[row] = (byte)stored;
-                    start += _stride;
-                }
-                break;
-            case 'I':
-                for (int row = 0; row < _rows; row++)
-                {
-                    long stored = BinaryPrimitives.ReadInt16BigEndian(_data.Span.Slice(start, 2));
-                    if (_null is long marker && stored == marker)
-                        throw NullAt(row);
-                    destination[row] = (byte)stored;
-                    start += _stride;
-                }
-                break;
-            case 'J':
-                for (int row = 0; row < _rows; row++)
-                {
-                    long stored = BinaryPrimitives.ReadInt32BigEndian(_data.Span.Slice(start, 4));
-                    if (_null is long marker && stored == marker)
-                        throw NullAt(row);
-                    destination[row] = (byte)stored;
-                    start += _stride;
-                }
-                break;
-            case 'K':
-                for (int row = 0; row < _rows; row++)
-                {
-                    long stored = BinaryPrimitives.ReadInt64BigEndian(_data.Span.Slice(start, 8));
-                    if (_null is long marker && stored == marker)
-                        throw NullAt(row);
-                    destination[row] = (byte)stored;
-                    start += _stride;
-                }
-                break;
+            Store(destination, row, BinaryPrimitives.ReadInt32BigEndian(data.Slice(start, sizeof(int))));
+            start += _stride;
+        }
+    }
+
+    private void CopyInt64Rows<T>(Span<T> destination)
+        where T : INumber<T>
+    {
+        int start = _offset;
+        ReadOnlySpan<byte> data = _data.Span;
+        for (int row = 0; row < _rows; row++)
+        {
+            Store(destination, row, BinaryPrimitives.ReadInt64BigEndian(data.Slice(start, sizeof(long))));
+            start += _stride;
+        }
+    }
+
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+    private void Store<T>(Span<T> destination, int row, long stored)
+        where T : INumber<T>
+    {
+        if (_null is long marker && stored == marker)
+        {
+            throw NullAt(row);
         }
 
-        return true;
+        destination[row] = T.CreateTruncating(stored);
     }
+
 
     public Int128 ReadExactInteger(int row, int element = 0)
     {

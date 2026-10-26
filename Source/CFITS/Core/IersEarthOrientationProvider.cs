@@ -6,35 +6,15 @@ namespace CFITS;
 /// </summary>
 public sealed class IersEarthOrientationProvider : IEarthOrientationProvider
 {
-    private readonly (double ModifiedJulianDate, double Ut1MinusUtcSeconds)[] _samples;
+    private readonly double[] _dates;
+    private readonly double[] _ut1MinusUtc;
 
     public IersEarthOrientationProvider(
         string version,
         params (double ModifiedJulianDate, double Ut1MinusUtcSeconds)[] samples)
     {
-        if (string.IsNullOrWhiteSpace(version))
-        {
-            throw new ArgumentException("A provider version is required.", nameof(version));
-        }
-
-        if (samples is null || samples.Length == 0)
-        {
-            throw new ArgumentException("At least one Earth-orientation sample is required.", nameof(samples));
-        }
-
-        _samples = samples.ToArray();
-        Array.Sort(_samples, static (left, right) => left.ModifiedJulianDate.CompareTo(right.ModifiedJulianDate));
-        for (int index = 0; index < _samples.Length; index++)
-        {
-            if (!double.IsFinite(_samples[index].ModifiedJulianDate)
-                || !double.IsFinite(_samples[index].Ut1MinusUtcSeconds)
-                || (index > 0 && _samples[index - 1].ModifiedJulianDate >= _samples[index].ModifiedJulianDate))
-            {
-                throw new ArgumentException("Earth-orientation samples must be finite and strictly increasing.", nameof(samples));
-            }
-        }
-
-        Version = version;
+        Version = RequireVersion(version);
+        (_dates, _ut1MinusUtc) = DatedSampleTables.Split(samples);
     }
 
     public static IersEarthOrientationProvider Default { get; } = new(
@@ -47,33 +27,16 @@ public sealed class IersEarthOrientationProvider : IEarthOrientationProvider
 
     public string Version { get; }
 
-    public bool TryGetUt1MinusUtc(double utcModifiedJulianDate, out double seconds)
+    public bool TryGetUt1MinusUtc(double utcModifiedJulianDate, out double seconds) =>
+        DatedSamples.TryInterpolate(_dates, _ut1MinusUtc, utcModifiedJulianDate, out seconds);
+
+    private static string RequireVersion(string version)
     {
-        if (utcModifiedJulianDate < _samples[0].ModifiedJulianDate
-            || utcModifiedJulianDate > _samples[^1].ModifiedJulianDate)
+        if (string.IsNullOrWhiteSpace(version))
         {
-            seconds = default;
-            return false;
+            throw new ArgumentException("A provider version is required.", nameof(version));
         }
 
-        int upper = Array.BinarySearch(
-            _samples,
-            (utcModifiedJulianDate, 0d),
-            Comparer<(double ModifiedJulianDate, double Ut1MinusUtcSeconds)>.Create(
-                static (left, right) => left.ModifiedJulianDate.CompareTo(right.ModifiedJulianDate)));
-        if (upper >= 0)
-        {
-            seconds = _samples[upper].Ut1MinusUtcSeconds;
-            return true;
-        }
-
-        upper = ~upper;
-        var before = _samples[upper - 1];
-        var after = _samples[upper];
-        double fraction = (utcModifiedJulianDate - before.ModifiedJulianDate)
-            / (after.ModifiedJulianDate - before.ModifiedJulianDate);
-        seconds = before.Ut1MinusUtcSeconds
-            + ((after.Ut1MinusUtcSeconds - before.Ut1MinusUtcSeconds) * fraction);
-        return true;
+        return version;
     }
 }

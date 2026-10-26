@@ -13,6 +13,14 @@ namespace CFITS;
 public sealed class FitsClock
 {
     private const double UnixModifiedJulianDate = 40587d;
+    private const double SecondsPerDay = 86400d;
+    private const double InverseSecondsPerDay = 1d / SecondsPerDay;
+    private const double JulianCenturyDays = 36525d;
+    private const double InverseJulianCenturyDays = 1d / JulianCenturyDays;
+    private const double J2000ModifiedJulianDate = 51544.5d;
+    private const double Besselian1900ModifiedJulianDate = 15019.5d;
+    private const int LastPublishedLeapSeconds = 37;
+    private const double LeapSearchMarginDays = LastPublishedLeapSeconds * InverseSecondsPerDay;
     private const double TaiToTerrestrialSeconds = 32.184d;
     private const double GpsToTaiSeconds = 19d;
     private const double GeocentricRate = 6.969290134e-10;
@@ -40,13 +48,13 @@ public sealed class FitsClock
     private static readonly FrozenDictionary<string, double> FixedUnitDays =
         new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase)
         {
-            ["S"] = 1d / 86400d,
+            ["S"] = InverseSecondsPerDay,
             ["MIN"] = 1d / 1440d,
             ["H"] = 1d / 24d,
             ["D"] = 1,
             ["A"] = 365.25,
             ["YR"] = 365.25,
-            ["CY"] = 36525,
+            ["CY"] = JulianCenturyDays,
         }.ToFrozenDictionary(StringComparer.OrdinalIgnoreCase);
 
     private FitsClock(string scale, double referenceModifiedJulianDate, double offsetDays, double unitDays, double resolution, double pixelReference, bool applyReference, string referencePosition, (double X, double Y, double Z)? observerPosition, (double Longitude, double Latitude, double Height)? observerGeodeticPosition, string? observerOrbit, string? referenceDirection, double scaleError, double relativeError, double absoluteError, double? start, double? stop, double? elapsed, double? exposure, string? ephemerisReference, FitsClockOptions? options)
@@ -221,7 +229,7 @@ public sealed class FitsClock
 
     public DateTimeOffset ToDateTimeOffset(double time)
     {
-        double seconds = (ToModifiedJulianDate(time, "UTC") - UnixModifiedJulianDate) * 86400d;
+        double seconds = (ToModifiedJulianDate(time, "UTC") - UnixModifiedJulianDate) * SecondsPerDay;
         return DateTimeOffset.UnixEpoch.AddSeconds(seconds);
     }
 
@@ -232,7 +240,7 @@ public sealed class FitsClock
     public static double ModifiedJulianDate(DateTimeOffset instant)
     {
         double seconds = (instant - DateTimeOffset.UnixEpoch).TotalSeconds;
-        return UnixModifiedJulianDate + (seconds / 86400d);
+        return UnixModifiedJulianDate + (seconds * InverseSecondsPerDay);
     }
 
     public static DateTimeOffset Parse(ReadOnlySpan<char> iso)
@@ -244,9 +252,8 @@ public sealed class FitsClock
             string normalized = text[..leapMarker] + ":59" + text[(leapMarker + 3)..];
             if (DateTimeOffset.TryParse(normalized, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal, out var before))
             {
-                if (!text.EndsWith("Z", StringComparison.Ordinal) ||
-                    !LeapSeconds.Any(entry => entry.Date == before.UtcDateTime.Date.AddDays(1) &&
-                        before.UtcDateTime.TimeOfDay == new TimeSpan(23, 59, 59)))
+                if (!text.EndsWith('Z') ||
+                    !IsPublishedLeap(before.UtcDateTime.Date.AddDays(1), before.UtcDateTime.TimeOfDay))
                 {
                     throw new FitsException($"'{text}' is not a published UTC leap second.", new FitsLocation(Keyword: "DATEREF"));
                 }
@@ -280,48 +287,11 @@ public sealed class FitsClock
             return modifiedJulianDate;
         }
 
-        if (from is "UTC" or "UT1" || to is "UTC" or "UT1")
+        TimeScale fromKind = ParseScale(from);
+        TimeScale toKind = ParseScale(to);
+        if (fromKind is TimeScale.Utc or TimeScale.Ut1 || toKind is TimeScale.Utc or TimeScale.Ut1)
         {
-            if (from == "UTC" && to == "TAI")
-            {
-                return modifiedJulianDate + LeapSecondsAt(modifiedJulianDate) / 86400d;
-            }
-
-            if (from == "TAI" && to == "UTC")
-            {
-                return modifiedJulianDate - LeapSecondsAt(modifiedJulianDate - 37d / 86400d) / 86400d;
-            }
-
-            if (from == "UTC" && to == "UT1")
-            {
-                return modifiedJulianDate + Ut1OffsetAt(modifiedJulianDate, options?.EarthOrientation) / 86400d;
-            }
-
-            if (from == "UT1" && to == "UTC")
-            {
-                return modifiedJulianDate - Ut1OffsetAt(modifiedJulianDate, options?.EarthOrientation) / 86400d;
-            }
-
-            if (from == "UTC")
-            {
-                double tai = modifiedJulianDate + LeapSecondsAt(modifiedJulianDate) / 86400d;
-                return ConvertModifiedJulianDate(tai, "TAI", to);
-            }
-
-            if (from == "UT1")
-            {
-                double utc = modifiedJulianDate - Ut1OffsetAt(modifiedJulianDate, options?.EarthOrientation) / 86400d;
-                return ConvertModifiedJulianDate(utc, "UTC", to, options);
-            }
-
-            if (to == "UTC")
-            {
-                double terrestrialDate = ToTerrestrial(modifiedJulianDate, from);
-                double tai = terrestrialDate - TaiToTerrestrialSeconds / 86400d;
-                return tai - LeapSecondsAt(tai - 37d / 86400d) / 86400d;
-            }
-
-            throw new FitsException($"'{fromScale}' and '{toScale}' require observed Earth-orientation data unavailable to the runtime.", new FitsLocation(Keyword: "TIMESYS"));
+            return ConvertObserved(modifiedJulianDate, fromKind, toKind, to, options);
         }
 
         double terrestrial = ToTerrestrial(modifiedJulianDate, from);
@@ -340,8 +310,8 @@ public sealed class FitsClock
     private static double ToTerrestrial(double modifiedJulianDate, string scale) => scale switch
     {
         "TT" or "ET" => modifiedJulianDate,
-        "TAI" => modifiedJulianDate + (TaiToTerrestrialSeconds / 86400d),
-        "GPS" => modifiedJulianDate + ((GpsToTaiSeconds + TaiToTerrestrialSeconds) / 86400d),
+        "TAI" => modifiedJulianDate + (TaiToTerrestrialSeconds * InverseSecondsPerDay),
+        "GPS" => modifiedJulianDate + ((GpsToTaiSeconds + TaiToTerrestrialSeconds) * InverseSecondsPerDay),
         "TCG" => GeocentricToTerrestrial(modifiedJulianDate),
         _ => throw new FitsException($"Time scale '{scale}' has no closed conversion in the FITS standard.", new FitsLocation(Keyword: "TIMESYS")),
     };
@@ -349,8 +319,8 @@ public sealed class FitsClock
     private static double FromTerrestrial(double modifiedJulianDate, string scale) => scale switch
     {
         "TT" or "ET" => modifiedJulianDate,
-        "TAI" => modifiedJulianDate - (TaiToTerrestrialSeconds / 86400d),
-        "GPS" => modifiedJulianDate - ((GpsToTaiSeconds + TaiToTerrestrialSeconds) / 86400d),
+        "TAI" => modifiedJulianDate - (TaiToTerrestrialSeconds * InverseSecondsPerDay),
+        "GPS" => modifiedJulianDate - ((GpsToTaiSeconds + TaiToTerrestrialSeconds) * InverseSecondsPerDay),
         "TCG" => TerrestrialToGeocentric(modifiedJulianDate),
         _ => throw new FitsException($"Time scale '{scale}' has no closed conversion in the FITS standard.", new FitsLocation(Keyword: "TIMESYS")),
     };
@@ -385,24 +355,94 @@ public sealed class FitsClock
         };
     }
 
+    private static double ConvertObserved(double modifiedJulianDate, TimeScale from, TimeScale to, string toScale, FitsClockOptions? options)
+    {
+        switch (from, to)
+        {
+            case (TimeScale.Utc, TimeScale.Tai):
+                return modifiedJulianDate + (LeapSecondsAt(modifiedJulianDate) * InverseSecondsPerDay);
+            case (TimeScale.Tai, TimeScale.Utc):
+                return modifiedJulianDate - (LeapSecondsAt(modifiedJulianDate - LeapSearchMarginDays) * InverseSecondsPerDay);
+            case (TimeScale.Utc, TimeScale.Ut1):
+                return modifiedJulianDate + (Ut1OffsetAt(modifiedJulianDate, options?.EarthOrientation) * InverseSecondsPerDay);
+            case (TimeScale.Ut1, TimeScale.Utc):
+                return modifiedJulianDate - (Ut1OffsetAt(modifiedJulianDate, options?.EarthOrientation) * InverseSecondsPerDay);
+            case (TimeScale.Utc, _):
+                double tai = modifiedJulianDate + (LeapSecondsAt(modifiedJulianDate) * InverseSecondsPerDay);
+                return ConvertModifiedJulianDate(tai, "TAI", toScale, options);
+            case (TimeScale.Ut1, _):
+                double utc = modifiedJulianDate - (Ut1OffsetAt(modifiedJulianDate, options?.EarthOrientation) * InverseSecondsPerDay);
+                return ConvertModifiedJulianDate(utc, "UTC", toScale, options);
+            case (_, TimeScale.Utc):
+                double terrestrialDate = ToTerrestrial(modifiedJulianDate, ScaleName(from));
+                double fromTai = terrestrialDate - (TaiToTerrestrialSeconds * InverseSecondsPerDay);
+                return fromTai - (LeapSecondsAt(fromTai - LeapSearchMarginDays) * InverseSecondsPerDay);
+            default:
+                throw new FitsException($"'{ScaleName(from)}' and '{toScale}' require observed Earth-orientation data unavailable to the runtime.", new FitsLocation(Keyword: "TIMESYS"));
+        }
+    }
+
+    private static TimeScale ParseScale(string canonical) => canonical switch
+    {
+        "UTC" => TimeScale.Utc,
+        "UT1" => TimeScale.Ut1,
+        "TAI" => TimeScale.Tai,
+        "TT" => TimeScale.Tt,
+        "GPS" => TimeScale.Gps,
+        "TCG" => TimeScale.Tcg,
+        "TDB" => TimeScale.Tdb,
+        "TCB" => TimeScale.Tcb,
+        _ => TimeScale.Unknown,
+    };
+
+    private static string ScaleName(TimeScale scale) => scale switch
+    {
+        TimeScale.Utc => "UTC",
+        TimeScale.Ut1 => "UT1",
+        TimeScale.Tai => "TAI",
+        TimeScale.Tt => "TT",
+        TimeScale.Gps => "GPS",
+        TimeScale.Tcg => "TCG",
+        TimeScale.Tdb => "TDB",
+        TimeScale.Tcb => "TCB",
+        _ => "UNKNOWN",
+    };
+
+    private static bool IsPublishedLeap(DateTime date, TimeSpan timeOfDay)
+    {
+        if (timeOfDay != new TimeSpan(23, 59, 59))
+        {
+            return false;
+        }
+
+        for (int index = 0; index < LeapSeconds.Length; index++)
+        {
+            if (LeapSeconds[index].Date == date)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     private static int LeapSecondsAt(double modifiedJulianDate)
     {
+        // Dates after the last published leap second keep that offset.
+        // A later IERS bulletin has to extend LeapSeconds before the offset can change.
         DateTime instant = DateTimeOffset.UnixEpoch.AddDays(modifiedJulianDate - UnixModifiedJulianDate).UtcDateTime;
         int low = 0;
         int high = LeapSeconds.Length - 1;
         int offset = 0;
         while (low <= high)
         {
-            int middle = low + ((high - low) / 2);
-            if (instant >= LeapSeconds[middle].Date)
-            {
-                offset = LeapSeconds[middle].Offset;
-                low = middle + 1;
-            }
-            else
-            {
-                high = middle - 1;
-            }
+            int middle = low + ((high - low) >> 1);
+            var entry = LeapSeconds[middle];
+            int taken = BoolMath.ToInt(instant >= entry.Date);
+            int rejected = 1 - taken;
+            offset = (taken * entry.Offset) + (rejected * offset);
+            low = (taken * (middle + 1)) + (rejected * low);
+            high = (taken * high) + (rejected * (middle - 1));
         }
 
         if (offset == 0)
@@ -433,21 +473,20 @@ public sealed class FitsClock
         int selected = -1;
         while (low <= high)
         {
-            int middle = low + ((high - low) / 2);
-            if (instant >= Ut1Offsets[middle].Date)
-            {
-                selected = middle;
-                low = middle + 1;
-            }
-            else
-            {
-                high = middle - 1;
-            }
+            int middle = low + ((high - low) >> 1);
+            int taken = BoolMath.ToInt(instant >= Ut1Offsets[middle].Date);
+            int rejected = 1 - taken;
+            selected = (taken * middle) + (rejected * selected);
+            low = (taken * (middle + 1)) + (rejected * low);
+            high = (taken * high) + (rejected * (middle - 1));
         }
 
-        return selected >= 0
-            ? Ut1Offsets[selected].Dut1
-            : throw new FitsException("UT1 conversion requires an observed DUT1 value for the requested epoch.", new FitsLocation(Keyword: "TIMESYS"));
+        if (selected < 0)
+        {
+            throw new FitsException("UT1 conversion requires an observed DUT1 value for the requested epoch.", new FitsLocation(Keyword: "TIMESYS"));
+        }
+
+        return Ut1Offsets[selected].Dut1;
     }
 
     private static double ConvertEphemeris(double modifiedJulianDate, string from, string to, IEphemerisProvider? provider)
@@ -481,7 +520,7 @@ public sealed class FitsClock
 
     private static double ToTdb(double terrestrial, IEphemerisProvider provider) =>
         provider.TryGetTdbMinusTt(terrestrial, out double seconds)
-            ? terrestrial + (Finite(seconds, "TDB-TT provider result") / 86400d)
+            ? terrestrial + (Finite(seconds, "TDB-TT provider result") * InverseSecondsPerDay)
             : throw EphemerisRequired("TT", "TDB");
 
     private static double TdbToTt(double barycentric, IEphemerisProvider provider)
@@ -508,7 +547,7 @@ public sealed class FitsClock
             throw EphemerisRequired("TCB", "TDB");
         }
 
-        return barycentric - (Finite(seconds, "TCB-TDB provider result") / 86400d);
+        return barycentric - (Finite(seconds, "TCB-TDB provider result") * InverseSecondsPerDay);
     }
 
     private static double ToTcb(double barycentric, IEphemerisProvider provider)
@@ -518,7 +557,7 @@ public sealed class FitsClock
             throw EphemerisRequired("TDB", "TCB");
         }
 
-        return barycentric + (Finite(seconds, "TCB-TDB provider result") / 86400d);
+        return barycentric + (Finite(seconds, "TCB-TDB provider result") * InverseSecondsPerDay);
     }
 
     private static double Reference(FitsHeader header, int? axis)
@@ -689,8 +728,8 @@ public sealed class FitsClock
             "US" => 1d / 86_400_000_000d,
             "NS" => 1d / 86_400_000_000_000d,
             "DAY" or "DAYS" => 1,
-            "TA" => TropicalYearInDays((referenceModifiedJulianDate - 51544.5) / 36525d),
-            "BA" => BesselianYearInDays((referenceModifiedJulianDate - 15019.5) / 36525d),
+            "TA" => TropicalYearInDays((referenceModifiedJulianDate - J2000ModifiedJulianDate) * InverseJulianCenturyDays),
+            "BA" => BesselianYearInDays((referenceModifiedJulianDate - Besselian1900ModifiedJulianDate) * InverseJulianCenturyDays),
             _ => throw new FitsException($"TIMEUNIT '{unit}' is not a recognized time unit.", new FitsLocation(Keyword: "TIMEUNIT")),
         };
     }

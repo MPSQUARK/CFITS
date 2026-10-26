@@ -224,7 +224,7 @@ internal static class DataLayout
             throw new FitsException("The primary header is missing SIMPLE.", At(hduIndex, "SIMPLE", headerOffset + offset));
         }
 
-        if (bitpix.Value is not (8 or 16 or 32 or 64 or -32 or -64))
+        if (!FitsBitpix.IsLegal(bitpix.Value))
         {
             throw new FitsException($"BITPIX {bitpix.Value} is not a legal FITS value.", At(hduIndex, "BITPIX", headerOffset + offset));
         }

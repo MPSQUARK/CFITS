@@ -12,7 +12,13 @@ public sealed class FitsHeader
     private FitsHeader(List<CardRecord> records, int hduIndex)
     {
         _records = records;
-        _cards = records.Select(static record => record.Card).ToArray();
+        var cards = new FitsCard[records.Count];
+        for (int index = 0; index < records.Count; index++)
+        {
+            cards[index] = records[index].Card;
+        }
+
+        _cards = cards;
         var lookup = new Dictionary<string, FitsCard>(StringComparer.OrdinalIgnoreCase);
         foreach (var record in records)
         {

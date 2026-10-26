@@ -480,9 +480,12 @@ public sealed class BinaryTableBuilder
         }
 
         int rows = _columns[0].Rows;
-        if (_columns.Any(column => column.Rows != rows))
+        for (int index = 1; index < _columns.Count; index++)
         {
-            throw new FitsException("Binary-table columns must all have the same number of rows.", new FitsLocation());
+            if (_columns[index].Rows != rows)
+            {
+                throw new FitsException("Binary-table columns must all have the same number of rows.", new FitsLocation());
+            }
         }
         int stride = 0;
         int heapSize = 0;

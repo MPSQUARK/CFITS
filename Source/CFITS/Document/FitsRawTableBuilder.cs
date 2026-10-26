@@ -65,10 +65,20 @@ public sealed class FitsRawTableBuilder
         if (_columns.Count == 0)
             throw new FitsException("A raw table needs at least one column.", new FitsLocation());
 
-        var specs = _columns.Select(column => ColumnFormats.Parse(column.Format, _ascii)).ToArray();
+        var specs = new ColumnSpec[_columns.Count];
+        for (int index = 0; index < specs.Length; index++)
+        {
+            specs[index] = ColumnFormats.Parse(_columns[index].Format, _ascii);
+        }
+
         int stride = GetStride(specs);
-        if (_rows.Any(row => row.Length != stride))
-            throw new FitsException($"Raw table rows must contain exactly {stride} bytes.", new FitsLocation());
+        for (int index = 0; index < _rows.Count; index++)
+        {
+            if (_rows[index].Length != stride)
+            {
+                throw new FitsException($"Raw table rows must contain exactly {stride} bytes.", new FitsLocation());
+            }
+        }
         long fixedRows = (long)stride * _rows.Count;
         long heapStart = _theap ?? fixedRows;
         if (_ascii && _heap.Length != 0)

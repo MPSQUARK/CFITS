@@ -6,37 +6,16 @@ namespace CFITS;
 /// </summary>
 public sealed class JplEphemerisProvider : IEphemerisProvider
 {
-    private readonly (double ModifiedJulianDate, double TdbMinusTtSeconds, double TcbMinusTdbSeconds)[] _samples;
+    private readonly double[] _dates;
+    private readonly double[] _tdbMinusTt;
+    private readonly double[] _tcbMinusTdb;
 
     public JplEphemerisProvider(
         string version,
         params (double ModifiedJulianDate, double TdbMinusTtSeconds, double TcbMinusTdbSeconds)[] samples)
     {
-        if (string.IsNullOrWhiteSpace(version))
-        {
-            throw new ArgumentException("A provider version is required.", nameof(version));
-        }
-
-        if (samples is null || samples.Length == 0)
-        {
-            throw new ArgumentException("At least one ephemeris sample is required.", nameof(samples));
-        }
-
-        _samples = samples.ToArray();
-        Array.Sort(_samples, static (left, right) => left.ModifiedJulianDate.CompareTo(right.ModifiedJulianDate));
-        for (int index = 0; index < _samples.Length; index++)
-        {
-            var sample = _samples[index];
-            if (!double.IsFinite(sample.ModifiedJulianDate)
-                || !double.IsFinite(sample.TdbMinusTtSeconds)
-                || !double.IsFinite(sample.TcbMinusTdbSeconds)
-                || (index > 0 && _samples[index - 1].ModifiedJulianDate >= sample.ModifiedJulianDate))
-            {
-                throw new ArgumentException("Ephemeris samples must be finite and strictly increasing.", nameof(samples));
-            }
-        }
-
-        Version = version;
+        Version = RequireVersion(version);
+        (_dates, _tdbMinusTt, _tcbMinusTdb) = DatedSampleTables.Split(samples);
     }
 
     public static JplEphemerisProvider Default { get; } = new(
@@ -47,45 +26,19 @@ public sealed class JplEphemerisProvider : IEphemerisProvider
 
     public string Version { get; }
 
-    public bool TryGetTdbMinusTt(double terrestrialTimeModifiedJulianDate, out double seconds)
-    {
-        return TryInterpolate(terrestrialTimeModifiedJulianDate, static sample => sample.TdbMinusTtSeconds, out seconds);
-    }
+    public bool TryGetTdbMinusTt(double terrestrialTimeModifiedJulianDate, out double seconds) =>
+        DatedSamples.TryInterpolate(_dates, _tdbMinusTt, terrestrialTimeModifiedJulianDate, out seconds);
 
-    public bool TryGetTcbMinusTdb(double barycentricDynamicalTimeModifiedJulianDate, out double seconds)
-    {
-        return TryInterpolate(barycentricDynamicalTimeModifiedJulianDate, static sample => sample.TcbMinusTdbSeconds, out seconds);
-    }
+    public bool TryGetTcbMinusTdb(double barycentricDynamicalTimeModifiedJulianDate, out double seconds) =>
+        DatedSamples.TryInterpolate(_dates, _tcbMinusTdb, barycentricDynamicalTimeModifiedJulianDate, out seconds);
 
-    private bool TryInterpolate(
-        double modifiedJulianDate,
-        Func<(double ModifiedJulianDate, double TdbMinusTtSeconds, double TcbMinusTdbSeconds), double> selector,
-        out double seconds)
+    private static string RequireVersion(string version)
     {
-        if (modifiedJulianDate < _samples[0].ModifiedJulianDate
-            || modifiedJulianDate > _samples[^1].ModifiedJulianDate)
+        if (string.IsNullOrWhiteSpace(version))
         {
-            seconds = default;
-            return false;
+            throw new ArgumentException("A provider version is required.", nameof(version));
         }
 
-        int upper = Array.BinarySearch(
-            _samples,
-            (modifiedJulianDate, 0d, 0d),
-            Comparer<(double ModifiedJulianDate, double TdbMinusTtSeconds, double TcbMinusTdbSeconds)>.Create(
-                static (left, right) => left.ModifiedJulianDate.CompareTo(right.ModifiedJulianDate)));
-        if (upper >= 0)
-        {
-            seconds = selector(_samples[upper]);
-            return true;
-        }
-
-        upper = ~upper;
-        var before = _samples[upper - 1];
-        var after = _samples[upper];
-        double fraction = (modifiedJulianDate - before.ModifiedJulianDate)
-            / (after.ModifiedJulianDate - before.ModifiedJulianDate);
-        seconds = selector(before) + ((selector(after) - selector(before)) * fraction);
-        return true;
+        return version;
     }
 }

@@ -1,3 +1,6 @@
+using System.Numerics;
+using System.Runtime.InteropServices;
+
 namespace CFITS;
 
 /// <summary>An image array in FITS axis order: the first axis varies fastest.</summary>
@@ -23,7 +26,7 @@ public sealed class FitsImage
             count = checked(count * axis);
         }
 
-        if (axes.Length == 0 || axes.Any(static axis => axis == 0))
+        if (axes.Length == 0 || HasZeroAxis(axes))
         {
             count = 0;
         }
@@ -94,21 +97,41 @@ public sealed class FitsImage
         Pixels.CopyStored(_raw.Span, Bitpix, Length, destination);
     }
 
-    public void CopyInteger(short[,] destination)
+    public void CopyInteger(short[,] destination) => CopyIntegerPlane(destination, 16);
+
+    public void CopyInteger(int[,] destination) => CopyIntegerPlane(destination, 32);
+
+    public void CopyInteger(long[,] destination) => CopyIntegerPlane(destination, 64);
+
+    public void CopyInteger(byte[,] destination) => CopyIntegerPlane(destination, 8);
+
+    public void CopyInteger(short[,,] destination) => CopyIntegerVolume(destination);
+
+    public void CopyInteger(int[,,] destination) => CopyIntegerVolume(destination);
+
+    public void CopyInteger(long[,,] destination) => CopyIntegerVolume(destination);
+
+    public void CopyInteger(byte[,,] destination) => CopyIntegerVolume(destination);
+
+    private void CopyIntegerPlane<T>(T[,] destination, int storedBits)
+        where T : unmanaged, INumber<T>
     {
         ValidateRectangularShape(destination.GetLength(0), destination.GetLength(1), 0, 2);
         EnsureIntegerDestination(destination.Length);
-        if (CanCopyStoredBits(16))
+        if (CanCopyStoredBits(storedBits))
         {
-            FitsEndian.ReadInt16(_raw.Span[..(Length * sizeof(short))], FitsEndian.AsContiguous(destination)[..Length]);
+            CopyStoredPlane(destination, storedBits);
             return;
         }
 
         int width = destination.GetLength(1);
-        for (int index = 0, row = 0, column = 0; index < Length; index++)
+        int row = 0;
+        int column = 0;
+        for (int index = 0; index < Length; index++)
         {
-            destination[row, column] = (short)ReadInteger(index);
-            if (++column == width)
+            destination[row, column] = T.CreateTruncating(ReadInteger(index));
+            column++;
+            if (column == width)
             {
                 column = 0;
                 row++;
@@ -116,106 +139,55 @@ public sealed class FitsImage
         }
     }
 
-    public void CopyInteger(int[,] destination)
+    private void CopyStoredPlane<T>(T[,] destination, int storedBits)
+        where T : unmanaged
     {
-        ValidateRectangularShape(destination.GetLength(0), destination.GetLength(1), 0, 2);
-        EnsureIntegerDestination(destination.Length);
-        if (CanCopyStoredBits(32))
+        if (storedBits == 8)
         {
-            FitsEndian.ReadInt32(_raw.Span[..(Length * sizeof(int))], FitsEndian.AsContiguous(destination)[..Length]);
+            _raw.Span[..Length].CopyTo(MemoryMarshal.AsBytes(FitsEndian.AsContiguous(destination))[..Length]);
             return;
         }
 
-        int width = destination.GetLength(1);
-        for (int index = 0, row = 0, column = 0; index < Length; index++)
+        if (storedBits == 16)
         {
-            destination[row, column] = (int)ReadInteger(index);
-            if (++column == width)
-            {
-                column = 0;
-                row++;
-            }
-        }
-    }
-
-    public void CopyInteger(long[,] destination)
-    {
-        ValidateRectangularShape(destination.GetLength(0), destination.GetLength(1), 0, 2);
-        EnsureIntegerDestination(destination.Length);
-        if (CanCopyStoredBits(64))
-        {
-            FitsEndian.ReadInt64(_raw.Span[..(Length * sizeof(long))], FitsEndian.AsContiguous(destination)[..Length]);
+            FitsEndian.ReadInt16(_raw.Span[..(Length * sizeof(short))], MemoryMarshal.Cast<T, short>(FitsEndian.AsContiguous(destination))[..Length]);
             return;
         }
 
-        int width = destination.GetLength(1);
-        for (int index = 0, row = 0, column = 0; index < Length; index++)
+        if (storedBits == 32)
         {
-            destination[row, column] = (long)ReadInteger(index);
-            if (++column == width)
-            {
-                column = 0;
-                row++;
-            }
-        }
-    }
-
-    public void CopyInteger(byte[,] destination)
-    {
-        ValidateRectangularShape(destination.GetLength(0), destination.GetLength(1), 0, 2);
-        EnsureIntegerDestination(destination.Length);
-        if (CanCopyStoredBits(8))
-        {
-            _raw.Span[..Length].CopyTo(FitsEndian.AsContiguous(destination)[..Length]);
+            FitsEndian.ReadInt32(_raw.Span[..(Length * sizeof(int))], MemoryMarshal.Cast<T, int>(FitsEndian.AsContiguous(destination))[..Length]);
             return;
         }
 
-        int width = destination.GetLength(1);
-        for (int index = 0, row = 0, column = 0; index < Length; index++)
+        FitsEndian.ReadInt64(_raw.Span[..(Length * sizeof(long))], MemoryMarshal.Cast<T, long>(FitsEndian.AsContiguous(destination))[..Length]);
+    }
+
+    private void CopyIntegerVolume<T>(T[,,] destination)
+        where T : unmanaged, INumber<T>
+    {
+        ValidateRectangularShape(destination.GetLength(0), destination.GetLength(1), destination.GetLength(2), 3);
+        EnsureIntegerDestination(destination.Length);
+        int plane = destination.GetLength(1);
+        int row = destination.GetLength(2);
+        int z = 0;
+        int y = 0;
+        int x = 0;
+        for (int index = 0; index < Length; index++)
         {
-            destination[row, column] = (byte)ReadInteger(index);
-            if (++column == width)
+            destination[z, y, x] = T.CreateTruncating(ReadInteger(index));
+            x++;
+            if (x == row)
             {
-                column = 0;
-                row++;
+                x = 0;
+                y++;
+                if (y == plane)
+                {
+                    y = 0;
+                    z++;
+                }
             }
         }
-    }
-
-    public void CopyInteger(short[,,] destination)
-    {
-        ValidateRectangularShape(destination.GetLength(0), destination.GetLength(1), destination.GetLength(2), 3);
-        EnsureIntegerDestination(destination.Length);
-        for (int index = 0; index < Length; index++)
-            destination[index / (destination.GetLength(1) * destination.GetLength(2)),
-                (index / destination.GetLength(2)) % destination.GetLength(1), index % destination.GetLength(2)] = (short)ReadInteger(index);
-    }
-
-    public void CopyInteger(int[,,] destination)
-    {
-        ValidateRectangularShape(destination.GetLength(0), destination.GetLength(1), destination.GetLength(2), 3);
-        EnsureIntegerDestination(destination.Length);
-        for (int index = 0; index < Length; index++)
-            destination[index / (destination.GetLength(1) * destination.GetLength(2)),
-                (index / destination.GetLength(2)) % destination.GetLength(1), index % destination.GetLength(2)] = (int)ReadInteger(index);
-    }
-
-    public void CopyInteger(long[,,] destination)
-    {
-        ValidateRectangularShape(destination.GetLength(0), destination.GetLength(1), destination.GetLength(2), 3);
-        EnsureIntegerDestination(destination.Length);
-        for (int index = 0; index < Length; index++)
-            destination[index / (destination.GetLength(1) * destination.GetLength(2)),
-                (index / destination.GetLength(2)) % destination.GetLength(1), index % destination.GetLength(2)] = (long)ReadInteger(index);
-    }
-
-    public void CopyInteger(byte[,,] destination)
-    {
-        ValidateRectangularShape(destination.GetLength(0), destination.GetLength(1), destination.GetLength(2), 3);
-        EnsureIntegerDestination(destination.Length);
-        for (int index = 0; index < Length; index++)
-            destination[index / (destination.GetLength(1) * destination.GetLength(2)),
-                (index / destination.GetLength(2)) % destination.GetLength(1), index % destination.GetLength(2)] = (byte)ReadInteger(index);
     }
 
     public void CopyPhysical(Span<double> destination)
@@ -422,6 +394,19 @@ public sealed class FitsImage
         {
             throw new FitsException("The pixel index is outside the image.", new FitsLocation());
         }
+    }
+
+    private static bool HasZeroAxis(int[] axes)
+    {
+        for (int index = 0; index < axes.Length; index++)
+        {
+            if (axes[index] == 0)
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private bool CanCopyStoredBits(int bitpix) =>

@@ -1,5 +1,8 @@
 using System.Buffers.Binary;
 using System.Globalization;
+using System.Numerics;
+using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
 
 namespace CFITS;
 
@@ -220,9 +223,24 @@ public static class FitsChecksum
 
     private static bool IsChecksumText(string value)
     {
-        foreach (char character in value)
+        ReadOnlySpan<char> text = value;
+        ref char start = ref MemoryMarshal.GetReference(text);
+        int index = 0;
+        int lanes = Vector<ushort>.Count;
+        while (index + lanes <= text.Length)
         {
-            if (character is < '0' or > 'z' || IsExcluded(character))
+            Vector<ushort> chars = Vector.LoadUnsafe(ref Unsafe.As<char, ushort>(ref Unsafe.Add(ref start, index)));
+            if (!ChecksumAlphabet.Accepts(chars))
+            {
+                return false;
+            }
+
+            index += lanes;
+        }
+
+        for (; index < text.Length; index++)
+        {
+            if (!ChecksumAlphabet.Accepts(text[index]))
             {
                 return false;
             }
@@ -231,12 +249,9 @@ public static class FitsChecksum
         return true;
     }
 
-    private static bool IsExcluded(char character) =>
-        character is >= ':' and <= '@' or >= '[' and <= '`';
-
     private static byte[] InsertMissing(byte[] hdu, int end, int headerLength, int dataLength, bool datasum, bool checksum)
     {
-        int inserted = (datasum ? 1 : 0) + (checksum ? 1 : 0);
+        int inserted = BoolMath.ToInt(datasum) + BoolMath.ToInt(checksum);
         int newHeaderLength = (int)FitsBlock.Pad(end + ((inserted + 1) * FitsBlock.CardSize));
         var rewritten = new byte[newHeaderLength + dataLength];
         hdu.AsSpan(0, end).CopyTo(rewritten);
