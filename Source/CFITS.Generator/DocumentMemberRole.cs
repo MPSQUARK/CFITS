@@ -1,12 +1,9 @@
-﻿using Microsoft.CodeAnalysis;
-
-namespace CFITS.Generator;
+﻿namespace CFITS.Generator;
 
 internal enum DocumentMemberRole
 {
     Image,
     Table,
-    Unknown,
+    OtherHdus,
     SpecialRecords,
 }
-

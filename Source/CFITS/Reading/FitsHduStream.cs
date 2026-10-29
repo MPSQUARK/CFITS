@@ -122,6 +122,33 @@ internal static class FitsHduStream
     public static long? Null(FitsHeader header, string keyword) =>
         header.TryGetCard(keyword, out FitsCard card) && card.Kind == FitsValueKind.Integer ? card.Integer : null;
 
+    internal static bool TryReadPrimaryHeader(Stream stream, out FitsHeader? header)
+    {
+        header = null;
+        if (!stream.CanSeek)
+        {
+            return false;
+        }
+
+        long origin = stream.Position;
+        if (!TryReadHeader(stream, 0, out Opened opened))
+        {
+            stream.Position = origin;
+            return false;
+        }
+
+        try
+        {
+            header = CreateHeader(opened.DetachBuffer(), opened.HeaderLength, 0);
+            return header is not null;
+        }
+        finally
+        {
+            opened.Dispose();
+            stream.Position = origin;
+        }
+    }
+
     private static bool TryReadHeader(Stream stream, int hduIndex, out Opened opened)
     {
         opened = default;

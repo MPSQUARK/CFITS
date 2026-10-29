@@ -14,6 +14,7 @@ public sealed class FitsHduSnapshot
     private readonly int _origin;
     private readonly int _headerLength;
     private readonly int _dataLength;
+    private FitsHeader? _header;
 
     internal FitsHduSnapshot(int index, FitsHduKind kind, ReadOnlySpan<byte> header, ReadOnlySpan<byte> data)
     {
@@ -63,6 +64,8 @@ public sealed class FitsHduSnapshot
 
     public ReadOnlyMemory<byte> RawBytes => _bytes.AsMemory(_origin, _headerLength + _dataLength);
 
+    public FitsHeader Header => _header ??= FitsHduStream.CreateHeader(CopyHeader(), _headerLength, Index);
+
     public void Write(Stream stream)
     {
         ArgumentNullException.ThrowIfNull(stream);
@@ -73,5 +76,12 @@ public sealed class FitsHduSnapshot
         {
             stream.Write(Padding.AsSpan(0, (int)padding));
         }
+    }
+
+    private byte[] CopyHeader()
+    {
+        byte[] copy = new byte[_headerLength];
+        _bytes.AsSpan(_origin, _headerLength).CopyTo(copy);
+        return copy;
     }
 }

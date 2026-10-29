@@ -4,11 +4,12 @@ namespace CFITS.Generator;
 
 internal sealed class MemberModel
 {
-    public MemberModel(IPropertySymbol symbol, MemberRole role, string columnName)
+    public MemberModel(IPropertySymbol symbol, MemberRole role, string columnName, bool required)
     {
         Symbol = symbol;
         Role = role;
         ColumnName = columnName;
+        Required = required;
     }
 
     public IPropertySymbol Symbol { get; }
@@ -16,5 +17,6 @@ internal sealed class MemberModel
     public MemberRole Role { get; }
 
     public string ColumnName { get; }
-}
 
+    public bool Required { get; }
+}

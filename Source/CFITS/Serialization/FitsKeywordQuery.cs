@@ -5,6 +5,12 @@ namespace CFITS;
 /// </summary>
 public record struct FitsKeywordQuery(string Name, FitsKeywordKind Kind)
 {
+    /// <summary>
+    /// When true, <see cref="Bind"/> throws if this keyword is absent.
+    /// An optional query stays <see cref="Found"/> false and leaves the value fields at their defaults.
+    /// </summary>
+    public bool Required { get; set; }
+
     public bool Found { get; set; }
 
     public bool Logical { get; set; }
@@ -58,7 +64,12 @@ public record struct FitsKeywordQuery(string Name, FitsKeywordKind Kind)
             FitsKeywordQuery query = queries[index];
             if (!query.Found)
             {
-                throw new FitsException($"Keyword '{query.Name}' was not found.", new FitsLocation(Keyword: query.Name));
+                if (query.Required)
+                {
+                    throw new FitsException($"Keyword '{query.Name}' was not found.", new FitsLocation(Keyword: query.Name));
+                }
+
+                continue;
             }
 
             bool valid = query.Kind switch

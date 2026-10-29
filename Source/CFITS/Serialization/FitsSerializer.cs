@@ -1,60 +1,35 @@
 namespace CFITS;
 
+/// <summary>
+/// Forwards to <see cref="FitsParser"/>. Prefer <see cref="FitsParser"/> for new code.
+/// </summary>
 public static class FitsSerializer
 {
-    public static T Read<T>(Stream stream, FitsTypeInfo<T> type) => type.Read(stream);
+    public static T Read<T>(Stream stream)
+        where T : IFitsDocument<T> =>
+        FitsParser.Deserialize<T>(stream);
 
-    public static T Read<T>(Stream stream, FitsTypeInfo<T> type, FitsOpenOptions options) =>
-        type.Read(stream, options);
+    public static T Read<T>(Stream stream, FitsOpenOptions options)
+        where T : IFitsDocument<T> =>
+        FitsParser.Deserialize<T>(stream, options);
 
-    public static T Read<T>(string path, FitsTypeInfo<T> type)
-    {
-        using var stream = File.OpenRead(path);
-        return type.Read(stream);
-    }
+    public static T Read<T>(string path)
+        where T : IFitsDocument<T> =>
+        FitsParser.Deserialize<T>(path);
 
-    public static T Read<T>(string path, FitsTypeInfo<T> type, FitsOpenOptions options)
-    {
-        using var stream = File.OpenRead(path);
-        return type.Read(stream, options);
-    }
+    public static T Read<T>(string path, FitsOpenOptions options)
+        where T : IFitsDocument<T> =>
+        FitsParser.Deserialize<T>(path, options);
 
-    public static void Write<T>(Stream stream, T value, FitsTypeInfo<T> type) => type.Write(stream, value);
+    public static void Write<T>(Stream stream, T value)
+        where T : IFitsDocument<T> =>
+        FitsParser.Serialize(stream, value);
 
-    public static void Write<T>(FitsDocumentBuilder builder, T value, FitsTypeInfo<T> type) =>
-        type.Write(builder, value);
+    public static void Write<T>(FitsDocumentBuilder builder, T value)
+        where T : IFitsDocument<T> =>
+        FitsParser.Serialize(builder, value);
 
-    public static void Write<T>(string path, T value, FitsTypeInfo<T> type)
-    {
-        using var stream = File.Create(path);
-        type.Write(stream, value);
-    }
-
-    public static IReadOnlyList<T> Read<T>(Stream stream, FitsTableTypeInfo<T> type) => type.Read(stream);
-
-    public static IReadOnlyList<T> Read<T>(Stream stream, FitsTableTypeInfo<T> type, FitsOpenOptions options) =>
-        type.Read(stream, options);
-
-    public static IReadOnlyList<T> Read<T>(string path, FitsTableTypeInfo<T> type)
-    {
-        using var stream = File.OpenRead(path);
-        return type.Read(stream);
-    }
-
-    public static IReadOnlyList<T> Read<T>(string path, FitsTableTypeInfo<T> type, FitsOpenOptions options)
-    {
-        using var stream = File.OpenRead(path);
-        return type.Read(stream, options);
-    }
-
-    public static void Write<T>(Stream stream, IReadOnlyList<T> rows, FitsTableTypeInfo<T> type) => type.Write(stream, rows);
-
-    public static void Write<T>(FitsDocumentBuilder builder, IReadOnlyList<T> rows, FitsTableTypeInfo<T> type) =>
-        type.Write(builder, rows);
-
-    public static void Write<T>(string path, IReadOnlyList<T> rows, FitsTableTypeInfo<T> type)
-    {
-        using var stream = File.Create(path);
-        type.Write(stream, rows);
-    }
+    public static void Write<T>(string path, T value)
+        where T : IFitsDocument<T> =>
+        FitsParser.Serialize(path, value);
 }

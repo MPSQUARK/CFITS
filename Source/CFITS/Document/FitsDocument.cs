@@ -79,6 +79,15 @@ public sealed class FitsDocument : IDisposable
         return SpecialRecords;
     }
 
+    /// <summary>
+    /// Reads the primary header and leaves the stream where it was.
+    /// </summary>
+    public static bool TryReadPrimaryHeader(Stream stream, out FitsHeader? header)
+    {
+        ArgumentNullException.ThrowIfNull(stream);
+        return FitsHduStream.TryReadPrimaryHeader(stream, out header);
+    }
+
     public static FitsDocument Open(string path, FitsOpenOptions? options = null) =>
         ParseOwned(File.ReadAllBytes(path), options ?? new FitsOpenOptions());
 

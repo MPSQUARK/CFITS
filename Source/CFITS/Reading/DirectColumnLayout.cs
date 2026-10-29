@@ -14,7 +14,8 @@ internal static class DirectColumnLayout
         ReadOnlyMemory<byte> data,
         ReadOnlySpan<string> names,
         FitsScaleMode mode,
-        int hduIndex)
+        int hduIndex,
+        bool requireColumns = true)
     {
         if (names.Length == 0)
         {
@@ -200,7 +201,7 @@ internal static class DirectColumnLayout
 
         for (int index = 0; index < names.Length; index++)
         {
-            if (!matched[index])
+            if (!matched[index] && requireColumns)
             {
                 throw new FitsException($"Column '{names[index]}' was not found.", new FitsLocation(hduIndex, Column: names[index]));
             }

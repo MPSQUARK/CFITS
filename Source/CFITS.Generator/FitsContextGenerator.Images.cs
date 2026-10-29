@@ -21,60 +21,42 @@ public sealed partial class FitsContextGenerator
         bool hasReadableData = data?.Symbol.Type is IArrayTypeSymbol readableArray
             && readableArray.Rank <= 3
             && IsSupportedImageElement(readableArray.ElementType);
-        string keywords = string.Join(NewLine, type.Members
-            .Where(static member => member.Role == MemberRole.Keyword)
-            .Select(static member => $"                {member.Symbol.Name} = {ReadKeyword(member, "hdu.Header")},"));
-        var keywordMembers = type.Members.Where(static member => member.Role == MemberRole.Keyword).ToList();
-        string directKeywords = string.Join(NewLine, keywordMembers.Select((member, index) =>
-            $"                    {member.Symbol.Name} = {ReadDirectKeyword(member, index)},"));
+        string keywords = EmitImageKeywords(type, "hdu.Header", "__cfits");
+        string keywordObject = EmitImageKeywordObject(type, "hdu.Header", "__cfitsHeader");
+        string headerProperty = type.AssignHeader ? "                Header = header!," : "";
         string dataAssignment = "";
         if (data is not null && data.Symbol.Type is IArrayTypeSymbol array)
         {
             dataAssignment = ReadArray(array);
         }
 
-        string write = data is not null && data.Symbol.Type is IArrayTypeSymbol written
-            ? EmitImageWrite(type, written, data.Symbol.Name)
+        string missingImage = data?.Required == true
+            ? "throw new CFITS.FitsException(\"Image data is missing.\");"
             : $$"""
-                        builder.Image(System.ReadOnlySpan<int>.Empty, System.ReadOnlySpan<byte>.Empty, header =>
+                return new {{name}}
+                            {
+                {{EmitImageKeywords(type, "hdu.Header", "__cfitsAbsent")}}
+                {{EmitImageKeywordObject(type, "hdu.Header", "__cfitsAbsentHeader")}}
+                {{headerProperty}}
+                            };
+                """;
+        string write = data is not null && data.Symbol.Type is IArrayTypeSymbol written
+            ? EmitImageWrite(type, written, data.Symbol.Name, data.Required)
+            : $$"""
+                        void WriteHeader(CFITS.FitsHeaderBuilder header)
                         {
-            {{EmitKeywordWrites(type, "value")}}
-                        });
+                            overlay?.Invoke(header);
+                {{EmitKeywordWrites(type, "value")}}
+                        }
+                        builder.Image(System.ReadOnlySpan<int>.Empty, System.ReadOnlySpan<byte>.Empty, WriteHeader);
             """;
         string directRead = "";
         if (hasReadableData && data?.Symbol.Type is IArrayTypeSymbol directArray)
         {
-            string element = ElementName(directArray.ElementType);
-            string commas = directArray.Rank switch
-            {
-                1 => "",
-                2 => ",",
-                _ => ",,",
-            };
-            string nameArgument = string.IsNullOrEmpty(type.HduName) ? "null" : Literal(type.HduName!);
-            string keywordSpan = keywordMembers.Count == 0
-                ? ""
-                : string.Join(NewLine, keywordMembers.Select((member, index) =>
-                    $"                        __cfitsKeywords[{index}] = new({Literal(member.ColumnName)}, {KeywordKind(member)});"));
-            string keywordPrefix = keywordMembers.Count == 0
-                ? ""
-                : $$"""
-                        var __cfitsKeywords = new CFITS.FitsKeywordQuery[{{keywordMembers.Count}}];
-            {{keywordSpan}}
-            """;
-            string keywordArgument = keywordMembers.Count == 0 ? "" : ", __cfitsKeywords";
-            directRead = $$"""
-            {{keywordPrefix}}            if (!options.VerifyChecksum && stream.CanSeek && CFITS.FitsDirectImage.TryRead<{{element}}>(stream, {{directArray.Rank}}, {{type.HduIndex}}, {{nameArgument}}, options{{keywordArgument}}, out System.Array? __cfitsRaw))
-                        {
-                            var __cfitsData = ({{element}}[{{commas}}])__cfitsRaw!;
-                            return new {{name}}
-                            {
-            {{directKeywords}}{{(directKeywords.Length > 0 ? NewLine : "")}}                    {{data.Symbol.Name}} = __cfitsData,
-                            };
-                        }
-
-            """;
+            directRead = EmitDirectImageRead(type, data, directArray);
         }
+
+        string dataLine = hasReadableData ? $"                {data!.Symbol.Name} = __cfitsData," : "";
         return $$"""
                 private sealed class {{type.InfoName}} : CFITS.FitsTypeInfo<{{name}}>
                 {
@@ -85,19 +67,39 @@ public sealed partial class FitsContextGenerator
 
                     public override {{name}} Read(System.IO.Stream stream, CFITS.FitsOpenOptions options)
                     {
-            {{directRead}}            using var document = CFITS.FitsDocument.Open(stream, options);
-                        return ReadDocument(document);
+                        return Read(stream, options, out _);
                     }
 
-                    internal static {{name}} ReadDocument(CFITS.FitsDocument document, bool[]? mapped = null)
+                    internal static {{name}} Read(System.IO.Stream stream, CFITS.FitsOpenOptions options, out CFITS.FitsHeader? header)
                     {
-            {{FindImage(type.HduName, type.HduIndex, "candidate.Kind == CFITS.FitsHduKind.Image")}}
+                        header = null;
+            {{directRead}}            using var document = CFITS.FitsDocument.Open(stream, options);
+                        return ReadDocument(document, null, out header);
+                    }
+
+                    internal static {{name}} ReadDocument(CFITS.FitsDocument document, bool[]? mapped, out CFITS.FitsHeader? header)
+                    {
+            {{FindImage(type.HduName, type.HduIndex, "candidate.Kind == CFITS.FitsHduKind.Image || candidate.Image is not null", type.HduRequired, type.OwnerName)}}
+                        if (hdu is null)
+                        {
+                            header = null;
+                            return default!;
+                        }
+
+                        header = hdu.Header;
                         if (mapped is not null) mapped[hdu.Index] = true;
-                        var image = hdu.Image ?? throw new CFITS.FitsException("The HDU is not an image.");
+                        var image = hdu.Image;
+                        if (image is null)
+                        {
+                            {{missingImage}}
+                        }
             {{dataAssignment}}
                         return new {{name}}
                         {
-            {{keywords}}{{(keywords.Length > 0 && hasReadableData ? NewLine : "")}}{{(hasReadableData ? $"                {data!.Symbol.Name} = __cfitsData," : "")}}
+            {{keywords}}
+            {{keywordObject}}
+            {{headerProperty}}
+            {{dataLine}}
                         };
                     }
                     public override void Write(System.IO.Stream stream, {{name}} value)
@@ -110,11 +112,92 @@ public sealed partial class FitsContextGenerator
                     {
                         WriteToBuilder(builder, value);
                     }
-                    internal static void WriteToBuilder(CFITS.FitsDocumentBuilder builder, {{name}} value)
+                    internal static void WriteToBuilder(CFITS.FitsDocumentBuilder builder, {{name}} value, System.Action<CFITS.FitsHeaderBuilder>? overlay = null)
                     {
             {{write}}
                     }
                 }
+            """;
+    }
+
+    private static string EmitDirectImageRead(TypeModel type, MemberModel data, IArrayTypeSymbol array)
+    {
+        string element = ElementName(array.ElementType);
+        string commas = array.Rank switch
+        {
+            1 => "",
+            2 => ",",
+            _ => ",,",
+        };
+        string nameArgument = string.IsNullOrEmpty(type.HduName) ? "null" : Literal(type.HduName!);
+        string headerProperty = type.AssignHeader ? "                    Header = __cfitsHeader," : "";
+        if (type.MaterializeHeader)
+        {
+            string keywords = EmitImageKeywords(type, "__cfitsHeader", "__cfitsDirect");
+            string keywordObject = EmitImageKeywordObject(type, "__cfitsHeader", "__cfitsDirectHeader");
+            return $$"""
+                        if (!options.VerifyChecksum && stream.CanSeek && CFITS.FitsDirectImage.TryRead<{{element}}>(stream, {{array.Rank}}, {{type.HduIndex}}, {{nameArgument}}, options, out System.Array? __cfitsRaw, out header))
+                        {
+                            var __cfitsHeader = header!;
+                            var __cfitsData = ({{element}}[{{commas}}])__cfitsRaw!;
+                            return new {{type.Symbol.ToDisplayString()}}
+                            {
+            {{keywords}}
+            {{keywordObject}}
+            {{headerProperty}}                    {{data.Symbol.Name}} = __cfitsData,
+                            };
+                        }
+
+            """;
+        }
+
+        var keywordMembers = type.Members.Where(static member => member.Role == MemberRole.Keyword).ToList();
+        string directKeywords = string.Join(NewLine, keywordMembers.Select((member, index) =>
+            $"                    {member.Symbol.Name} = {ReadDirectKeyword(member, index)},"));
+        string keywordSpan = keywordMembers.Count == 0
+            ? ""
+            : string.Join(NewLine, keywordMembers.Select((member, index) =>
+                $"                        __cfitsKeywords[{index}] = new({Literal(member.ColumnName)}, {KeywordKind(member)}) {{ Required = {(member.Required ? "true" : "false")} }};"));
+        string keywordPrefix = keywordMembers.Count == 0
+            ? ""
+            : $$"""
+                        var __cfitsKeywords = new CFITS.FitsKeywordQuery[{{keywordMembers.Count}}];
+            {{keywordSpan}}
+            """;
+        string keywordArgument = keywordMembers.Count == 0 ? "" : ", __cfitsKeywords";
+        return $$"""
+            {{keywordPrefix}}
+                        if (!options.VerifyChecksum && stream.CanSeek && CFITS.FitsDirectImage.TryRead<{{element}}>(stream, {{array.Rank}}, {{type.HduIndex}}, {{nameArgument}}, options{{keywordArgument}}, out System.Array? __cfitsRaw))
+                        {
+                            var __cfitsData = ({{element}}[{{commas}}])__cfitsRaw!;
+                            return new {{type.Symbol.ToDisplayString()}}
+                            {
+            {{directKeywords}}{{(directKeywords.Length > 0 ? NewLine : "")}}                    {{data.Symbol.Name}} = __cfitsData,
+                            };
+                        }
+
+            """;
+    }
+
+    private static string EmitImageKeywords(TypeModel type, string header, string prefix) =>
+        string.Join(NewLine, type.Members
+            .Where(static member => member.Role == MemberRole.Keyword)
+            .Select(member => $"                {member.Symbol.Name} = {ReadKeyword(member, header, prefix)},"));
+
+    private static string EmitImageKeywordObject(TypeModel type, string header, string prefix)
+    {
+        if (type.KeywordObject is not { } keywordObject)
+        {
+            return "";
+        }
+
+        string assignments = string.Join(NewLine, keywordObject.Keywords.Select(member =>
+            $"                    {member.Symbol.Name} = {ReadKeyword(member, header, prefix)},"));
+        return $$"""
+                {{keywordObject.Property.Name}} = new {{keywordObject.Symbol.ToDisplayString()}}
+                        {
+            {{assignments}}
+                        },
             """;
     }
 
@@ -142,50 +225,50 @@ public sealed partial class FitsContextGenerator
             """;
     }
 
-    private static string EmitImageWrite(TypeModel type, IArrayTypeSymbol array, string property)
+    private static string EmitImageWrite(TypeModel type, IArrayTypeSymbol array, string property, bool required)
     {
         if (array.Rank > 3 || !IsSupportedImageElement(array.ElementType))
         {
             return "            throw new System.NotSupportedException(\"Generated image serialization supports only byte, short, int, long, float, and double arrays up to rank 3.\");";
         }
 
-        string element = ElementName(array.ElementType);
-        string extensionName = string.IsNullOrEmpty(type.HduName)
+        string extensionName = string.IsNullOrEmpty(type.WriteName)
             ? ""
-            : $"                header.Text(\"EXTNAME\", {Literal(type.HduName!)});";
-        string dimensions;
-        if (array.Rank == 1)
+            : $"                    header.Text(\"EXTNAME\", {Literal(type.WriteName!)});";
+        string missing = required
+            ? "throw new CFITS.FitsException(\"Image data is missing.\");"
+            : "builder.Image(System.ReadOnlySpan<int>.Empty, System.ReadOnlySpan<byte>.Empty, WriteHeader);\n                        return;";
+        string dimensions = array.Rank switch
         {
-            dimensions = $$"""
+            1 => """
                         int n1 = pixels.Length;
-                        builder.Image(new int[] { n1 }, pixels, header =>
-                """;
-        }
-        else if (array.Rank == 2)
-        {
-            dimensions = $$"""
+                        builder.Image(new int[] { n1 }, pixels, WriteHeader);
+                """,
+            2 => """
                         int n2 = pixels.GetLength(0);
                         int n1 = pixels.GetLength(1);
-                        builder.Image(new int[] { n1, n2 }, CFITS.FitsEndian.AsContiguous(pixels), header =>
-                """;
-        }
-        else
-        {
-            dimensions = $$"""
+                        builder.Image(new int[] { n1, n2 }, CFITS.FitsEndian.AsContiguous(pixels), WriteHeader);
+                """,
+            _ => """
                         int n3 = pixels.GetLength(0);
                         int n2 = pixels.GetLength(1);
                         int n1 = pixels.GetLength(2);
-                        builder.Image(new int[] { n1, n2, n3 }, CFITS.FitsEndian.AsContiguous(pixels), header =>
-                """;
-        }
-
+                        builder.Image(new int[] { n1, n2, n3 }, CFITS.FitsEndian.AsContiguous(pixels), WriteHeader);
+                """,
+        };
         return $$"""
-                    var pixels = value.{{property}} ?? throw new CFITS.FitsException("Image data is missing.");
-            {{dimensions}}
+                    void WriteHeader(CFITS.FitsHeaderBuilder header)
                     {
+                        overlay?.Invoke(header);
             {{EmitKeywordWrites(type, "value")}}
             {{extensionName}}
-                    });
+                    }
+                    var pixels = value.{{property}};
+                    if (pixels is null)
+                    {
+                        {{missing}}
+                    }
+            {{dimensions}}
             """;
     }
     private static string ReadArray(IArrayTypeSymbol array)

@@ -18,8 +18,12 @@ public sealed partial class FitsContextGenerator
             return EmitUnsupportedTable(type, unsupported);
         }
 
+        bool allowDirect = columnMembers.Count > 0;
+        bool requireColumns = columnMembers.All(static member => member.Required);
         string cachedColumns = string.Join(NewLine, columnMembers.Select((member, index) =>
-            $"                        var __cfitsColumn{index} = table.Column({Literal(member.ColumnName)});"));
+            member.Required
+                ? $"                        var __cfitsColumn{index} = table.Column({Literal(member.ColumnName)});"
+                : $"                        CFITS.FitsColumn? __cfitsColumn{index} = FindColumn(table, {Literal(member.ColumnName)});"));
         string bulkCapabilities = string.Join(NewLine, columnMembers
             .Select((member, index) => EmitBulkColumn(member, index))
             .Where(static text => text.Length > 0));
@@ -77,11 +81,27 @@ public sealed partial class FitsContextGenerator
         string writes = string.Join(NewLine, type.Members
             .Where(static member => member.Role == MemberRole.Column)
             .Select(EmitColumnWrite));
-        string extensionName = string.IsNullOrEmpty(type.HduName)
+        string extensionName = string.IsNullOrEmpty(type.WriteName)
             ? ""
-            : $"                header.Text(\"EXTNAME\", {Literal(type.HduName!)});";
+            : $"                header.Text(\"EXTNAME\", {Literal(type.WriteName!)});";
         string nameArgument = string.IsNullOrEmpty(type.HduName) ? "null" : Literal(type.HduName!);
         string variableHelpers = EmitVariableColumnHelpers(columnMembers);
+        string findColumn = columnMembers.Any(static member => !member.Required)
+            ? """
+                    private static CFITS.FitsColumn? FindColumn(CFITS.FitsTable table, string name)
+                    {
+                        foreach (var column in table.Columns)
+                        {
+                            if (string.Equals(column.Name, name, System.StringComparison.OrdinalIgnoreCase))
+                            {
+                                return column;
+                            }
+                        }
+
+                        return null;
+                    }
+                """
+            : "";
         string columnNameField = columnMembers.Count == 0
             ? ""
             : "                    private static readonly string[] __cfitsColumns = new string[] { "
@@ -100,7 +120,16 @@ public sealed partial class FitsContextGenerator
 
                     public override System.Collections.Generic.IReadOnlyList<{{name}}> Read(System.IO.Stream stream, CFITS.FitsOpenOptions options)
                     {
-                        if (CFITS.FitsDirectTable.TryOpen(stream, {{type.HduIndex}}, {{nameArgument}}, options{{directColumns}}, out CFITS.FitsDirectTable? __cfitsDirect))
+                        return Read(stream, options, out _);
+                    }
+
+                    internal static System.Collections.Generic.IReadOnlyList<{{name}}> Read(System.IO.Stream stream, CFITS.FitsOpenOptions options, out CFITS.FitsHeader? header)
+                    {
+                        header = null;
+                        bool __cfitsUseDirect = {{(allowDirect ? "true" : "false")}};
+                        {{(type.MaterializeHeader
+                            ? $"if (__cfitsUseDirect && CFITS.FitsDirectTable.TryOpen(stream, {type.HduIndex}, {nameArgument}, options{directColumns}, {(requireColumns ? "true" : "false")}, out CFITS.FitsDirectTable? __cfitsDirect, out header))"
+                            : $"if (__cfitsUseDirect && CFITS.FitsDirectTable.TryOpen(stream, {type.HduIndex}, {nameArgument}, options{directColumns}, out CFITS.FitsDirectTable? __cfitsDirect))")}}
                         {
                             using (__cfitsDirect)
                             {
@@ -109,12 +138,19 @@ public sealed partial class FitsContextGenerator
                         }
 
                         using var document = CFITS.FitsDocument.Open(stream, options);
-                        return ReadDocument(document);
+                        return ReadDocument(document, null, out header);
                     }
 
-                    internal static System.Collections.Generic.IReadOnlyList<{{name}}> ReadDocument(CFITS.FitsDocument document, bool[]? mapped = null)
+                    internal static System.Collections.Generic.IReadOnlyList<{{name}}> ReadDocument(CFITS.FitsDocument document, bool[]? mapped, out CFITS.FitsHeader? header)
                     {
-            {{FindTable(type.HduName, type.HduIndex)}}
+            {{FindTable(type.HduName, type.HduIndex, type.HduRequired, type.OwnerName)}}
+                        if (hdu is null)
+                        {
+                            header = null;
+                            return default!;
+                        }
+
+                        header = hdu.Header;
                         if (mapped is not null) mapped[hdu.Index] = true;
                         return ReadTable(hdu.Table ?? throw new CFITS.FitsException("The HDU is not a table."));
                     }
@@ -137,15 +173,17 @@ public sealed partial class FitsContextGenerator
                     {
                         WriteToBuilder(builder, rows);
                     }
-                    internal static void WriteToBuilder(CFITS.FitsDocumentBuilder builder, System.Collections.Generic.IReadOnlyList<{{name}}> rows)
+                    internal static void WriteToBuilder(CFITS.FitsDocumentBuilder builder, System.Collections.Generic.IReadOnlyList<{{name}}> rows, System.Action<CFITS.FitsHeaderBuilder>? overlay = null)
                     {
                         var table = new CFITS.BinaryTableBuilder();
             {{writes}}
                         builder.BinaryTable(table, header =>
                         {
+                            overlay?.Invoke(header);
             {{extensionName}}
                         });
                     }
+            {{findColumn}}
                 }
             """;
     }
@@ -223,7 +261,7 @@ public sealed partial class FitsContextGenerator
         {
             return $$"""
                         var {{local}} = new {{element}}[rows.Count];
-                        for (int index = 0; index < rows.Count; index++) {{local}}[index] = rows[index].{{member.Symbol.Name}};
+                        for (int index = 0; index < rows.Count; index++) {{local}}[index] = rows[index].{{member.Symbol.Name}} ?? "";
                         int {{local}}Width = 1;
                         foreach (var item in {{local}}) if (item is not null && item.Length > {{local}}Width) {{local}}Width = item.Length;
                         table.Add({{Literal(member.ColumnName)}}, {{local}}, {{local}}Width);
@@ -257,9 +295,28 @@ public sealed partial class FitsContextGenerator
 
     private static string EmitKeywordWrites(TypeModel type, string variable)
     {
-        return string.Join(NewLine, type.Members
-            .Where(static item => item.Role == MemberRole.Keyword)
-            .Select(member => $"                {WriteKeyword(member, variable)};"));
+        var lines = new List<string>();
+        foreach (MemberModel member in type.Members)
+        {
+            if (member.Role == MemberRole.Keyword)
+            {
+                lines.Add($"                        {WriteKeyword(member, variable)};");
+            }
+        }
+
+        if (type.KeywordObject is { } keywordObject)
+        {
+            lines.Add($"                        if ({variable}.{keywordObject.Property.Name} is {{ }} __cfitsKeywordObject)");
+            lines.Add("                        {");
+            foreach (MemberModel member in keywordObject.Keywords)
+            {
+                lines.Add($"                            {WriteKeyword(member, "__cfitsKeywordObject")};");
+            }
+
+            lines.Add("                        }");
+        }
+
+        return string.Join(NewLine, lines);
     }
 
     private static string WriteKeyword(MemberModel member, string variable)
@@ -301,25 +358,48 @@ public sealed partial class FitsContextGenerator
         };
     }
 
-    private static string ReadKeyword(MemberModel member, string header)
+    private static string ReadKeyword(MemberModel member, string header, string localPrefix)
     {
         string keyword = member.ColumnName;
+        if (member.Required)
+        {
+            return member.Symbol.Type.SpecialType switch
+            {
+                SpecialType.System_Boolean => $"{header}.GetBoolean({Literal(keyword)})",
+                SpecialType.System_Byte => $"(byte){header}.GetInt64({Literal(keyword)})",
+                SpecialType.System_Int32 => $"(int){header}.GetInt64({Literal(keyword)})",
+                SpecialType.System_Int16 => $"(short){header}.GetInt64({Literal(keyword)})",
+                SpecialType.System_Int64 => $"{header}.GetInt64({Literal(keyword)})",
+                SpecialType.System_Double => $"{header}.GetDouble({Literal(keyword)})",
+                SpecialType.System_Single => $"(float){header}.GetDouble({Literal(keyword)})",
+                SpecialType.System_String => $"{header}.GetString({Literal(keyword)})",
+                _ => $"{header}.GetString({Literal(keyword)})",
+            };
+        }
+
+        string local = localPrefix + member.Symbol.Name;
+        string found = $"{header}.TryGetCard({Literal(keyword)}, out var {local})";
         return member.Symbol.Type.SpecialType switch
         {
-            SpecialType.System_Boolean => $"{header}.GetBoolean({Literal(keyword)})",
-            SpecialType.System_Byte => $"(byte){header}.GetInt64({Literal(keyword)})",
-            SpecialType.System_Int32 => $"(int){header}.GetInt64({Literal(keyword)})",
-            SpecialType.System_Int16 => $"(short){header}.GetInt64({Literal(keyword)})",
-            SpecialType.System_Int64 => $"{header}.GetInt64({Literal(keyword)})",
-            SpecialType.System_Double => $"{header}.GetDouble({Literal(keyword)})",
-            SpecialType.System_Single => $"(float){header}.GetDouble({Literal(keyword)})",
-            SpecialType.System_String => $"{header}.GetString({Literal(keyword)})",
-            _ => $"{header}.GetString({Literal(keyword)})",
+            SpecialType.System_Boolean => $"{found} ? {local}.GetBoolean() : default",
+            SpecialType.System_Byte => $"{found} ? (byte){local}.GetInt64() : default",
+            SpecialType.System_Int32 => $"{found} ? (int){local}.GetInt64() : default",
+            SpecialType.System_Int16 => $"{found} ? (short){local}.GetInt64() : default",
+            SpecialType.System_Int64 => $"{found} ? {local}.GetInt64() : default",
+            SpecialType.System_Double => $"{found} ? {local}.GetDouble() : default",
+            SpecialType.System_Single => $"{found} ? (float){local}.GetDouble() : default",
+            SpecialType.System_String => $"{found} ? {local}.GetString() : default",
+            _ => $"{found} ? {local}.GetString() : default",
         };
     }
 
     private static string ReadColumn(MemberModel member, int index, bool bulk = true)
     {
+        if (!member.Required)
+        {
+            return ReadOptionalColumn(member, index, bulk);
+        }
+
         string column = $"__cfitsColumn{index}";
         string integer = $"__cfitsInteger{index}![row]";
         string real = $"__cfitsReal{index}![row]";
@@ -347,14 +427,56 @@ public sealed partial class FitsContextGenerator
         };
     }
 
+    private static string ReadOptionalColumn(MemberModel member, int index, bool bulk)
+    {
+        string column = $"__cfitsColumn{index}";
+        string present = $"{column} is null ? default : ";
+        if (member.Symbol.Type is IArrayTypeSymbol array)
+        {
+            string read = array.ElementType.SpecialType switch
+            {
+                SpecialType.System_Double => $"ReadDoubleArray({column}!, row)",
+                SpecialType.System_Single => $"ReadSingleArray({column}!, row)",
+                _ => $"ReadInt32Array({column}!, row)",
+            };
+            return $"({present}{read})";
+        }
+
+        string integer = $"__cfitsInteger{index}![row]";
+        string real = $"__cfitsReal{index}![row]";
+        string value = member.Symbol.Type.SpecialType switch
+        {
+            SpecialType.System_Boolean => $"{column}.ReadLogical(row)",
+            SpecialType.System_Int32 => bulk ? $"(int)(__cfitsInteger{index}Bulk ? {integer} : {column}!.ReadInteger(row))" : $"(int){column}.ReadInteger(row)",
+            SpecialType.System_Int16 => bulk ? $"(short)(__cfitsInteger{index}Bulk ? {integer} : {column}!.ReadInteger(row))" : $"(short){column}.ReadInteger(row)",
+            SpecialType.System_Int64 => bulk ? $"(__cfitsInteger{index}Bulk ? {integer} : {column}!.ReadInteger(row))" : $"{column}.ReadInteger(row)",
+            SpecialType.System_Byte => bulk ? $"(byte)(__cfitsInteger{index}Bulk ? {integer} : {column}!.ReadInteger(row))" : $"(byte){column}.ReadInteger(row)",
+            SpecialType.System_Double => bulk ? $"(__cfitsReal{index}Bulk ? {real} : {column}!.ReadReal(row))" : $"{column}.ReadReal(row)",
+            SpecialType.System_Single => bulk ? $"(__cfitsReal{index}Bulk ? (float){real} : (float){column}!.ReadReal(row))" : $"(float){column}.ReadReal(row)",
+            SpecialType.System_String => $"{column}.ReadString(row)",
+            _ => $"{column}.ReadString(row)",
+        };
+        return $"({present}{value})";
+    }
+
+    private static string ColumnAccess(MemberModel member, int index) =>
+        member.Required ? $"__cfitsColumn{index}" : $"__cfitsColumn{index}!";
+
     private static string EmitBulkColumn(MemberModel member, int index)
     {
+        string column = $"__cfitsColumn{index}";
+        string integer = member.Required
+            ? $"{column}.CanCopyInteger"
+            : $"{column} is not null && {column}.CanCopyInteger";
+        string real = member.Required
+            ? $"{column}.CanCopyReal"
+            : $"{column} is not null && {column}.CanCopyReal";
         return member.Symbol.Type.SpecialType switch
         {
             SpecialType.System_Int32 or SpecialType.System_Int16 or SpecialType.System_Int64 or SpecialType.System_Byte =>
-                $"                        bool __cfitsInteger{index}Bulk = __cfitsColumn{index}.CanCopyInteger;",
+                $"                        bool __cfitsInteger{index}Bulk = {integer};",
             SpecialType.System_Double or SpecialType.System_Single =>
-                $"                        bool __cfitsReal{index}Bulk = __cfitsColumn{index}.CanCopyReal;",
+                $"                        bool __cfitsReal{index}Bulk = {real};",
             _ => "",
         };
     }
@@ -381,17 +503,17 @@ public sealed partial class FitsContextGenerator
         member.Symbol.Type.SpecialType switch
         {
             SpecialType.System_Int32 =>
-                $"                                if (__cfitsInteger{index}Bulk && !__cfitsColumn{index}.TryCopyInteger(__cfitsInteger{index}!.AsSpan(0, table.RowCount))) throw new CFITS.FitsException(\"The column changed bulk-copy capability.\");",
+                $"                                if (__cfitsInteger{index}Bulk && !{ColumnAccess(member, index)}.TryCopyInteger(__cfitsInteger{index}!.AsSpan(0, table.RowCount))) throw new CFITS.FitsException(\"The column changed bulk-copy capability.\");",
             SpecialType.System_Int16 =>
-                $"                                if (__cfitsInteger{index}Bulk && !__cfitsColumn{index}.TryCopyInteger(__cfitsInteger{index}!.AsSpan(0, table.RowCount))) throw new CFITS.FitsException(\"The column changed bulk-copy capability.\");",
+                $"                                if (__cfitsInteger{index}Bulk && !{ColumnAccess(member, index)}.TryCopyInteger(__cfitsInteger{index}!.AsSpan(0, table.RowCount))) throw new CFITS.FitsException(\"The column changed bulk-copy capability.\");",
             SpecialType.System_Int64 =>
-                $"                                if (__cfitsInteger{index}Bulk && !__cfitsColumn{index}.TryCopyInteger(__cfitsInteger{index}!.AsSpan(0, table.RowCount))) throw new CFITS.FitsException(\"The column changed bulk-copy capability.\");",
+                $"                                if (__cfitsInteger{index}Bulk && !{ColumnAccess(member, index)}.TryCopyInteger(__cfitsInteger{index}!.AsSpan(0, table.RowCount))) throw new CFITS.FitsException(\"The column changed bulk-copy capability.\");",
             SpecialType.System_Byte =>
-                $"                                if (__cfitsInteger{index}Bulk && !__cfitsColumn{index}.TryCopyInteger(__cfitsInteger{index}!.AsSpan(0, table.RowCount))) throw new CFITS.FitsException(\"The column changed bulk-copy capability.\");",
+                $"                                if (__cfitsInteger{index}Bulk && !{ColumnAccess(member, index)}.TryCopyInteger(__cfitsInteger{index}!.AsSpan(0, table.RowCount))) throw new CFITS.FitsException(\"The column changed bulk-copy capability.\");",
             SpecialType.System_Double =>
-                $"                                if (__cfitsReal{index}Bulk && !__cfitsColumn{index}.TryCopyReal(__cfitsReal{index}!.AsSpan(0, table.RowCount))) throw new CFITS.FitsException(\"The column changed bulk-copy capability.\");",
+                $"                                if (__cfitsReal{index}Bulk && !{ColumnAccess(member, index)}.TryCopyReal(__cfitsReal{index}!.AsSpan(0, table.RowCount))) throw new CFITS.FitsException(\"The column changed bulk-copy capability.\");",
             SpecialType.System_Single =>
-                $"                                if (__cfitsReal{index}Bulk && !__cfitsColumn{index}.TryCopyReal(__cfitsReal{index}!.AsSpan(0, table.RowCount))) throw new CFITS.FitsException(\"The column changed bulk-copy capability.\");",
+                $"                                if (__cfitsReal{index}Bulk && !{ColumnAccess(member, index)}.TryCopyReal(__cfitsReal{index}!.AsSpan(0, table.RowCount))) throw new CFITS.FitsException(\"The column changed bulk-copy capability.\");",
             _ => "",
         };
 

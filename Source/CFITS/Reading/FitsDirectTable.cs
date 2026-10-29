@@ -24,11 +24,35 @@ public sealed class FitsDirectTable : IDisposable
         string? extensionName,
         FitsOpenOptions options,
         ReadOnlySpan<string> columns,
-        out FitsDirectTable? opened)
+        out FitsDirectTable? opened) =>
+        TryOpen(stream, hduIndex, extensionName, options, columns, requireColumns: true, materializeHeader: false, out opened, out _);
+
+    public static bool TryOpen(
+        Stream stream,
+        int hduIndex,
+        string? extensionName,
+        FitsOpenOptions options,
+        ReadOnlySpan<string> columns,
+        bool requireColumns,
+        out FitsDirectTable? opened,
+        out FitsHeader? header) =>
+        TryOpen(stream, hduIndex, extensionName, options, columns, requireColumns, materializeHeader: true, out opened, out header);
+
+    private static bool TryOpen(
+        Stream stream,
+        int hduIndex,
+        string? extensionName,
+        FitsOpenOptions options,
+        ReadOnlySpan<string> columns,
+        bool requireColumns,
+        bool materializeHeader,
+        out FitsDirectTable? opened,
+        out FitsHeader? header)
     {
         ArgumentNullException.ThrowIfNull(stream);
         ArgumentNullException.ThrowIfNull(options);
         opened = null;
+        header = null;
         if (options.VerifyChecksum || !stream.CanSeek)
         {
             return false;
@@ -46,6 +70,7 @@ public sealed class FitsDirectTable : IDisposable
             if (selected.Shape.DataBytes > int.MaxValue)
             {
                 stream.Position = origin;
+                selected.Dispose();
                 return false;
             }
 
@@ -62,7 +87,11 @@ public sealed class FitsDirectTable : IDisposable
                 rented.AsMemory(0, length),
                 columns,
                 options.ScaleMode,
-                selected.Index);
+                selected.Index,
+                requireColumns);
+            header = materializeHeader
+                ? FitsHduStream.CreateHeader(selected.DetachBuffer(), selected.HeaderLength, selected.Index)
+                : null;
             FitsHduStream.SkipPadding(stream, selected.Shape);
             FitsHduStream.ValidateRemainder(stream);
             opened = new FitsDirectTable(rented, table);

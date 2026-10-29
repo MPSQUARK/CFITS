@@ -6,41 +6,55 @@ namespace CFITS.Generator;
 
 public sealed partial class FitsContextGenerator
 {
-    private static string FindImage(string? name, int hduIndex, string kindCondition)
+    private static string FindImage(string? name, int hduIndex, string kindCondition, bool required, string owner)
     {
-        return FindHdu(name, hduIndex, kindCondition);
+        return FindHdu(name, hduIndex, kindCondition, required, owner);
     }
 
-    private static string FindTable(string? name, int hduIndex)
+    private static string FindTable(string? name, int hduIndex, bool required, string owner)
     {
         string kinds = "candidate.Kind == CFITS.FitsHduKind.BinaryTable || candidate.Kind == CFITS.FitsHduKind.AsciiTable";
-        return FindHdu(name, hduIndex, kinds);
+        return FindHdu(name, hduIndex, kinds, required, owner);
     }
 
-    private static string FindHdu(string? name, int hduIndex, string kindCondition)
+    private static string FindHdu(string? name, int hduIndex, string kindCondition, bool required, string owner)
     {
         kindCondition = $"({kindCondition})";
         string match = string.IsNullOrEmpty(name)
             ? kindCondition
             : $"{kindCondition} && candidate.Header.TryGetCard(\"EXTNAME\", out var extname) && extname.GetString() == {Literal(name ?? "")}";
+        string missing = Literal($"The HDU for '{owner}' was not found.");
+        string incompatible = Literal($"The HDU for '{owner}' has an incompatible type.");
+        string requiredThrow = required
+            ? $$"""
+                        if (hdu is null)
+                        {
+                            throw new CFITS.FitsException({{missing}});
+                        }
+                """
+            : "";
         if (hduIndex >= 0)
         {
-            string indexedMatch = match.Replace("candidate", "hdu");
             return $$"""
-                        if (document.Hdus.Count <= {{hduIndex}})
+                        CFITS.FitsHdu? hdu = null;
+                        if (document.Hdus.Count > {{hduIndex}})
                         {
-                            throw new System.InvalidOperationException("The requested HDU does not exist.");
+                            var candidate = document.Hdus[{{hduIndex}}];
+                            if ({{match}})
+                            {
+                                hdu = candidate;
+                            }
+                            else
+                            {
+                                throw new CFITS.FitsException({{incompatible}});
+                            }
                         }
-                        CFITS.FitsHdu hdu = document.Hdus[{{hduIndex}}];
-                        if (!({{indexedMatch}}))
-                        {
-                            throw new System.InvalidOperationException("The requested HDU has an incompatible type.");
-                        }
+            {{requiredThrow}}
             """;
         }
 
         return $$"""
-                        CFITS.FitsHdu hdu = null!;
+                        CFITS.FitsHdu? hdu = null;
                         for (int index = 0; index < document.Hdus.Count; index++)
                         {
                             var candidate = document.Hdus[index];
@@ -50,10 +64,7 @@ public sealed partial class FitsContextGenerator
                                 break;
                             }
                         }
-                        if (hdu is null)
-                        {
-                            throw new System.InvalidOperationException("Sequence contains no matching element");
-                        }
+            {{requiredThrow}}
             """;
     }
 
