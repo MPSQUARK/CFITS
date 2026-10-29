@@ -63,16 +63,20 @@ public class FitsScenarios
 
         _binary = Path.Combine(directory, "bintable.fits");
         FitsDocumentBuilder.Create()
-            .BinaryTable(new BinaryTableBuilder().Add("flux", flux).Add("flags", flags))
+            .BinaryTable(
+                new BinaryTableBuilder().Add("flux", flux).Add("flags", flags),
+                header => header.Text("EXTNAME", "Table"))
             .Build()
             .Save(_binary);
 
         int asciiRows = 4_000;
         _ascii = Path.Combine(directory, "ascii.fits");
         FitsDocumentBuilder.Create()
-            .AsciiTable(new AsciiTableBuilder()
-                .AddInteger("id", Enumerable.Range(0, asciiRows).Select(i => (long)i).ToArray(), 8)
-                .AddReal("value", Enumerable.Range(0, asciiRows).Select(i => i * 0.25).ToArray(), 12, 4, 'E'))
+            .AsciiTable(
+                new AsciiTableBuilder()
+                    .AddInteger("id", Enumerable.Range(0, asciiRows).Select(i => (long)i).ToArray(), 8)
+                    .AddReal("value", Enumerable.Range(0, asciiRows).Select(i => i * 0.25).ToArray(), 12, 4, 'E'),
+                header => header.Text("EXTNAME", "Table"))
             .Build()
             .Save(_ascii);
 
@@ -84,7 +88,9 @@ public class FitsScenarios
 
         _heap = Path.Combine(directory, "heap.fits");
         FitsDocumentBuilder.Create()
-            .BinaryTable(new BinaryTableBuilder().AddVariable("samples", heapRows))
+            .BinaryTable(
+                new BinaryTableBuilder().AddVariable("samples", heapRows),
+                header => header.Text("EXTNAME", "Table"))
             .Build()
             .Save(_heap);
 

@@ -18,6 +18,22 @@ public sealed class CompressionTests
     }
 
     [Fact]
+    public void GeneratedReadFindsNamelessCompressedExtension()
+    {
+        short[] source = [1, 2, 3, 4, 5, 6];
+        byte[] file = FitsDocumentBuilder.Create().GzipImage([3, 2], source).Build().ToArray();
+        using var document = FitsDocument.Parse(file);
+        var expected = new short[2, 3];
+        document.Hdus[1].Image!.CopyInteger(expected);
+
+        using var stream = new MemoryStream(file);
+        CompressedImageFile result = FitsSerializer.Read<CompressedImageFile>(stream);
+        Assert.Equal(
+            FitsEndian.AsContiguous(expected).ToArray(),
+            FitsEndian.AsContiguous(result.Image.Pixels!).ToArray());
+    }
+
+    [Fact]
     public void DirectCompressedReadMatchesDocumentPixels()
     {
         short[] source = [1, 2, 3, 4, 5, 6];

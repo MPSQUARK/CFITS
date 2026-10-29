@@ -1,4 +1,5 @@
 using System.Buffers.Binary;
+using System.Text;
 
 namespace CFITS.Tests;
 
@@ -7,24 +8,27 @@ public sealed class GeneratedSerializerTests
     [Fact]
     public void GeneratedImageDirectWriteMatchesBuildWrite()
     {
-        var value = new Exposure
+        var value = new ExposureFile
         {
-            ExposureSeconds = 12.5,
-            Pixels = new float[,]
+            Keywords = new ExposureKeywords { ExposureSeconds = 12.5 },
+            Image = new ExposureImage
             {
-                { 1.25f, 2.5f },
-                { 3.75f, 5f },
+                Pixels = new float[,]
+                {
+                    { 1.25f, 2.5f },
+                    { 3.75f, 5f },
+                },
             },
         };
 
         using var generatedStream = new MemoryStream();
-        FitsSerializer.Write(generatedStream, value, AppFitsContext.Default.Exposure);
+        FitsSerializer.Write(generatedStream, value);
 
         using var builtStream = new MemoryStream();
         FitsDocumentBuilder.Create()
             .Image([2, 2], new[] { 1.25f, 2.5f, 3.75f, 5f }, header =>
             {
-                header.Real("EXPTIME", value.ExposureSeconds);
+                header.Real("EXPTIME", value.Keywords.ExposureSeconds);
                 header.Text("EXTNAME", "EXPOSURE");
             })
             .Build()
@@ -35,16 +39,40 @@ public sealed class GeneratedSerializerTests
     }
 
     [Fact]
+    public void OpenReadsTheImageAndPrimaryKeywordsOnDemand()
+    {
+        var value = new ExposureFile
+        {
+            Keywords = new ExposureKeywords { ExposureSeconds = 12.5 },
+            Image = new ExposureImage
+            {
+                Pixels = new float[,] { { 1.25f, 2.5f }, { 3.75f, 5f } },
+            },
+        };
+        using var stream = new MemoryStream();
+        FitsParser.Serialize(stream, value);
+        stream.Position = 0;
+
+        using ExposureFile.Reader reader = ExposureFile.Open(stream);
+        Assert.Equal(12.5, reader.Keywords.ExposureSeconds);
+        Assert.Equal(5f, reader.Image.Pixels![1, 1]);
+        Assert.Equal(12.5, reader.Deserialize().Keywords.ExposureSeconds);
+    }
+
+    [Fact]
     public void GeneratedImageCanWriteIntoAnExistingBuilder()
     {
-        var value = new Exposure
+        var value = new ExposureFile
         {
-            ExposureSeconds = 12.5,
-            Pixels = new float[,] { { 1, 2 }, { 3, 4 } },
+            Keywords = new ExposureKeywords { ExposureSeconds = 12.5 },
+            Image = new ExposureImage
+            {
+                Pixels = new float[,] { { 1, 2 }, { 3, 4 } },
+            },
         };
 
         var builder = FitsDocumentBuilder.Create();
-        FitsSerializer.Write(builder, value, AppFitsContext.Default.Exposure);
+        FitsSerializer.Write(builder, value);
 
         using var stream = new MemoryStream();
         builder.Write(stream);
@@ -62,9 +90,10 @@ public sealed class GeneratedSerializerTests
             new EventRow { Time = 1.5, Channel = 4 },
             new EventRow { Time = 2.75, Channel = 9 },
         };
+        var value = new EventFile { Events = new EventTable { Rows = rows } };
 
         using var generatedStream = new MemoryStream();
-        FitsSerializer.Write(generatedStream, rows, AppFitsContext.Default.EventRow);
+        FitsSerializer.Write(generatedStream, value);
 
         var table = new BinaryTableBuilder()
             .Add("TIME", rows.Select(row => row.Time).ToArray())
@@ -82,31 +111,34 @@ public sealed class GeneratedSerializerTests
     [Fact]
     public void GeneratedImageSerializerRoundTripsKeywordsAndPixels()
     {
-        var value = new Exposure
+        var value = new ExposureFile
         {
-            ExposureSeconds = 12.5,
-            Pixels = new float[,]
+            Keywords = new ExposureKeywords { ExposureSeconds = 12.5 },
+            Image = new ExposureImage
             {
-                { 1.25f, 2.5f },
-                { 3.75f, 5f },
+                Pixels = new float[,]
+                {
+                    { 1.25f, 2.5f },
+                    { 3.75f, 5f },
+                },
             },
         };
 
         using var stream = new MemoryStream();
-        FitsSerializer.Write(stream, value, AppFitsContext.Default.Exposure);
+        FitsSerializer.Write(stream, value);
         stream.Position = 0;
 
-        Exposure result = FitsSerializer.Read(stream, AppFitsContext.Default.Exposure);
+        ExposureFile result = FitsSerializer.Read<ExposureFile>(stream);
 
-        Assert.Equal(value.ExposureSeconds, result.ExposureSeconds);
-        Assert.NotNull(result.Pixels);
-        Assert.Equal(value.Pixels!.GetLength(0), result.Pixels.GetLength(0));
-        Assert.Equal(value.Pixels.GetLength(1), result.Pixels.GetLength(1));
-        for (int row = 0; row < value.Pixels.GetLength(0); row++)
+        Assert.Equal(value.Keywords.ExposureSeconds, result.Keywords.ExposureSeconds);
+        Assert.NotNull(result.Image.Pixels);
+        Assert.Equal(value.Image.Pixels!.GetLength(0), result.Image.Pixels.GetLength(0));
+        Assert.Equal(value.Image.Pixels.GetLength(1), result.Image.Pixels.GetLength(1));
+        for (int row = 0; row < value.Image.Pixels.GetLength(0); row++)
         {
-            for (int column = 0; column < value.Pixels.GetLength(1); column++)
+            for (int column = 0; column < value.Image.Pixels.GetLength(1); column++)
             {
-                Assert.Equal(value.Pixels[row, column], result.Pixels[row, column]);
+                Assert.Equal(value.Image.Pixels[row, column], result.Image.Pixels[row, column]);
             }
         }
     }
@@ -114,25 +146,24 @@ public sealed class GeneratedSerializerTests
     [Fact]
     public void GeneratedImageSerializerRoundTripsByteKeywordsAsIntegers()
     {
-        var value = new ByteKeywordImage
+        var value = new ByteKeywordFile
         {
-            BitDepth = 255,
-            Pixels = [1, 2, 3],
+            Keywords = new ByteKeywords { BitDepth = 255 },
+            Image = new ByteKeywordImage { Pixels = [1, 2, 3] },
         };
 
         using var stream = new MemoryStream();
-        FitsSerializer.Write(stream, value, AppFitsContext.Default.ByteKeywordImage);
+        FitsSerializer.Write(stream, value);
         stream.Position = 0;
 
         using var document = FitsDocument.Parse(stream.ToArray());
         Assert.Equal(255, document.Hdus[0].Header.GetInt64("LEVEL"));
 
         stream.Position = 0;
-        ByteKeywordImage result = FitsSerializer.Read(
-            stream, AppFitsContext.Default.ByteKeywordImage);
+        ByteKeywordFile result = FitsSerializer.Read<ByteKeywordFile>(stream);
 
-        Assert.Equal(value.BitDepth, result.BitDepth);
-        Assert.Equal(value.Pixels, result.Pixels);
+        Assert.Equal(value.Keywords.BitDepth, result.Keywords.BitDepth);
+        Assert.Equal(value.Image.Pixels, result.Image.Pixels);
     }
 
     [Fact]
@@ -151,9 +182,8 @@ public sealed class GeneratedSerializerTests
 
         using var stream = new MemoryStream(corrupted);
         Assert.Throws<FitsException>(() =>
-            FitsSerializer.Read(
+            FitsSerializer.Read<ExposureFile>(
                 stream,
-                AppFitsContext.Default.Exposure,
                 new FitsOpenOptions { VerifyChecksum = true }));
     }
 
@@ -168,7 +198,7 @@ public sealed class GeneratedSerializerTests
         stream.Position = 0;
 
         var exception = Assert.Throws<FitsException>(() =>
-            FitsSerializer.Read(stream, AppFitsContext.Default.Exposure));
+            FitsSerializer.Read<ExposureFile>(stream));
 
         Assert.Contains("rank", exception.Message);
     }
@@ -177,63 +207,18 @@ public sealed class GeneratedSerializerTests
     public void GeneratedIntegerImageSerializerPreservesLongValuesBeyondDoublePrecision()
     {
         long[] pixels = [9_007_199_254_740_993, -9_007_199_254_740_993];
-        var value = new LongExposure { Pixels = pixels };
+        var value = new LongExposureFile
+        {
+            Image = new LongExposureImage { Pixels = pixels },
+        };
 
         using var stream = new MemoryStream();
-        FitsSerializer.Write(stream, value, AppFitsContext.Default.LongExposure);
+        FitsSerializer.Write(stream, value);
         stream.Position = 0;
 
-        LongExposure result = FitsSerializer.Read(stream, AppFitsContext.Default.LongExposure);
+        LongExposureFile result = FitsSerializer.Read<LongExposureFile>(stream);
 
-        Assert.Equal(pixels, result.Pixels);
-    }
-
-    [Fact]
-    public void GeneratedUnsupportedImageSerializerFailsClearly()
-    {
-        var value = new UnsupportedImage { Pixels = [true] };
-
-        using var stream = new MemoryStream();
-        var writeException = Assert.Throws<NotSupportedException>(() =>
-            FitsSerializer.Write(stream, value, AppFitsContext.Default.UnsupportedImage));
-
-        Assert.Contains("only byte, short, int, long, float, and double", writeException.Message);
-    }
-
-    [Fact]
-    public void GeneratedScalarImageSerializerFailsClearlyOnReadAndWrite()
-    {
-        var value = new ScalarImage { Pixel = 1.25f };
-
-        using var writeStream = new MemoryStream();
-        var writeException = Assert.Throws<NotSupportedException>(() =>
-            FitsSerializer.Write(writeStream, value, AppFitsContext.Default.ScalarImage));
-
-        Assert.Contains("requires a supported array", writeException.Message);
-
-        using var document = FitsDocumentBuilder.Create()
-            .Image([1], new[] { 1.25f }, header => header.Text("EXTNAME", "SCALAR_IMAGE"))
-            .Build();
-        using var readStream = new MemoryStream();
-        document.Write(readStream);
-        readStream.Position = 0;
-
-        var readException = Assert.Throws<NotSupportedException>(() =>
-            FitsSerializer.Read(readStream, AppFitsContext.Default.ScalarImage));
-
-        Assert.Contains("requires a supported array", readException.Message);
-    }
-
-    [Fact]
-    public void GeneratedUnsupportedTableSerializerFailsClearly()
-    {
-        var rows = new[] { new UnsupportedTableRow { Value = DateTime.UnixEpoch } };
-
-        using var stream = new MemoryStream();
-        var writeException = Assert.Throws<NotSupportedException>(() =>
-            FitsSerializer.Write(stream, rows, AppFitsContext.Default.UnsupportedTableRow));
-
-        Assert.Contains("does not support member", writeException.Message);
+        Assert.Equal(pixels, result.Image.Pixels);
     }
 
     [Fact]
@@ -246,10 +231,10 @@ public sealed class GeneratedSerializerTests
         };
 
         using var stream = new MemoryStream();
-        FitsSerializer.Write(stream, rows, AppFitsContext.Default.EventRow);
+        FitsSerializer.Write(stream, new EventFile { Events = new EventTable { Rows = rows } });
         stream.Position = 0;
 
-        IReadOnlyList<EventRow> result = FitsSerializer.Read(stream, AppFitsContext.Default.EventRow);
+        IReadOnlyList<EventRow> result = FitsSerializer.Read<EventFile>(stream).Events.Rows;
 
         Assert.IsType<EventRow[]>(result);
         Assert.Equal(rows.Length, result.Count);
@@ -270,10 +255,10 @@ public sealed class GeneratedSerializerTests
             .ToArray();
 
         using var stream = new MemoryStream();
-        FitsSerializer.Write(stream, rows, AppFitsContext.Default.EventRow);
+        FitsSerializer.Write(stream, new EventFile { Events = new EventTable { Rows = rows } });
         stream.Position = 0;
 
-        IReadOnlyList<EventRow> result = FitsSerializer.Read(stream, AppFitsContext.Default.EventRow);
+        IReadOnlyList<EventRow> result = FitsSerializer.Read<EventFile>(stream).Events.Rows;
 
         Assert.Equal(rows.Length, result.Count);
         Assert.Equal(rows[0].Time, result[0].Time);
@@ -290,9 +275,9 @@ public sealed class GeneratedSerializerTests
         };
 
         using var stream = new MemoryStream();
-        FitsSerializer.Write(stream, rows, AppFitsContext.Default.StructEventRow);
+        FitsSerializer.Write(stream, new StructEventFile { Events = new StructEventTable { Rows = rows } });
         stream.Position = 0;
-        IReadOnlyList<StructEventRow> result = FitsSerializer.Read(stream, AppFitsContext.Default.StructEventRow);
+        IReadOnlyList<StructEventRow> result = FitsSerializer.Read<StructEventFile>(stream).Events.Rows;
 
         Assert.IsType<StructEventRow[]>(result);
         Assert.Equal(2, result.Count);
@@ -313,10 +298,10 @@ public sealed class GeneratedSerializerTests
             .ToArray();
 
         using var stream = new MemoryStream();
-        FitsSerializer.Write(stream, rows, AppFitsContext.Default.MixedEventRow);
+        FitsSerializer.Write(stream, new MixedEventFile { Events = new MixedEventTable { Rows = rows } });
         stream.Position = 0;
 
-        IReadOnlyList<MixedEventRow> result = FitsSerializer.Read(stream, AppFitsContext.Default.MixedEventRow);
+        IReadOnlyList<MixedEventRow> result = FitsSerializer.Read<MixedEventFile>(stream).Events.Rows;
 
         Assert.Equal(rows.Length, result.Count);
         Assert.Equal(rows[0].Time, result[0].Time);
@@ -330,12 +315,12 @@ public sealed class GeneratedSerializerTests
     public void GeneratedVariableDoubleReadMatchesRuntimeForPAndQDescriptors(bool useQDescriptor)
     {
         using var document = CreateVariableDoubleDocument(useQDescriptor);
-        byte[] bytes = document.ToArray();
+        byte[] bytes = NamedExtension(document, "Table");
 
         IReadOnlyList<VariableDoubleRow> generated;
         using (var generatedStream = new MemoryStream(bytes))
         {
-            generated = FitsSerializer.Read(generatedStream, AppFitsContext.Default.VariableDoubleRow);
+            generated = FitsSerializer.Read<VariableDoubleFile>(generatedStream).Table.Rows;
         }
 
         using var runtimeDocument = FitsDocument.Parse(bytes);
@@ -353,7 +338,7 @@ public sealed class GeneratedSerializerTests
     public void GeneratedVariableDoubleReadRejectsMalformedHeapLikeRuntime(bool useQDescriptor)
     {
         using var document = CreateVariableDoubleDocument(useQDescriptor);
-        byte[] bytes = document.ToArray();
+        byte[] bytes = NamedExtension(document, "Table");
         int tableDataOffset = 5_760;
         int descriptorOffset = tableDataOffset + (useQDescriptor ? 8 : 4);
         BinaryPrimitives.WriteInt64BigEndian(
@@ -368,7 +353,7 @@ public sealed class GeneratedSerializerTests
 
         using var generatedStream = new MemoryStream(bytes);
         Assert.Throws<FitsException>(() =>
-            FitsSerializer.Read(generatedStream, AppFitsContext.Default.VariableDoubleRow));
+            FitsSerializer.Read<VariableDoubleFile>(generatedStream));
 
         Assert.Throws<FitsException>(() => FitsDocument.Parse(bytes));
     }
@@ -379,12 +364,12 @@ public sealed class GeneratedSerializerTests
     public void GeneratedVariableIntReadMatchesRuntimeForPAndQDescriptors(bool useQDescriptor)
     {
         using var document = CreateVariableIntDocument(useQDescriptor);
-        byte[] bytes = document.ToArray();
+        byte[] bytes = NamedExtension(document, "Table");
 
         IReadOnlyList<VariableIntRow> generated;
         using (var generatedStream = new MemoryStream(bytes))
         {
-            generated = FitsSerializer.Read(generatedStream, AppFitsContext.Default.VariableIntRow);
+            generated = FitsSerializer.Read<VariableIntFile>(generatedStream).Table.Rows;
         }
 
         using var runtimeDocument = FitsDocument.Parse(bytes);
@@ -402,7 +387,7 @@ public sealed class GeneratedSerializerTests
     public void GeneratedVariableIntReadRejectsMalformedHeapLikeRuntime(bool useQDescriptor)
     {
         using var document = CreateVariableIntDocument(useQDescriptor);
-        byte[] bytes = document.ToArray();
+        byte[] bytes = NamedExtension(document, "Table");
         int tableDataOffset = 5_760;
         int descriptorOffset = tableDataOffset + (useQDescriptor ? 8 : 4);
         if (useQDescriptor)
@@ -416,7 +401,7 @@ public sealed class GeneratedSerializerTests
 
         using var generatedStream = new MemoryStream(bytes);
         Assert.Throws<FitsException>(() =>
-            FitsSerializer.Read(generatedStream, AppFitsContext.Default.VariableIntRow));
+            FitsSerializer.Read<VariableIntFile>(generatedStream));
 
         Assert.Throws<FitsException>(() => FitsDocument.Parse(bytes));
     }
@@ -474,6 +459,38 @@ public sealed class GeneratedSerializerTests
         return builder.Build();
     }
 
+    private static byte[] NamedExtension(FitsDocument document, string name)
+    {
+        byte[] bytes = document.ToArray();
+        int header = 2_880;
+        for (int card = header; card + 160 <= bytes.Length; card += 80)
+        {
+            if (bytes[card] != (byte)'E'
+                || bytes[card + 1] != (byte)'N'
+                || bytes[card + 2] != (byte)'D'
+                || bytes[card + 3] != (byte)' ')
+            {
+                continue;
+            }
+
+            byte[] extname = Encoding.ASCII.GetBytes($"EXTNAME = '{name}'");
+            for (int index = 0; index < 80; index++)
+            {
+                bytes[card + index] = index < extname.Length ? extname[index] : (byte)' ';
+            }
+
+            byte[] end = "END"u8.ToArray();
+            for (int index = 0; index < 80; index++)
+            {
+                bytes[card + 80 + index] = index < end.Length ? end[index] : (byte)' ';
+            }
+
+            return bytes;
+        }
+
+        throw new InvalidOperationException("The extension END card was not found.");
+    }
+
     [Fact]
     public void GeneratedTableSerializerSelectsTheNamedExtension()
     {
@@ -490,7 +507,7 @@ public sealed class GeneratedSerializerTests
         document.Write(stream);
         stream.Position = 0;
 
-        IReadOnlyList<EventRow> result = FitsSerializer.Read(stream, AppFitsContext.Default.EventRow);
+        IReadOnlyList<EventRow> result = FitsSerializer.Read<NamedEventFile>(stream).Events.Rows;
 
         Assert.Single(result);
         Assert.Equal(1.5, result[0].Time);
@@ -512,12 +529,12 @@ public sealed class GeneratedSerializerTests
             .Build();
 
         using var stream = new MemoryStream(document.ToArray());
-        MultiHduFile result = FitsSerializer.Read(stream, AppFitsContext.Default.MultiHduFile);
+        MultiHduFile result = FitsSerializer.Read<MultiHduFile>(stream);
 
-        Assert.Equal(12.5, result.Primary.ExposureSeconds);
-        Assert.Equal(new[] { 1f, 2f, 3f, 4f }, result.Primary.Pixels!.Cast<float>());
-        Assert.Single(result.Events);
-        Assert.Equal(4, result.Events[0].Channel);
+        Assert.Equal(12.5, result.Keywords.ExposureSeconds);
+        Assert.Equal(new[] { 1f, 2f, 3f, 4f }, result.Image.Pixels!.Cast<float>());
+        Assert.Single(result.Events.Rows);
+        Assert.Equal(4, result.Events.Rows[0].Channel);
         Assert.Single(result.Unknown);
         Assert.Equal(2, result.Unknown[0].Index);
     }
@@ -535,15 +552,15 @@ public sealed class GeneratedSerializerTests
         MultiHduFile value;
         using (var input = new MemoryStream(source.ToArray()))
         {
-            value = FitsSerializer.Read(input, AppFitsContext.Default.MultiHduFile);
+            value = FitsSerializer.Read<MultiHduFile>(input);
         }
 
-        value.Primary.ExposureSeconds = 25;
-        value.Primary.Pixels![0, 0] = 8;
-        value.Events = [new EventRow { Time = 3.5, Channel = 7 }];
+        value.Keywords.ExposureSeconds = 25;
+        value.Image.Pixels![0, 0] = 8;
+        value.Events.Rows = [new EventRow { Time = 3.5, Channel = 7 }];
 
         using var output = new MemoryStream();
-        FitsSerializer.Write(output, value, AppFitsContext.Default.MultiHduFile);
+        FitsSerializer.Write(output, value);
         using var result = FitsDocument.Parse(output.ToArray());
 
         Assert.Equal(3, result.Hdus.Count);
@@ -568,11 +585,10 @@ public sealed class GeneratedSerializerTests
             .Build();
 
         using var input = new MemoryStream(source.ToArray());
-        InterleavedHduFile value = FitsSerializer.Read(
-            input, AppFitsContext.Default.InterleavedHduFile);
+        InterleavedHduFile value = FitsSerializer.Read<InterleavedHduFile>(input);
 
         using var output = new MemoryStream();
-        FitsSerializer.Write(output, value, AppFitsContext.Default.InterleavedHduFile);
+        FitsSerializer.Write(output, value);
         using var result = FitsDocument.Parse(output.ToArray());
 
         Assert.Equal(new[] { FitsHduKind.Image, FitsHduKind.Image, FitsHduKind.BinaryTable },
@@ -594,10 +610,10 @@ public sealed class GeneratedSerializerTests
             .Build();
 
         using var input = new MemoryStream(source.ToArray());
-        MultiHduFile value = FitsSerializer.Read(input, AppFitsContext.Default.MultiHduFile);
+        MultiHduFile value = FitsSerializer.Read<MultiHduFile>(input);
 
         using var output = new MemoryStream();
-        FitsSerializer.Write(output, value, AppFitsContext.Default.MultiHduFile);
+        FitsSerializer.Write(output, value);
         using var result = FitsDocument.Parse(output.ToArray());
 
         Assert.Equal(records, result.SnapshotSpecialRecords().ToArray());
@@ -608,31 +624,34 @@ public sealed class GeneratedSerializerTests
     {
         var value = new DirectCompositeFile
         {
-            Image = new Exposure
+            Keywords = new ExposureKeywords { ExposureSeconds = 12.5 },
+            Image = new ExposureImage
             {
-                ExposureSeconds = 12.5,
                 Pixels = new float[,] { { 1, 2 }, { 3, 4 } },
             },
-            Events =
-            [
-                new EventRow { Time = 1.5, Channel = 4 },
-                new EventRow { Time = 2.5, Channel = 7 },
-            ],
+            Events = new EventTable
+            {
+                Rows =
+                [
+                    new EventRow { Time = 1.5, Channel = 4 },
+                    new EventRow { Time = 2.5, Channel = 7 },
+                ],
+            },
         };
 
         using var generated = new MemoryStream();
-        FitsSerializer.Write(generated, value, AppFitsContext.Default.DirectCompositeFile);
+        FitsSerializer.Write(generated, value);
 
         using var staged = new MemoryStream();
         FitsDocumentBuilder.Create()
             .Image([2, 2], new[] { 1f, 2f, 3f, 4f }, header =>
             {
-                header.Real("EXPTIME", value.Image.ExposureSeconds);
+                header.Real("EXPTIME", value.Keywords.ExposureSeconds);
             })
             .BinaryTable(
                 new BinaryTableBuilder()
-                    .Add("TIME", value.Events.Select(row => row.Time).ToArray())
-                    .Add("PHA", value.Events.Select(row => row.Channel).ToArray()),
+                    .Add("TIME", value.Events.Rows.Select(row => row.Time).ToArray())
+                    .Add("PHA", value.Events.Rows.Select(row => row.Channel).ToArray()),
                 header => header.Text("EXTNAME", "EVENTS"))
             .Build()
             .Write(staged);
@@ -655,20 +674,20 @@ public sealed class GeneratedSerializerTests
     {
         var value = new DirectCompositeFile
         {
-            Image = new Exposure { Pixels = new float[,] { { 1, 2 } } },
-            Events = [new EventRow { Time = 3.5, Channel = 8 }],
+            Keywords = new ExposureKeywords(),
+            Image = new ExposureImage { Pixels = new float[,] { { 1, 2 } } },
+            Events = new EventTable { Rows = [new EventRow { Time = 3.5, Channel = 8 }] },
         };
 
         using var stream = new MemoryStream();
-        FitsSerializer.Write(stream, value, AppFitsContext.Default.DirectCompositeFile);
+        FitsSerializer.Write(stream, value);
         stream.Position = 0;
 
-        DirectCompositeFile result = FitsSerializer.Read(
-            stream, AppFitsContext.Default.DirectCompositeFile);
+        DirectCompositeFile result = FitsSerializer.Read<DirectCompositeFile>(stream);
 
         Assert.Equal(value.Image.Pixels, result.Image.Pixels);
-        Assert.Equal(value.Events[0].Time, result.Events[0].Time);
-        Assert.Equal(value.Events[0].Channel, result.Events[0].Channel);
+        Assert.Equal(value.Events.Rows[0].Time, result.Events.Rows[0].Time);
+        Assert.Equal(value.Events.Rows[0].Channel, result.Events.Rows[0].Channel);
     }
 
     [Fact]
@@ -676,19 +695,19 @@ public sealed class GeneratedSerializerTests
     {
         var value = new DirectCompositeFile
         {
-            Image = new Exposure
+            Keywords = new ExposureKeywords { ExposureSeconds = 8.5 },
+            Image = new ExposureImage
             {
-                ExposureSeconds = 8.5,
                 Pixels = new float[,] { { 1, 2 }, { 3, 4 } },
             },
-            Events = [new EventRow { Time = 6.25, Channel = 11 }],
+            Events = new EventTable { Rows = [new EventRow { Time = 6.25, Channel = 11 }] },
         };
 
         using var direct = new MemoryStream();
-        FitsSerializer.Write(direct, value, AppFitsContext.Default.DirectCompositeFile);
+        FitsSerializer.Write(direct, value);
 
         var builder = FitsDocumentBuilder.Create();
-        FitsSerializer.Write(builder, value, AppFitsContext.Default.DirectCompositeFile);
+        FitsSerializer.Write(builder, value);
         using var composed = new MemoryStream();
         builder.Write(composed);
 

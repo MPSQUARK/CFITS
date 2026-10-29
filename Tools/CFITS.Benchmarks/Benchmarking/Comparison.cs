@@ -191,9 +191,7 @@ internal static class Comparison
         for (int index = 0; index < files.Count; index++)
         {
             using var stream = File.OpenRead(files[index]);
-            GeneratedWholeFile value = FitsSerializer.Read(
-                stream,
-                GeneratedBenchmarkContext.Default.GeneratedWholeFile);
+            GeneratedWholeFile value = FitsSerializer.Read<GeneratedWholeFile>(stream);
             GC.KeepAlive(value.Hdus.Count);
         }
     }
@@ -204,14 +202,9 @@ internal static class Comparison
         {
             using var input = File.OpenRead(files[index]);
             long length = input.Length;
-            GeneratedWholeFile value = FitsSerializer.Read(
-                input,
-                GeneratedBenchmarkContext.Default.GeneratedWholeFile);
+            GeneratedWholeFile value = FitsSerializer.Read<GeneratedWholeFile>(input);
             using var output = new MemoryStream(length <= int.MaxValue ? (int)length : 0);
-            FitsSerializer.Write(
-                output,
-                value,
-                GeneratedBenchmarkContext.Default.GeneratedWholeFile);
+            FitsSerializer.Write(output, value);
             GC.KeepAlive(output.Length);
         }
     }
@@ -279,6 +272,78 @@ internal static class Comparison
         var (regular, readWrite) = ReadComparisonCsv(csvPath);
         SavePlots(regular, readWrite, root);
         Console.WriteLine($"Plots: {Path.Combine(root, "Benchmarks", "Plots")}");
+    }
+
+    public static void PlotApiMigration(string root)
+    {
+        string results = Path.Combine(root, "Benchmarks", "Results");
+        string beforePath = Path.Combine(results, "fits-comparison-before-api.csv");
+        string afterPath = Path.Combine(results, "fits-comparison.csv");
+        if (!File.Exists(beforePath))
+        {
+            throw new FileNotFoundException("Missing baseline CSV. Save HEAD results to fits-comparison-before-api.csv first.", beforePath);
+        }
+
+        if (!File.Exists(afterPath))
+        {
+            throw new FileNotFoundException("Missing current CSV. Run --compare first.", afterPath);
+        }
+
+        IReadOnlyList<Row> migration = BuildMigrationRows(
+            ReadComparisonCsv(beforePath),
+            ReadComparisonCsv(afterPath));
+        if (migration.Count == 0)
+        {
+            throw new InvalidOperationException("No source-generator scenarios matched between baseline and current CSV.");
+        }
+
+        string plots = Path.Combine(root, "Benchmarks", "Plots");
+        Directory.CreateDirectory(plots);
+        var series = new (string Name, Color Color, Func<Row, Sample?> Value)[]
+        {
+            ("Context API (SG)", Color.FromHex("#9a7bc8"), row => row.Cfits),
+            ("Document API (SG)", GeneratedColor, row => row.Generated),
+        };
+        SaveComparison(
+            migration,
+            series,
+            Path.Combine(plots, "fits-api-migration-speed.png"),
+            row => row.Cfits.MeanMilliseconds,
+            "Time (μs)");
+        SaveComparison(
+            migration,
+            series,
+            Path.Combine(plots, "fits-api-migration-memory.png"),
+            row => row.Cfits.MeanAllocatedBytes,
+            "Allocated memory (KiB)",
+            memory: true);
+        Console.WriteLine($"API migration plots: {plots}");
+    }
+
+    private static IReadOnlyList<Row> BuildMigrationRows(
+        (IReadOnlyList<Row> Regular, IReadOnlyList<Row> ReadWrite) before,
+        (IReadOnlyList<Row> Regular, IReadOnlyList<Row> ReadWrite) after)
+    {
+        var lookup = after.Regular.Concat(after.ReadWrite).ToDictionary(static row => row.Label, StringComparer.Ordinal);
+        var rows = new List<Row>();
+        foreach (Row previous in before.Regular.Concat(before.ReadWrite))
+        {
+            if (previous.Generated is null || !lookup.TryGetValue(previous.Label, out Row current) || current.Generated is null)
+            {
+                continue;
+            }
+
+            rows.Add(new Row(
+                previous.Label,
+                previous.Key,
+                previous.Generated.Value,
+                current.Generated,
+                null,
+                null,
+                previous.IsReadWrite));
+        }
+
+        return rows;
     }
 
     private static (IReadOnlyList<Row> Regular, IReadOnlyList<Row> ReadWrite) ReadComparisonCsv(string path)
@@ -442,19 +507,15 @@ internal static class Comparison
     private static void GeneratedReadShortImage(string path)
     {
         using var stream = File.OpenRead(path);
-        GeneratedShortImage image = FitsSerializer.Read(
-            stream,
-            GeneratedBenchmarkContext.Default.GeneratedShortImage);
-        _ = image.Pixels!.Length;
+        GeneratedShortImageFile image = FitsSerializer.Read<GeneratedShortImageFile>(stream);
+        _ = image.Image.Pixels!.Length;
     }
 
     private static void GeneratedSumShortImage(string path)
     {
         using var stream = File.OpenRead(path);
-        GeneratedShortImage image = FitsSerializer.Read(
-            stream,
-            GeneratedBenchmarkContext.Default.GeneratedShortImage);
-        short[,] pixels = image.Pixels!;
+        GeneratedShortImageFile image = FitsSerializer.Read<GeneratedShortImageFile>(stream);
+        short[,] pixels = image.Image.Pixels!;
         long sum = 0;
         for (int row = 0; row < pixels.GetLength(0); row++)
         {
@@ -470,10 +531,8 @@ internal static class Comparison
     private static void GeneratedSumFloatImage(string path)
     {
         using var stream = File.OpenRead(path);
-        GeneratedFloatImage image = FitsSerializer.Read(
-            stream,
-            GeneratedBenchmarkContext.Default.GeneratedFloatImage);
-        float[,] pixels = image.Pixels!;
+        GeneratedFloatImageFile image = FitsSerializer.Read<GeneratedFloatImageFile>(stream);
+        float[,] pixels = image.Image.Pixels!;
         double sum = 0;
         for (int row = 0; row < pixels.GetLength(0); row++)
         {
@@ -489,9 +548,7 @@ internal static class Comparison
     private static void GeneratedSumFlux(string path)
     {
         using var stream = File.OpenRead(path);
-        IReadOnlyList<GeneratedFluxRow> rows = FitsSerializer.Read(
-            stream,
-            GeneratedBenchmarkContext.Default.GeneratedFluxRow);
+        IReadOnlyList<GeneratedFluxRow> rows = FitsSerializer.Read<GeneratedFluxFile>(stream).Table.Rows;
         double sum = 0;
         for (int index = 0; index < rows.Count; index++)
         {
@@ -504,9 +561,7 @@ internal static class Comparison
     private static void GeneratedSumAscii(string path)
     {
         using var stream = File.OpenRead(path);
-        IReadOnlyList<GeneratedAsciiRow> rows = FitsSerializer.Read(
-            stream,
-            GeneratedBenchmarkContext.Default.GeneratedAsciiRow);
+        IReadOnlyList<GeneratedAsciiRow> rows = FitsSerializer.Read<GeneratedAsciiFile>(stream).Table.Rows;
         double sum = 0;
         for (int index = 0; index < rows.Count; index++)
         {
@@ -519,9 +574,7 @@ internal static class Comparison
     private static void GeneratedSumVariable(string path)
     {
         using var stream = File.OpenRead(path);
-        IReadOnlyList<GeneratedVariableRow> rows = FitsSerializer.Read(
-            stream,
-            GeneratedBenchmarkContext.Default.GeneratedVariableRow);
+        IReadOnlyList<GeneratedVariableRow> rows = FitsSerializer.Read<GeneratedVariableFile>(stream).Table.Rows;
         long sum = 0;
         for (int row = 0; row < rows.Count; row++)
         {
@@ -538,10 +591,8 @@ internal static class Comparison
     private static void GeneratedSumFloatCompressed(string path)
     {
         using var stream = File.OpenRead(path);
-        GeneratedCompressedImage image = FitsSerializer.Read(
-            stream,
-            GeneratedBenchmarkContext.Default.GeneratedCompressedImage);
-        Span<float> pixels = FitsEndian.AsContiguous(image.Pixels!);
+        GeneratedCompressedImageFile image = FitsSerializer.Read<GeneratedCompressedImageFile>(stream);
+        Span<float> pixels = FitsEndian.AsContiguous(image.Image.Pixels!);
         double sum = 0;
         for (int index = 0; index < pixels.Length; index++)
         {
@@ -554,10 +605,8 @@ internal static class Comparison
     private static void GeneratedSumShortCompressed(string path)
     {
         using var stream = File.OpenRead(path);
-        GeneratedCompressedShortImage image = FitsSerializer.Read(
-            stream,
-            GeneratedBenchmarkContext.Default.GeneratedCompressedShortImage);
-        Span<short> pixels = FitsEndian.AsContiguous(image.Pixels!);
+        GeneratedCompressedShortImageFile image = FitsSerializer.Read<GeneratedCompressedShortImageFile>(stream);
+        Span<short> pixels = FitsEndian.AsContiguous(image.Image.Pixels!);
         long sum = 0;
         for (int index = 0; index < pixels.Length; index++)
         {
@@ -575,16 +624,17 @@ internal static class Comparison
     private static void GeneratedReadFloatImage(string path)
     {
         using var stream = File.OpenRead(path);
-        GeneratedFloatImage image = FitsSerializer.Read(
-            stream,
-            GeneratedBenchmarkContext.Default.GeneratedFloatImage);
-        _ = image.Pixels?.Length;
+        GeneratedFloatImageFile image = FitsSerializer.Read<GeneratedFloatImageFile>(stream);
+        _ = image.Image.Pixels?.Length;
     }
 
     private static void GeneratedWrite()
     {
-        var image = new GeneratedShortImage { Pixels = new short[512, 512] };
-        short[,] pixels = image.Pixels;
+        var image = new GeneratedShortImageFile
+        {
+            Image = new GeneratedShortImage { Pixels = new short[512, 512] },
+        };
+        short[,] pixels = image.Image.Pixels!;
         for (int row = 0; row < pixels.GetLength(0); row++)
         {
             for (int column = 0; column < pixels.GetLength(1); column++)
@@ -594,10 +644,7 @@ internal static class Comparison
         }
 
         using var stream = new MemoryStream();
-        FitsSerializer.Write(
-            stream,
-            image,
-            GeneratedBenchmarkContext.Default.GeneratedShortImage);
+        FitsSerializer.Write(stream, image);
         _ = stream.Length;
     }
 

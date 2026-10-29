@@ -19,19 +19,18 @@ public sealed class DocumentSpecTests
             .Build();
 
         using var input = new MemoryStream(source.ToArray());
-        InterleavedHduFile value = FitsSerializer.Read(
-            input, AppFitsContext.Default.InterleavedHduFile);
+        InterleavedHduFile value = FitsSerializer.Read<InterleavedHduFile>(input);
 
-        Assert.Equal(1.5, value.Primary.ExposureSeconds);
-        Assert.Single(value.Events);
-        Assert.Equal(8, value.Events[0].Channel);
+        Assert.Equal(1.5, value.Keywords.ExposureSeconds);
+        Assert.Single(value.Events.Rows);
+        Assert.Equal(8, value.Events.Rows[0].Channel);
         Assert.Equal(2, value.Unknown.Count);
         Assert.Equal(
             new byte[] { 7, 9 },
             value.Unknown.Select(snapshot => snapshot.DataBytes.Span[0]).ToArray());
 
         using var output = new MemoryStream();
-        FitsSerializer.Write(output, value, AppFitsContext.Default.InterleavedHduFile);
+        FitsSerializer.Write(output, value);
         using var roundTrip = FitsDocument.Parse(output.ToArray());
 
         Assert.Equal(
@@ -60,15 +59,15 @@ public sealed class DocumentSpecTests
             .Build();
 
         using var input = new MemoryStream(source.ToArray());
-        MultiHduFile value = FitsSerializer.Read(input, AppFitsContext.Default.MultiHduFile);
+        MultiHduFile value = FitsSerializer.Read<MultiHduFile>(input);
 
-        Assert.Equal(6.25, value.Primary.ExposureSeconds);
-        Assert.Equal(new[] { 3.25f, 4.5f }, value.Primary.Pixels!.Cast<float>());
-        Assert.Equal(new[] { 2, 4 }, value.Events.Select(row => row.Channel));
+        Assert.Equal(6.25, value.Keywords.ExposureSeconds);
+        Assert.Equal(new[] { 3.25f, 4.5f }, value.Image.Pixels!.Cast<float>());
+        Assert.Equal(new[] { 2, 4 }, value.Events.Rows.Select(row => row.Channel));
         Assert.Equal(special, value.SpecialRecords.ToArray());
 
         using var output = new MemoryStream();
-        FitsSerializer.Write(output, value, AppFitsContext.Default.MultiHduFile);
+        FitsSerializer.Write(output, value);
         using var result = FitsDocument.Parse(output.ToArray());
 
         Assert.Equal(special, result.SnapshotSpecialRecords().ToArray());
@@ -123,19 +122,19 @@ public sealed class DocumentSpecTests
 
         var value = new DirectCompositeFile
         {
-            Image = new Exposure
+            Keywords = new ExposureKeywords { ExposureSeconds = 12.75 },
+            Image = new ExposureImage
             {
-                ExposureSeconds = 12.75,
                 Pixels = new float[,] { { 1, 2 }, { 3, 4 } },
             },
-            Events = [new EventRow { Time = 5.5, Channel = 6 }],
+            Events = new EventTable { Rows = [new EventRow { Time = 5.5, Channel = 6 }] },
         };
         string path = Path.Combine(Path.GetTempPath(), $"cfits-document-spec-{Guid.NewGuid():N}.fits");
         try
         {
             using (var stream = File.Create(path))
             {
-                FitsSerializer.Write(stream, value, AppFitsContext.Default.DirectCompositeFile);
+                FitsSerializer.Write(stream, value);
             }
 
             RunAstropy(python, path);

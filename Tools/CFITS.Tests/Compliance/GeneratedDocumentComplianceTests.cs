@@ -16,17 +16,17 @@ public sealed class GeneratedDocumentComplianceTests
         InterleavedHduFile value;
         using (var input = new MemoryStream(source.ToArray()))
         {
-            value = FitsSerializer.Read(input, AppFitsContext.Default.InterleavedHduFile);
+            value = FitsSerializer.Read<InterleavedHduFile>(input);
         }
 
-        Assert.Equal(6.25, value.Primary.ExposureSeconds);
-        Assert.Single(value.Events);
-        Assert.Equal(4, value.Events[0].Channel);
+        Assert.Equal(6.25, value.Keywords.ExposureSeconds);
+        Assert.Single(value.Events.Rows);
+        Assert.Equal(4, value.Events.Rows[0].Channel);
         Assert.Single(value.Unknown);
         Assert.Equal(7, value.Unknown[0].DataBytes.Span[0]);
 
         using var output = new MemoryStream();
-        FitsSerializer.Write(output, value, AppFitsContext.Default.InterleavedHduFile);
+        FitsSerializer.Write(output, value);
         using var roundTrip = FitsDocument.Parse(output.ToArray());
 
         Assert.Equal(

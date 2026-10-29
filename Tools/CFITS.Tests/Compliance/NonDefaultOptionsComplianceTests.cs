@@ -14,12 +14,11 @@ public sealed class NonDefaultOptionsComplianceTests
             .Build();
 
         using var stream = new MemoryStream(source.ToArray());
-        Exposure result = FitsSerializer.Read(
+        ExposureFile result = FitsSerializer.Read<ExposureFile>(
             stream,
-            AppFitsContext.Default.Exposure,
             new FitsOpenOptions { ScaleMode = FitsScaleMode.Stored });
 
-        Assert.Equal(new[] { -2f, 3f }, result.Pixels!.Cast<float>());
+        Assert.Equal(new[] { -2f, 3f }, result.Image.Pixels!.Cast<float>());
     }
 
     [Fact]
@@ -33,9 +32,8 @@ public sealed class NonDefaultOptionsComplianceTests
         corrupted[^1] ^= 0x01;
 
         using var stream = new MemoryStream(corrupted);
-        Assert.Throws<FitsException>(() => FitsSerializer.Read(
+        Assert.Throws<FitsException>(() => FitsSerializer.Read<ExposureFile>(
             stream,
-            AppFitsContext.Default.Exposure,
             new FitsOpenOptions { VerifyChecksum = true }));
     }
 }

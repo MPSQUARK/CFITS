@@ -12,11 +12,11 @@ public sealed class GeneratedFloatVectorTableComplianceTests
         };
 
         using var stream = new MemoryStream();
-        FitsSerializer.Write(stream, rows, ComplianceFitsContext.Default.FloatVectorRow);
+        FitsSerializer.Write(stream, new FloatVectorFile { Table = new FloatVectorTable { Rows = rows } });
         stream.Position = 0;
 
         IReadOnlyList<FloatVectorRow> result =
-            FitsSerializer.Read(stream, ComplianceFitsContext.Default.FloatVectorRow);
+            FitsSerializer.Read<FloatVectorFile>(stream).Table.Rows;
 
         Assert.Equal(rows.Length, result.Count);
         for (int index = 0; index < rows.Length; index++)

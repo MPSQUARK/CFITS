@@ -6,7 +6,7 @@ internal static class GeneratedSerializationBenchmarks
 
     public static IReadOnlyList<TargetedScenario> CreateScenarios()
     {
-        GeneratedExposure imageValue = CreateImageValue();
+        GeneratedExposureFile imageValue = CreateImageValue();
         byte[] image = CreateImage();
         GeneratedCompositeFile compositeValue = CreateCompositeValue(imageValue);
         byte[] composite = CreateComposite(compositeValue);
@@ -46,44 +46,45 @@ internal static class GeneratedSerializationBenchmarks
         return scenarios;
     }
 
-    private static GeneratedCompositeFile CreateCompositeValue(GeneratedExposure image)
+    private static GeneratedCompositeFile CreateCompositeValue(GeneratedExposureFile image)
     {
         return new GeneratedCompositeFile
         {
-            Image = image,
-            Events = CreateTableRows(1_000),
+            Keywords = image.Keywords,
+            Image = image.Image,
+            Events = new GeneratedEventTable { Rows = CreateTableRows(1_000) },
         };
     }
 
     private static byte[] CreateComposite(GeneratedCompositeFile value)
     {
         using var stream = new MemoryStream();
-        FitsSerializer.Write(stream, value, GeneratedBenchmarkContext.Default.GeneratedCompositeFile);
+        FitsSerializer.Write(stream, value);
         return stream.ToArray();
     }
 
-    private static GeneratedExposure CreateImageValue()
+    private static GeneratedExposureFile CreateImageValue()
     {
-        var value = new GeneratedExposure
+        var pixels = new float[64, 64];
+        for (int row = 0; row < pixels.GetLength(0); row++)
         {
-            ExposureSeconds = 12.5,
-            Pixels = new float[64, 64],
-        };
-        for (int row = 0; row < value.Pixels.GetLength(0); row++)
-        {
-            for (int column = 0; column < value.Pixels.GetLength(1); column++)
+            for (int column = 0; column < pixels.GetLength(1); column++)
             {
-                value.Pixels[row, column] = row + (column * 0.25f);
+                pixels[row, column] = row + (column * 0.25f);
             }
         }
 
-        return value;
+        return new GeneratedExposureFile
+        {
+            Keywords = new GeneratedExposureKeywords { ExposureSeconds = 12.5 },
+            Image = new GeneratedExposure { Pixels = pixels },
+        };
     }
 
     private static byte[] CreateImage()
     {
         using var stream = new MemoryStream();
-        FitsSerializer.Write(stream, CreateImageValue(), GeneratedBenchmarkContext.Default.GeneratedExposure);
+        FitsSerializer.Write(stream, CreateImageValue());
         return stream.ToArray();
     }
 
@@ -105,7 +106,10 @@ internal static class GeneratedSerializationBenchmarks
     private static byte[] CreateTable(int rowCount)
     {
         using var stream = new MemoryStream();
-        FitsSerializer.Write(stream, CreateTableRows(rowCount), GeneratedBenchmarkContext.Default.GeneratedEventRow);
+        FitsSerializer.Write(stream, new GeneratedEventFile
+        {
+            Events = new GeneratedEventTable { Rows = CreateTableRows(rowCount) },
+        });
         return stream.ToArray();
     }
 
@@ -122,7 +126,10 @@ internal static class GeneratedSerializationBenchmarks
         }
 
         using var stream = new MemoryStream();
-        FitsSerializer.Write(stream, rows, GeneratedBenchmarkContext.Default.GeneratedVariableDoubleRow);
+        FitsSerializer.Write(stream, new GeneratedVariableDoubleFile
+        {
+            Table = new GeneratedVariableDoubleTable { Rows = rows },
+        });
         return stream.ToArray();
     }
 
@@ -139,71 +146,73 @@ internal static class GeneratedSerializationBenchmarks
         }
 
         using var stream = new MemoryStream();
-        FitsSerializer.Write(stream, rows, GeneratedBenchmarkContext.Default.GeneratedVariableIntRow);
+        FitsSerializer.Write(stream, new GeneratedVariableIntFile
+        {
+            Table = new GeneratedVariableIntTable { Rows = rows },
+        });
         return stream.ToArray();
     }
 
-    private static void WriteGeneratedImage(GeneratedExposure value)
+    private static void WriteGeneratedImage(GeneratedExposureFile value)
     {
         using var stream = new MemoryStream();
-        FitsSerializer.Write(stream, value, GeneratedBenchmarkContext.Default.GeneratedExposure);
+        FitsSerializer.Write(stream, value);
         _sink = stream.Length;
     }
 
-    private static void WriteGeneratedImageBuilder(GeneratedExposure value)
+    private static void WriteGeneratedImageBuilder(GeneratedExposureFile value)
     {
         var builder = FitsDocumentBuilder.Create();
-        FitsSerializer.Write(builder, value, GeneratedBenchmarkContext.Default.GeneratedExposure);
+        FitsSerializer.Write(builder, value);
         _sink = builder.Build().ToArray().Length;
     }
 
     private static void WriteGeneratedTable(IReadOnlyList<GeneratedEventRow> rows)
     {
         using var stream = new MemoryStream();
-        FitsSerializer.Write(stream, rows, GeneratedBenchmarkContext.Default.GeneratedEventRow);
+        FitsSerializer.Write(stream, new GeneratedEventFile { Events = new GeneratedEventTable { Rows = rows } });
         _sink = stream.Length;
     }
 
     private static void WriteGeneratedTableBuilder(IReadOnlyList<GeneratedEventRow> rows)
     {
         var builder = FitsDocumentBuilder.Create();
-        FitsSerializer.Write(builder, rows, GeneratedBenchmarkContext.Default.GeneratedEventRow);
+        FitsSerializer.Write(builder, new GeneratedEventFile { Events = new GeneratedEventTable { Rows = rows } });
         _sink = builder.Build().ToArray().Length;
     }
 
     private static void WriteGeneratedComposite(GeneratedCompositeFile value)
     {
         using var stream = new MemoryStream();
-        FitsSerializer.Write(stream, value, GeneratedBenchmarkContext.Default.GeneratedCompositeFile);
+        FitsSerializer.Write(stream, value);
         _sink = stream.Length;
     }
 
     private static void WriteGeneratedCompositeBuilder(GeneratedCompositeFile value)
     {
         var builder = FitsDocumentBuilder.Create();
-        FitsSerializer.Write(builder, value.Image, GeneratedBenchmarkContext.Default.GeneratedExposure);
-        FitsSerializer.Write(builder, value.Events, GeneratedBenchmarkContext.Default.GeneratedEventRow);
+        FitsSerializer.Write(builder, value);
         _sink = builder.Build().ToArray().Length;
     }
 
     private static void WriteGeneratedCompositeStaged(GeneratedCompositeFile value)
     {
         using var stream = new MemoryStream();
-        CreateImageBuilder(value.Image)
+        CreateImageBuilder(value.Keywords, value.Image)
             .BinaryTable(
                 new BinaryTableBuilder()
-                    .Add("TIME", value.Events.Select(row => row.Time).ToArray())
-                    .Add("PHA", value.Events.Select(row => row.Channel).ToArray()),
+                    .Add("TIME", value.Events.Rows.Select(row => row.Time).ToArray())
+                    .Add("PHA", value.Events.Rows.Select(row => row.Channel).ToArray()),
                 header => header.Text("EXTNAME", "EVENTS"))
             .Build()
             .Write(stream);
         _sink = stream.Length;
     }
 
-    private static void WriteGeneratedImageStaged(GeneratedExposure value)
+    private static void WriteGeneratedImageStaged(GeneratedExposureFile value)
     {
         using var stream = new MemoryStream();
-        CreateImageBuilder(value).Build().Write(stream);
+        CreateImageBuilder(value.Keywords, value.Image).Build().Write(stream);
         _sink = stream.Length;
     }
 
@@ -214,9 +223,9 @@ internal static class GeneratedSerializationBenchmarks
         _sink = stream.Length;
     }
 
-    private static FitsDocumentBuilder CreateImageBuilder(GeneratedExposure value)
+    private static FitsDocumentBuilder CreateImageBuilder(GeneratedExposureKeywords keywords, GeneratedExposure image)
     {
-        float[,] pixels = value.Pixels!;
+        float[,] pixels = image.Pixels!;
         int n2 = pixels.GetLength(0);
         int n1 = pixels.GetLength(1);
         var stored = new float[n1 * n2];
@@ -230,7 +239,7 @@ internal static class GeneratedSerializationBenchmarks
 
         return FitsDocumentBuilder.Create().Image([n1, n2], stored, header =>
         {
-            header.Real("EXPTIME", value.ExposureSeconds);
+            header.Real("EXPTIME", keywords.ExposureSeconds);
             header.Text("EXTNAME", "EXPOSURE");
         });
     }
@@ -254,8 +263,8 @@ internal static class GeneratedSerializationBenchmarks
     private static void ReadGeneratedImage(byte[] data)
     {
         using var stream = new MemoryStream(data, writable: false);
-        GeneratedExposure value = FitsSerializer.Read(stream, GeneratedBenchmarkContext.Default.GeneratedExposure);
-        _sink = value.ExposureSeconds + value.Pixels![0, 0] + value.Pixels[63, 63];
+        GeneratedExposureFile value = FitsSerializer.Read<GeneratedExposureFile>(stream);
+        _sink = value.Keywords.ExposureSeconds + value.Image.Pixels![0, 0] + value.Image.Pixels[63, 63];
     }
 
     private static void ReadRuntimeImage(byte[] data)
@@ -273,36 +282,30 @@ internal static class GeneratedSerializationBenchmarks
             }
         }
 
-        var value = new GeneratedExposure
-        {
-            ExposureSeconds = hdu.Header.GetDouble("EXPTIME"),
-            Pixels = pixels,
-        };
-        _sink = value.ExposureSeconds
-            + value.Pixels[0, 0]
-            + value.Pixels[value.Pixels.GetLength(0) - 1, value.Pixels.GetLength(1) - 1];
+        double exposureSeconds = hdu.Header.GetDouble("EXPTIME");
+        _sink = exposureSeconds
+            + pixels[0, 0]
+            + pixels[pixels.GetLength(0) - 1, pixels.GetLength(1) - 1];
     }
 
     private static void ReadGeneratedTable(byte[] data)
     {
         using var stream = new MemoryStream(data, writable: false);
-        IReadOnlyList<GeneratedEventRow> rows = FitsSerializer.Read(stream, GeneratedBenchmarkContext.Default.GeneratedEventRow);
+        IReadOnlyList<GeneratedEventRow> rows = FitsSerializer.Read<GeneratedEventFile>(stream).Events.Rows;
         _sink = rows[0].Time + rows[^1].Channel;
     }
 
     private static void ReadGeneratedComposite(byte[] data)
     {
         using var stream = new MemoryStream(data, writable: false);
-        GeneratedCompositeFile value = FitsSerializer.Read(
-            stream, GeneratedBenchmarkContext.Default.GeneratedCompositeFile);
-        _sink = value.Image.ExposureSeconds + value.Events[0].Channel + value.Events[^1].Time;
+        GeneratedCompositeFile value = FitsSerializer.Read<GeneratedCompositeFile>(stream);
+        _sink = value.Keywords.ExposureSeconds + value.Events.Rows[0].Channel + value.Events.Rows[^1].Time;
     }
 
     private static void ReadGeneratedVariableDouble(byte[] data)
     {
         using var stream = new MemoryStream(data, writable: false);
-        IReadOnlyList<GeneratedVariableDoubleRow> rows = FitsSerializer.Read(
-            stream, GeneratedBenchmarkContext.Default.GeneratedVariableDoubleRow);
+        IReadOnlyList<GeneratedVariableDoubleRow> rows = FitsSerializer.Read<GeneratedVariableDoubleFile>(stream).Table.Rows;
         _sink = rows[0].Values[0] + rows[^1].Values[^1];
     }
 
@@ -366,8 +369,7 @@ internal static class GeneratedSerializationBenchmarks
     private static void ReadGeneratedVariableInt(byte[] data)
     {
         using var stream = new MemoryStream(data, writable: false);
-        IReadOnlyList<GeneratedVariableIntRow> rows = FitsSerializer.Read(
-            stream, GeneratedBenchmarkContext.Default.GeneratedVariableIntRow);
+        IReadOnlyList<GeneratedVariableIntRow> rows = FitsSerializer.Read<GeneratedVariableIntFile>(stream).Table.Rows;
         _sink = rows[0].Values[0] + rows[^1].Values[^1];
     }
 

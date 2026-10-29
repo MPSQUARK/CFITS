@@ -11,6 +11,8 @@
   </ItemGroup>
   <ItemGroup>
     <Using Include="Xunit" />
+    <Using Include="CFITS.Tests.Serialization.Models" />
+    <Using Include="CFITS.Tests.Compliance.Models" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\..\Source\CFITS\CFITS.csproj" />

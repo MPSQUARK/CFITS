@@ -27,6 +27,12 @@ public static class Program
             return;
         }
 
+        if (args.Contains("--api-migration-plot"))
+        {
+            Comparison.PlotApiMigration(FitsScenarios.FindRoot());
+            return;
+        }
+
         if (args.Contains("--targeted"))
         {
             TargetedBenchmarks.Run();

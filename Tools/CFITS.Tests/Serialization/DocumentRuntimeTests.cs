@@ -1,4 +1,4 @@
-namespace CFITS.Tests;
+namespace CFITS.Tests.Serialization;
 
 public sealed class DocumentRuntimeTests
 {
@@ -89,7 +89,6 @@ public sealed class DocumentRuntimeTests
             .GetCustomAttributes(typeof(FitsTableAttribute), inherit: false).Single());
     }
 
-    [FitsDocumentModel]
     private sealed class DocumentModel
     {
         [FitsImage("IMAGE")]
