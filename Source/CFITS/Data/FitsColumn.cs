@@ -2,6 +2,8 @@ using System.Buffers.Binary;
 using System.Buffers.Text;
 using System.Globalization;
 using System.Numerics;
+using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
 using System.Text;
 
 namespace CFITS;
@@ -217,11 +219,13 @@ public sealed class FitsColumn
     private void CopyInt16Rows<T>(Span<T> destination)
         where T : INumber<T>
     {
-        int start = _offset;
         ReadOnlySpan<byte> data = _data.Span;
+        EnsureLastCell(data, sizeof(short));
+        ref byte origin = ref MemoryMarshal.GetReference(data);
+        int start = _offset;
         for (int row = 0; row < _rows; row++)
         {
-            Store(destination, row, BinaryPrimitives.ReadInt16BigEndian(data.Slice(start, sizeof(short))));
+            Store(destination, row, ReadInt16At(ref origin, start));
             start += _stride;
         }
     }
@@ -229,11 +233,13 @@ public sealed class FitsColumn
     private void CopyInt32Rows<T>(Span<T> destination)
         where T : INumber<T>
     {
-        int start = _offset;
         ReadOnlySpan<byte> data = _data.Span;
+        EnsureLastCell(data, sizeof(int));
+        ref byte origin = ref MemoryMarshal.GetReference(data);
+        int start = _offset;
         for (int row = 0; row < _rows; row++)
         {
-            Store(destination, row, BinaryPrimitives.ReadInt32BigEndian(data.Slice(start, sizeof(int))));
+            Store(destination, row, ReadInt32At(ref origin, start));
             start += _stride;
         }
     }
@@ -241,11 +247,13 @@ public sealed class FitsColumn
     private void CopyInt64Rows<T>(Span<T> destination)
         where T : INumber<T>
     {
-        int start = _offset;
         ReadOnlySpan<byte> data = _data.Span;
+        EnsureLastCell(data, sizeof(long));
+        ref byte origin = ref MemoryMarshal.GetReference(data);
+        int start = _offset;
         for (int row = 0; row < _rows; row++)
         {
-            Store(destination, row, BinaryPrimitives.ReadInt64BigEndian(data.Slice(start, sizeof(long))));
+            Store(destination, row, ReadInt64At(ref origin, start));
             start += _stride;
         }
     }
@@ -358,65 +366,25 @@ public sealed class FitsColumn
             return false;
         }
 
-        bool physical = _physical;
-        int start = _offset;
         switch (_spec.Code)
         {
             case 'B':
-                for (int row = 0; row < _rows; row++)
-                {
-                    long stored = _data.Span[start];
-                    destination[row] = _null is long marker && stored == marker
-                        ? double.NaN
-                        : physical ? _zero + (_scale * stored) : stored;
-                    start += _stride;
-                }
+                CopyScaledBytes(destination);
                 break;
             case 'I':
-                for (int row = 0; row < _rows; row++)
-                {
-                    long stored = BinaryPrimitives.ReadInt16BigEndian(_data.Span.Slice(start, 2));
-                    destination[row] = _null is long marker && stored == marker
-                        ? double.NaN
-                        : physical ? _zero + (_scale * stored) : stored;
-                    start += _stride;
-                }
+                CopyScaledInt16(destination);
                 break;
             case 'J':
-                for (int row = 0; row < _rows; row++)
-                {
-                    long stored = BinaryPrimitives.ReadInt32BigEndian(_data.Span.Slice(start, 4));
-                    destination[row] = _null is long marker && stored == marker
-                        ? double.NaN
-                        : physical ? _zero + (_scale * stored) : stored;
-                    start += _stride;
-                }
+                CopyScaledInt32(destination);
                 break;
             case 'K':
-                for (int row = 0; row < _rows; row++)
-                {
-                    long stored = BinaryPrimitives.ReadInt64BigEndian(_data.Span.Slice(start, 8));
-                    destination[row] = _null is long marker && stored == marker
-                        ? double.NaN
-                        : physical ? _zero + (_scale * stored) : stored;
-                    start += _stride;
-                }
+                CopyScaledInt64(destination);
                 break;
             case 'E':
-                for (int row = 0; row < _rows; row++)
-                {
-                    double stored = BinaryPrimitives.ReadSingleBigEndian(_data.Span.Slice(start, 4));
-                    destination[row] = physical ? _zero + (_scale * stored) : stored;
-                    start += _stride;
-                }
+                CopySingles(destination);
                 break;
             case 'D':
-                for (int row = 0; row < _rows; row++)
-                {
-                    double stored = BinaryPrimitives.ReadDoubleBigEndian(_data.Span.Slice(start, 8));
-                    destination[row] = physical ? _zero + (_scale * stored) : stored;
-                    start += _stride;
-                }
+                CopyDoubles(destination);
                 break;
         }
 
@@ -425,6 +393,226 @@ public sealed class FitsColumn
 
     private FitsException NullAt(int row) =>
         new($"Column '{Name}' row {row} is null.", new FitsLocation(_hduIndex, Column: Name));
+
+    /// <summary>
+    /// Copies fixed scalar cells. The running index starts at <c>_offset</c> and advances by
+    /// <c>_stride</c> for every row. Callers only reach this after the column layout has placed
+    /// each cell inside <c>_data</c>. One bounds check covers the last cell; later reads use that
+    /// proven range. Little-endian hosts reverse each big-endian cell. Identity scale stores the
+    /// cell unchanged; physical scale applies <c>zero + scale * stored</c>.
+    /// </summary>
+    private void CopyDoubles(Span<double> destination)
+    {
+        ReadOnlySpan<byte> data = _data.Span;
+        const int width = sizeof(double);
+        EnsureLastCell(data, width);
+        bool identity = !_physical || (_scale == 1d && _zero == 0d);
+        if (_stride == width)
+        {
+            FitsEndian.ReadDouble(data.Slice(_offset, checked(_rows * width)), destination);
+            if (!identity)
+            {
+                ApplyScale(destination);
+            }
+
+            return;
+        }
+
+        ref byte origin = ref MemoryMarshal.GetReference(data);
+        int start = _offset;
+        if (identity)
+        {
+            for (int row = 0; row < _rows; row++)
+            {
+                destination[row] = ReadDoubleAt(ref origin, start);
+                start += _stride;
+            }
+
+            return;
+        }
+
+        double scale = _scale;
+        double zero = _zero;
+        for (int row = 0; row < _rows; row++)
+        {
+            destination[row] = zero + (scale * ReadDoubleAt(ref origin, start));
+            start += _stride;
+        }
+    }
+
+    private void CopySingles(Span<double> destination)
+    {
+        ReadOnlySpan<byte> data = _data.Span;
+        const int width = sizeof(float);
+        EnsureLastCell(data, width);
+        bool identity = !_physical || (_scale == 1d && _zero == 0d);
+        ref byte origin = ref MemoryMarshal.GetReference(data);
+        int start = _offset;
+        if (identity)
+        {
+            for (int row = 0; row < _rows; row++)
+            {
+                destination[row] = ReadSingleAt(ref origin, start);
+                start += _stride;
+            }
+
+            return;
+        }
+
+        double scale = _scale;
+        double zero = _zero;
+        for (int row = 0; row < _rows; row++)
+        {
+            destination[row] = zero + (scale * ReadSingleAt(ref origin, start));
+            start += _stride;
+        }
+    }
+
+    private void CopyScaledBytes(Span<double> destination)
+    {
+        ReadOnlySpan<byte> data = _data.Span;
+        EnsureLastCell(data, 1);
+        bool identity = !_physical || (_scale == 1d && _zero == 0d);
+        long? marker = _null;
+        int start = _offset;
+        for (int row = 0; row < _rows; row++)
+        {
+            long stored = data[start];
+            destination[row] = marker is long nullValue && stored == nullValue
+                ? double.NaN
+                : identity ? stored : _zero + (_scale * stored);
+            start += _stride;
+        }
+    }
+
+    private void CopyScaledInt16(Span<double> destination)
+    {
+        ReadOnlySpan<byte> data = _data.Span;
+        EnsureLastCell(data, sizeof(short));
+        bool identity = !_physical || (_scale == 1d && _zero == 0d);
+        long? marker = _null;
+        ref byte origin = ref MemoryMarshal.GetReference(data);
+        int start = _offset;
+        double scale = _scale;
+        double zero = _zero;
+        for (int row = 0; row < _rows; row++)
+        {
+            long stored = ReadInt16At(ref origin, start);
+            destination[row] = marker is long nullValue && stored == nullValue
+                ? double.NaN
+                : identity ? stored : zero + (scale * stored);
+            start += _stride;
+        }
+    }
+
+    private void CopyScaledInt32(Span<double> destination)
+    {
+        ReadOnlySpan<byte> data = _data.Span;
+        EnsureLastCell(data, sizeof(int));
+        bool identity = !_physical || (_scale == 1d && _zero == 0d);
+        long? marker = _null;
+        ref byte origin = ref MemoryMarshal.GetReference(data);
+        int start = _offset;
+        double scale = _scale;
+        double zero = _zero;
+        for (int row = 0; row < _rows; row++)
+        {
+            long stored = ReadInt32At(ref origin, start);
+            destination[row] = marker is long nullValue && stored == nullValue
+                ? double.NaN
+                : identity ? stored : zero + (scale * stored);
+            start += _stride;
+        }
+    }
+
+    private void CopyScaledInt64(Span<double> destination)
+    {
+        ReadOnlySpan<byte> data = _data.Span;
+        EnsureLastCell(data, sizeof(long));
+        bool identity = !_physical || (_scale == 1d && _zero == 0d);
+        long? marker = _null;
+        ref byte origin = ref MemoryMarshal.GetReference(data);
+        int start = _offset;
+        double scale = _scale;
+        double zero = _zero;
+        for (int row = 0; row < _rows; row++)
+        {
+            long stored = ReadInt64At(ref origin, start);
+            destination[row] = marker is long nullValue && stored == nullValue
+                ? double.NaN
+                : identity ? stored : zero + (scale * stored);
+            start += _stride;
+        }
+    }
+
+    private void ApplyScale(Span<double> destination)
+    {
+        double scale = _scale;
+        double zero = _zero;
+        for (int row = 0; row < destination.Length; row++)
+        {
+            destination[row] = zero + (scale * destination[row]);
+        }
+    }
+
+    private void EnsureLastCell(ReadOnlySpan<byte> data, int width)
+    {
+        if (_rows == 0)
+        {
+            return;
+        }
+
+        long last = (long)_offset + ((long)(_rows - 1) * _stride);
+        if (last < 0 || (uint)width > (uint)data.Length || last > (long)data.Length - width)
+        {
+            _ = data.Slice(data.Length, 1);
+        }
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static double ReadDoubleAt(ref byte origin, int start)
+    {
+        long bits = Unsafe.ReadUnaligned<long>(ref Unsafe.Add(ref origin, (nint)start));
+        if (BitConverter.IsLittleEndian)
+        {
+            bits = BinaryPrimitives.ReverseEndianness(bits);
+        }
+
+        return BitConverter.Int64BitsToDouble(bits);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static double ReadSingleAt(ref byte origin, int start)
+    {
+        int bits = Unsafe.ReadUnaligned<int>(ref Unsafe.Add(ref origin, (nint)start));
+        if (BitConverter.IsLittleEndian)
+        {
+            bits = BinaryPrimitives.ReverseEndianness(bits);
+        }
+
+        return BitConverter.Int32BitsToSingle(bits);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static short ReadInt16At(ref byte origin, int start)
+    {
+        short bits = Unsafe.ReadUnaligned<short>(ref Unsafe.Add(ref origin, (nint)start));
+        return BitConverter.IsLittleEndian ? BinaryPrimitives.ReverseEndianness(bits) : bits;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static int ReadInt32At(ref byte origin, int start) 
+    {
+        int bits = Unsafe.ReadUnaligned<int>(ref Unsafe.Add(ref origin, (nint)start));
+        return BitConverter.IsLittleEndian ? BinaryPrimitives.ReverseEndianness(bits) : bits;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static long ReadInt64At(ref byte origin, int start)
+    {
+        long bits = Unsafe.ReadUnaligned<long>(ref Unsafe.Add(ref origin, (nint)start));
+        return BitConverter.IsLittleEndian ? BinaryPrimitives.ReverseEndianness(bits) : bits;
+    }
 
     public bool TryCopyReal(Span<float> destination)
     {

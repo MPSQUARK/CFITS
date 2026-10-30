@@ -35,7 +35,8 @@ internal static class DirectColumnLayout
 
         int stride = shape.Axes[0];
         int rows = shape.Axes[1];
-        int fields = checked((int)(HeaderValues.Integer(header, "TFIELDS"u8) ?? throw new FitsException("The table header is missing TFIELDS.", new FitsLocation(hduIndex, "TFIELDS"))));
+        ReadSizing(header, out long? fieldCount, out long? heapStartCard);
+        int fields = checked((int)(fieldCount ?? throw new FitsException("The table header is missing TFIELDS.", new FitsLocation(hduIndex, "TFIELDS"))));
         if (fields is < 1 or > 999)
         {
             throw new FitsException("TFIELDS must be between 1 and 999.", new FitsLocation(hduIndex, "TFIELDS"));
@@ -43,7 +44,7 @@ internal static class DirectColumnLayout
 
         long fixedRows = checked((long)stride * rows);
         long pcount = ascii ? 0 : shape.Pcount;
-        long theap = ascii ? 0 : HeaderValues.Integer(header, "THEAP"u8) ?? fixedRows;
+        long theap = ascii ? 0 : heapStartCard ?? fixedRows;
         long dataEnd = checked(fixedRows + pcount);
         if (!ascii && (pcount < 0 || theap < fixedRows || theap > dataEnd || dataEnd > data.Length))
         {
@@ -213,6 +214,34 @@ internal static class DirectColumnLayout
         }
 
         return FitsTable.FromColumns(ascii, rows, selected);
+    }
+
+    private static void ReadSizing(ReadOnlySpan<byte> header, out long? fields, out long? heap)
+    {
+        fields = null;
+        heap = null;
+        for (int offset = 0; offset + FitsBlock.CardSize <= header.Length; offset += FitsBlock.CardSize)
+        {
+            FitsCardView card = FitsCardView.Parse(header.Slice(offset, FitsBlock.CardSize), offset);
+            if (card.IsEnd)
+            {
+                return;
+            }
+
+            if (card.Kind != FitsValueKind.Integer)
+            {
+                continue;
+            }
+
+            if (card.Keyword.SequenceEqual("TFIELDS"u8))
+            {
+                fields = card.Integer;
+            }
+            else if (card.Keyword.SequenceEqual("THEAP"u8))
+            {
+                heap = card.Integer;
+            }
+        }
     }
 
     private static void RequireField(int field, int fields, int hduIndex)

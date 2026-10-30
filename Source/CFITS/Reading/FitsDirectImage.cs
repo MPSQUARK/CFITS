@@ -17,7 +17,19 @@ public static class FitsDirectImage
         out Array? pixels,
         out FitsHeader? header)
         where T : unmanaged =>
-        TryRead<T>(stream, rank, hduIndex, extensionName, options, keywords: default, out pixels, out header, materializeHeader: true);
+        TryRead<T>(stream, rank, hduIndex, extensionName, options, keywords: default, out pixels, out header, materializeHeader: true, validateRemainder: true);
+
+    public static bool TryRead<T>(
+        Stream stream,
+        int rank,
+        int hduIndex,
+        string? extensionName,
+        FitsOpenOptions options,
+        out Array? pixels,
+        out FitsHeader? header,
+        bool validateRemainder)
+        where T : unmanaged =>
+        TryRead<T>(stream, rank, hduIndex, extensionName, options, keywords: default, out pixels, out header, materializeHeader: true, validateRemainder);
 
     public static bool TryRead<T>(
         Stream stream,
@@ -27,7 +39,18 @@ public static class FitsDirectImage
         FitsOpenOptions options,
         out Array? pixels)
         where T : unmanaged =>
-        TryRead<T>(stream, rank, hduIndex, extensionName, options, keywords: default, out pixels, out _, materializeHeader: false);
+        TryRead<T>(stream, rank, hduIndex, extensionName, options, keywords: default, out pixels, out _, materializeHeader: false, validateRemainder: true);
+
+    public static bool TryRead<T>(
+        Stream stream,
+        int rank,
+        int hduIndex,
+        string? extensionName,
+        FitsOpenOptions options,
+        out Array? pixels,
+        bool validateRemainder)
+        where T : unmanaged =>
+        TryRead<T>(stream, rank, hduIndex, extensionName, options, keywords: default, out pixels, out _, materializeHeader: false, validateRemainder);
 
     public static bool TryRead<T>(
         Stream stream,
@@ -38,7 +61,19 @@ public static class FitsDirectImage
         Span<FitsKeywordQuery> keywords,
         out Array? pixels)
         where T : unmanaged =>
-        TryRead<T>(stream, rank, hduIndex, extensionName, options, keywords, out pixels, out _, materializeHeader: false);
+        TryRead<T>(stream, rank, hduIndex, extensionName, options, keywords, out pixels, out _, materializeHeader: false, validateRemainder: true);
+
+    public static bool TryRead<T>(
+        Stream stream,
+        int rank,
+        int hduIndex,
+        string? extensionName,
+        FitsOpenOptions options,
+        Span<FitsKeywordQuery> keywords,
+        out Array? pixels,
+        bool validateRemainder)
+        where T : unmanaged =>
+        TryRead<T>(stream, rank, hduIndex, extensionName, options, keywords, out pixels, out _, materializeHeader: false, validateRemainder);
 
     private static bool TryRead<T>(
         Stream stream,
@@ -49,7 +84,8 @@ public static class FitsDirectImage
         Span<FitsKeywordQuery> keywords,
         out Array? pixels,
         out FitsHeader? header,
-        bool materializeHeader)
+        bool materializeHeader,
+        bool validateRemainder)
         where T : unmanaged
     {
         ArgumentNullException.ThrowIfNull(stream);
@@ -72,7 +108,7 @@ public static class FitsDirectImage
             try
             {
                 header = FitsHduStream.CreateHeader(opened.DetachBuffer(), opened.HeaderLength, opened.Index);
-                return ReadCompressed<T>(stream, rank, opened, header, options, out pixels);
+                return ReadCompressed<T>(stream, rank, opened, header, options, validateRemainder, out pixels);
             }
             catch
             {
@@ -121,7 +157,11 @@ public static class FitsDirectImage
             }
 
             FitsHduStream.SkipPadding(stream, opened.Shape);
-            FitsHduStream.ValidateRemainder(stream);
+            if (validateRemainder)
+            {
+                FitsHduStream.ValidateRemainder(stream);
+            }
+
             return true;
         }
         catch
@@ -141,6 +181,7 @@ public static class FitsDirectImage
         FitsHduStream.Opened opened,
         FitsHeader header,
         FitsOpenOptions options,
+        bool validateRemainder,
         out Array? pixels)
         where T : unmanaged
     {
@@ -186,7 +227,11 @@ public static class FitsDirectImage
             }
 
             FitsHduStream.SkipPadding(stream, opened.Shape);
-            FitsHduStream.ValidateRemainder(stream);
+            if (validateRemainder)
+            {
+                FitsHduStream.ValidateRemainder(stream);
+            }
+
             return true;
         }
         finally
@@ -231,24 +276,10 @@ public static class FitsDirectImage
             return;
         }
 
-        byte[] rented = ArrayPool<byte>.Shared.Rent(64 * 1024);
-        try
-        {
-            int capacity = rented.Length / width * width;
-            int filled = 0;
-            while (filled < length)
-            {
-                int count = Math.Min(length - filled, capacity / width);
-                Span<byte> source = rented.AsSpan(0, count * width);
-                stream.ReadExactly(source);
-                Decode(source, destination.Slice(filled, count));
-                filled += count;
-            }
-        }
-        finally
-        {
-            ArrayPool<byte>.Shared.Return(rented);
-        }
+        int byteCount = checked(length * width);
+        Span<byte> bytes = MemoryMarshalBytes(destination)[..byteCount];
+        stream.ReadExactly(bytes);
+        Decode(bytes, destination[..length]);
     }
 
     private static void Decode<T>(ReadOnlySpan<byte> source, Span<T> destination)

@@ -10,7 +10,7 @@ public sealed partial class FitsContextGenerator : IIncrementalGenerator
 {
     private const string NewLine = "\n";
     // Bulk copies amortize their buffers and setup only on larger tables.
-    private const int BulkReadRowThreshold = 8_192;
+    private const int BulkReadRowThreshold = 64;
 
     public void Initialize(IncrementalGeneratorInitializationContext context)
     {

@@ -136,7 +136,7 @@ public sealed partial class FitsContextGenerator
             string keywords = EmitImageKeywords(type, "__cfitsHeader", "__cfitsDirect");
             string keywordObject = EmitImageKeywordObject(type, "__cfitsHeader", "__cfitsDirectHeader");
             return $$"""
-                        if (!options.VerifyChecksum && stream.CanSeek && CFITS.FitsDirectImage.TryRead<{{element}}>(stream, {{array.Rank}}, {{type.HduIndex}}, {{nameArgument}}, options, out System.Array? __cfitsRaw, out header))
+                        if (!options.VerifyChecksum && stream.CanSeek && CFITS.FitsDirectImage.TryRead<{{element}}>(stream, {{array.Rank}}, {{type.HduIndex}}, {{nameArgument}}, options, out System.Array? __cfitsRaw, out header, false))
                         {
                             var __cfitsHeader = header!;
                             var __cfitsData = ({{element}}[{{commas}}])__cfitsRaw!;
@@ -167,7 +167,7 @@ public sealed partial class FitsContextGenerator
         string keywordArgument = keywordMembers.Count == 0 ? "" : ", __cfitsKeywords";
         return $$"""
             {{keywordPrefix}}
-                        if (!options.VerifyChecksum && stream.CanSeek && CFITS.FitsDirectImage.TryRead<{{element}}>(stream, {{array.Rank}}, {{type.HduIndex}}, {{nameArgument}}, options{{keywordArgument}}, out System.Array? __cfitsRaw))
+                        if (!options.VerifyChecksum && stream.CanSeek && CFITS.FitsDirectImage.TryRead<{{element}}>(stream, {{array.Rank}}, {{type.HduIndex}}, {{nameArgument}}, options{{keywordArgument}}, out System.Array? __cfitsRaw, false))
                         {
                             var __cfitsData = ({{element}}[{{commas}}])__cfitsRaw!;
                             return new {{type.Symbol.ToDisplayString()}}

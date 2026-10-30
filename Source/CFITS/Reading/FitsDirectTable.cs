@@ -25,7 +25,17 @@ public sealed class FitsDirectTable : IDisposable
         FitsOpenOptions options,
         ReadOnlySpan<string> columns,
         out FitsDirectTable? opened) =>
-        TryOpen(stream, hduIndex, extensionName, options, columns, requireColumns: true, materializeHeader: false, out opened, out _);
+        TryOpen(stream, hduIndex, extensionName, options, columns, requireColumns: true, materializeHeader: false, validateRemainder: true, out opened, out _);
+
+    public static bool TryOpen(
+        Stream stream,
+        int hduIndex,
+        string? extensionName,
+        FitsOpenOptions options,
+        ReadOnlySpan<string> columns,
+        bool validateRemainder,
+        out FitsDirectTable? opened) =>
+        TryOpen(stream, hduIndex, extensionName, options, columns, requireColumns: true, materializeHeader: false, validateRemainder, out opened, out _);
 
     public static bool TryOpen(
         Stream stream,
@@ -36,7 +46,19 @@ public sealed class FitsDirectTable : IDisposable
         bool requireColumns,
         out FitsDirectTable? opened,
         out FitsHeader? header) =>
-        TryOpen(stream, hduIndex, extensionName, options, columns, requireColumns, materializeHeader: true, out opened, out header);
+        TryOpen(stream, hduIndex, extensionName, options, columns, requireColumns, materializeHeader: true, validateRemainder: true, out opened, out header);
+
+    public static bool TryOpen(
+        Stream stream,
+        int hduIndex,
+        string? extensionName,
+        FitsOpenOptions options,
+        ReadOnlySpan<string> columns,
+        bool requireColumns,
+        out FitsDirectTable? opened,
+        out FitsHeader? header,
+        bool validateRemainder) =>
+        TryOpen(stream, hduIndex, extensionName, options, columns, requireColumns, materializeHeader: true, validateRemainder, out opened, out header);
 
     private static bool TryOpen(
         Stream stream,
@@ -46,6 +68,7 @@ public sealed class FitsDirectTable : IDisposable
         ReadOnlySpan<string> columns,
         bool requireColumns,
         bool materializeHeader,
+        bool validateRemainder,
         out FitsDirectTable? opened,
         out FitsHeader? header)
     {
@@ -93,7 +116,10 @@ public sealed class FitsDirectTable : IDisposable
                 ? FitsHduStream.CreateHeader(selected.DetachBuffer(), selected.HeaderLength, selected.Index)
                 : null;
             FitsHduStream.SkipPadding(stream, selected.Shape);
-            FitsHduStream.ValidateRemainder(stream);
+            if (validateRemainder)
+            {
+                FitsHduStream.ValidateRemainder(stream);
+            }
             opened = new FitsDirectTable(rented, table);
             rented = null;
             return true;

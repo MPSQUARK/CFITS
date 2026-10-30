@@ -128,8 +128,8 @@ public sealed partial class FitsContextGenerator
                         header = null;
                         bool __cfitsUseDirect = {{(allowDirect ? "true" : "false")}};
                         {{(type.MaterializeHeader
-                            ? $"if (__cfitsUseDirect && CFITS.FitsDirectTable.TryOpen(stream, {type.HduIndex}, {nameArgument}, options{directColumns}, {(requireColumns ? "true" : "false")}, out CFITS.FitsDirectTable? __cfitsDirect, out header))"
-                            : $"if (__cfitsUseDirect && CFITS.FitsDirectTable.TryOpen(stream, {type.HduIndex}, {nameArgument}, options{directColumns}, out CFITS.FitsDirectTable? __cfitsDirect))")}}
+                            ? $"if (__cfitsUseDirect && CFITS.FitsDirectTable.TryOpen(stream, {type.HduIndex}, {nameArgument}, options{directColumns}, {(requireColumns ? "true" : "false")}, out CFITS.FitsDirectTable? __cfitsDirect, out header, false))"
+                            : $"if (__cfitsUseDirect && CFITS.FitsDirectTable.TryOpen(stream, {type.HduIndex}, {nameArgument}, options{directColumns}, false, out CFITS.FitsDirectTable? __cfitsDirect))")}}
                         {
                             using (__cfitsDirect)
                             {
@@ -157,7 +157,7 @@ public sealed partial class FitsContextGenerator
 
                     internal static System.Collections.Generic.IReadOnlyList<{{name}}> ReadTable(CFITS.FitsTable table)
                     {
-                        var rows = new {{name}}[table.RowCount];
+                        var rows = {{(UninitializedRows(type, columnMembers) ? $"System.GC.AllocateUninitializedArray<{name}>(table.RowCount)" : $"new {name}[table.RowCount]")}};
             {{cachedColumns}}
             {{bulkCapabilities}}
             {{rowLoops}}
@@ -544,6 +544,37 @@ public sealed partial class FitsContextGenerator
                 $"__cfitsReal{index}Bulk",
             _ => "false",
         };
+    private static bool UninitializedRows(TypeModel type, List<MemberModel> columns)
+    {
+        if (columns.Count == 0 || type.Members.Any(static member => member.Role != MemberRole.Column))
+        {
+            return false;
+        }
+
+        var fields = type.Symbol.GetMembers().OfType<IFieldSymbol>().Where(static field => !field.IsStatic).ToList();
+        if (fields.Count != columns.Count)
+        {
+            return false;
+        }
+
+        foreach (IFieldSymbol field in fields)
+        {
+            if (field.Type.SpecialType is not (
+                SpecialType.System_Boolean
+                or SpecialType.System_Byte
+                or SpecialType.System_Int16
+                or SpecialType.System_Int32
+                or SpecialType.System_Int64
+                or SpecialType.System_Single
+                or SpecialType.System_Double))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
     private static bool IsSupportedTableMember(ITypeSymbol type) =>
         type is IArrayTypeSymbol array
             && array.Rank == 1

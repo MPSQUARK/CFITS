@@ -66,13 +66,22 @@ internal static class FitsHduStream
                 return false;
             }
 
+            if (hduIndex >= 0 && index < hduIndex)
+            {
+                candidate.Dispose();
+                SkipData(stream, candidate.Shape);
+                index++;
+                continue;
+            }
+
             ReadOnlySpan<byte> bytes = candidate.Header;
-            bool compressed = IsCompressedImage(bytes);
+            string? extension = candidate.Shape.Extension;
+            bool compressed = extension == "BINTABLE" && (compressedImage || !image) && IsCompressedImage(bytes);
             bool kind = compressedImage
-                ? candidate.Shape.Extension == "BINTABLE" && compressed
+                ? extension == "BINTABLE" && compressed
                 : image
-                    ? candidate.Shape.Extension is null or "IMAGE"
-                    : candidate.Shape.Extension is "TABLE" or "BINTABLE" && !compressed;
+                    ? extension is null or "IMAGE"
+                    : (extension is "TABLE" or "BINTABLE") && !compressed;
             bool name = extensionName is null || ExtensionName(bytes) == extensionName;
             bool indexMatches = hduIndex < 0 || index == hduIndex;
             if (kind && name && indexMatches)
