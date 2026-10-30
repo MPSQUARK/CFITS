@@ -1,3 +1,4 @@
+using System.Buffers.Binary;
 using System.Numerics;
 
 namespace CFITS.Compression;
@@ -6,17 +7,36 @@ internal static class Rice
 {
     public static uint[] Decompress(ReadOnlySpan<byte> source, int pixels, int byteWidth, int blockSize)
     {
-        if (pixels < 0 || blockSize <= 0)
+        ValidateArguments(pixels, byteWidth, blockSize, source);
+        var output = pixels == 0 ? [] : new uint[pixels];
+        Decode(source, pixels, byteWidth, blockSize, new UIntSink(output));
+        return output;
+    }
+
+    /// <summary>
+    /// Writes the same big-endian pixel bytes <see cref="Decompress"/> would pack,
+    /// directly into <paramref name="destination"/>.
+    /// </summary>
+    internal static void WriteBigEndian(ReadOnlySpan<byte> source, Span<byte> destination, int pixels, int byteWidth, int blockSize)
+    {
+        ValidateArguments(pixels, byteWidth, blockSize, source);
+        if (pixels > 0 && destination.Length < checked(pixels * byteWidth))
         {
-            throw new FitsException("Rice pixel and block counts must be non-negative and positive.", new FitsLocation());
+            throw new FitsException("The Rice destination is shorter than the tile.", new FitsLocation());
         }
 
+        Decode(source, pixels, byteWidth, blockSize, new ByteSink(destination, byteWidth));
+    }
+
+    private static void Decode<TSink>(ReadOnlySpan<byte> source, int pixels, int byteWidth, int blockSize, TSink sink)
+        where TSink : IRiceSink, allows ref struct
+    {
+        ValidateArguments(pixels, byteWidth, blockSize, source);
         int fsBits = byteWidth switch
         {
             1 => 3,
             2 => 4,
-            4 => 5,
-            _ => throw new FitsException("Rice compression supports 1-, 2-, and 4-byte pixels.", new FitsLocation()),
+            _ => 5,
         };
         int fsMax = byteWidth switch
         {
@@ -26,11 +46,6 @@ internal static class Rice
         };
         int directBits = 1 << fsBits;
         uint mask = byteWidth == 4 ? uint.MaxValue : (1u << (byteWidth * 8)) - 1;
-        if (source.Length < byteWidth)
-        {
-            throw new FitsException("A Rice tile is shorter than one pixel.", new FitsLocation());
-        }
-
         uint last = 0;
         for (int index = 0; index < byteWidth; index++)
         {
@@ -40,7 +55,6 @@ internal static class Rice
         int position = byteWidth;
         uint buffer = Read(source, ref position);
         int remaining = 8;
-        var output = new uint[pixels];
         int pixel = 0;
         while (pixel < pixels)
         {
@@ -58,7 +72,7 @@ internal static class Rice
             {
                 while (pixel < limit)
                 {
-                    output[pixel++] = last;
+                    sink.Store(pixel++, last);
                 }
             }
             else if (fs == fsMax)
@@ -86,7 +100,7 @@ internal static class Rice
 
                     uint difference = Unmap((uint)value);
                     last = (last + difference) & mask;
-                    output[pixel++] = last;
+                    sink.Store(pixel++, last);
                 }
             }
             else
@@ -112,12 +126,73 @@ internal static class Rice
                     uint difference = Unmap(((uint)zeros << fs) | (buffer >> remaining));
                     buffer &= Mask(remaining);
                     last = (last + difference) & mask;
-                    output[pixel++] = last;
+                    sink.Store(pixel++, last);
                 }
             }
         }
 
-        return output;
+    }
+
+    private static void ValidateArguments(int pixels, int byteWidth, int blockSize, ReadOnlySpan<byte> source)
+    {
+        if (pixels < 0 || blockSize <= 0)
+        {
+            throw new FitsException("Rice pixel and block counts must be non-negative and positive.", new FitsLocation());
+        }
+
+        if (byteWidth is not (1 or 2 or 4))
+        {
+            throw new FitsException("Rice compression supports 1-, 2-, and 4-byte pixels.", new FitsLocation());
+        }
+
+        if (source.Length < byteWidth)
+        {
+            throw new FitsException("A Rice tile is shorter than one pixel.", new FitsLocation());
+        }
+    }
+
+    private interface IRiceSink
+    {
+        void Store(int pixel, uint value);
+    }
+
+    private readonly ref struct UIntSink : IRiceSink
+    {
+        private readonly Span<uint> _output;
+
+        public UIntSink(Span<uint> output) => _output = output;
+
+        public void Store(int pixel, uint value) => _output[pixel] = value;
+    }
+
+    private readonly ref struct ByteSink : IRiceSink
+    {
+        private readonly Span<byte> _output;
+        private readonly int _width;
+
+        public ByteSink(Span<byte> output, int width)
+        {
+            _output = output;
+            _width = width;
+        }
+
+        public void Store(int pixel, uint value)
+        {
+            int offset = pixel * _width;
+            if (_width == 1)
+            {
+                _output[offset] = (byte)value;
+                return;
+            }
+
+            if (_width == 2)
+            {
+                BinaryPrimitives.WriteUInt16BigEndian(_output.Slice(offset, 2), (ushort)value);
+                return;
+            }
+
+            BinaryPrimitives.WriteUInt32BigEndian(_output.Slice(offset, 4), value);
+        }
     }
 
     private static uint Read(ReadOnlySpan<byte> source, ref int position)

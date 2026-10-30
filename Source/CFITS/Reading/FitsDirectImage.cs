@@ -98,13 +98,18 @@ public static class FitsDirectImage
         }
 
         long origin = stream.Position;
-        if (!FitsHduStream.TrySelect(stream, hduIndex, extensionName, image: true, out FitsHduStream.Opened opened))
+        FitsHduStream.Opened opened;
+        bool compressedImage;
+        bool selected = hduIndex >= 0
+            ? FitsHduStream.TrySelectImage(stream, hduIndex, extensionName, out opened, out compressedImage)
+            : TrySelectEitherImage(stream, hduIndex, extensionName, out opened, out compressedImage);
+        if (!selected)
         {
-            if (!FitsHduStream.TrySelect(stream, hduIndex, extensionName, image: false, out opened, compressedImage: true))
-            {
-                return false;
-            }
+            return false;
+        }
 
+        if (compressedImage)
+        {
             try
             {
                 header = FitsHduStream.CreateHeader(opened.DetachBuffer(), opened.HeaderLength, opened.Index);
@@ -173,6 +178,23 @@ public static class FitsDirectImage
         {
             opened.Dispose();
         }
+    }
+
+    private static bool TrySelectEitherImage(
+        Stream stream,
+        int hduIndex,
+        string? extensionName,
+        out FitsHduStream.Opened opened,
+        out bool compressed)
+    {
+        if (FitsHduStream.TrySelect(stream, hduIndex, extensionName, image: true, out opened))
+        {
+            compressed = false;
+            return true;
+        }
+
+        compressed = FitsHduStream.TrySelect(stream, hduIndex, extensionName, image: false, out opened, compressedImage: true);
+        return compressed;
     }
 
     private static bool ReadCompressed<T>(

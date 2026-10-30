@@ -189,6 +189,11 @@ internal static partial class TileCompression
                 break;
             }
 
+            if (TryWriteContiguousRiceTile(rice, mask, scale, zero, quantize, bytePix, width, bitpix, axes, origin, span, tilePixels, data, row, raw, blockSize))
+            {
+                continue;
+            }
+
             byte[] compressed = data.ReadVariableBytes(row);
             byte[]? fallback = null;
             bool losslessGzip = CompressionAlgorithms.IsGzip(algorithmId) && gzip is not null && compressed.Length == 0;
@@ -236,6 +241,47 @@ internal static partial class TileCompression
 
         var shape = new HduShape { Bitpix = bitpix, Axes = axes, Gcount = 1 };
         return FitsImage.Create(ImageHeader(bitpix, axes, blank), raw.AsMemory(0, byteCount), shape, mode);
+    }
+
+    private static bool TryWriteContiguousRiceTile(
+        bool rice,
+        FitsColumn? mask,
+        FitsColumn? scale,
+        FitsColumn? zero,
+        string quantize,
+        int bytePix,
+        int width,
+        int bitpix,
+        int[] axes,
+        int[] origin,
+        int[] span,
+        int tilePixels,
+        FitsColumn data,
+        int row,
+        byte[] raw,
+        int blockSize)
+    {
+        if (!rice
+            || mask is not null
+            || scale is not null
+            || zero is not null
+            || quantize != "NO_DITHER"
+            || bitpix <= 0
+            || bytePix != width
+            || !TryContiguous(axes, origin, span, out int start, out int count)
+            || count != tilePixels)
+        {
+            return false;
+        }
+
+        ReadOnlyMemory<byte> payload = data.ReadVariableMemory(row);
+        if (payload.Length == 0)
+        {
+            return false;
+        }
+
+        Rice.WriteBigEndian(payload.Span, raw.AsSpan(checked(start * width), checked(count * width)), tilePixels, bytePix, blockSize);
+        return true;
     }
 
     private static bool TryWriteWholeGzipTile(

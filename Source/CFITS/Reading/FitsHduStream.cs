@@ -47,6 +47,51 @@ internal static class FitsHduStream
         }
     }
 
+    public static bool TrySelectImage(
+        Stream stream,
+        int hduIndex,
+        string? extensionName,
+        out Opened opened,
+        out bool compressed)
+    {
+        opened = default;
+        compressed = false;
+        long origin = stream.Position;
+        int index = 0;
+        while (true)
+        {
+            if (!TryReadHeader(stream, index, out Opened candidate))
+            {
+                stream.Position = origin;
+                return false;
+            }
+
+            if (index < hduIndex)
+            {
+                candidate.Dispose();
+                SkipData(stream, candidate.Shape);
+                index++;
+                continue;
+            }
+
+            ReadOnlySpan<byte> bytes = candidate.Header;
+            string? extension = candidate.Shape.Extension;
+            bool name = extensionName is null || ExtensionName(bytes) == extensionName;
+            bool plain = extension is null or "IMAGE";
+            bool compressedImage = extension == "BINTABLE" && IsCompressedImage(bytes);
+            if (name && (plain || compressedImage))
+            {
+                opened = candidate;
+                compressed = compressedImage;
+                return true;
+            }
+
+            candidate.Dispose();
+            stream.Position = origin;
+            return false;
+        }
+    }
+
     public static bool TrySelect(
         Stream stream,
         int hduIndex,
