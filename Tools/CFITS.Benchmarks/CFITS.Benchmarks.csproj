@@ -8,7 +8,7 @@
     <NoWarn>$(NoWarn);NU1701</NoWarn>
   </PropertyGroup>
   <ItemGroup>
-    <Using Include="CFITS.Benchmarks.Benchmarking.Models" />
+    <Using Include="CFITS.Benchmarks.Models" />
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="BenchmarkDotNet" Version="0.15.8" />

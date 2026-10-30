@@ -52,4 +52,4 @@ Invalid structure surfaces as **`FitsException`** with HDU, keyword, or column c
 
 **`CFITS`** — runtime library (required).
 
-**`CFITS.Generator`** — optional analyzer for typed documents; does not replace the runtime package.
+**`CFITS.Generator`** — optional analyzer for typed documents; does not replace the runtime package. Mapping mistakes are compile errors; the list is in [Generator-Diagnostics.md](Generator-Diagnostics.md).
