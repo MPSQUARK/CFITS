@@ -161,6 +161,12 @@ dotnet test
 
 Set `CFITS_PYTHON` if the host should not auto-discover `.venv`.
 
+## Documentation
+
+- [Features](Documentation/Features.md) — module catalog and API entry guide
+- [FITS 4.0 compliance matrix](Documentation/FITS-Compliance-Matrix.md)
+- [WCS projection reference](Documentation/WCS-Projection-Reference.md)
+
 Benchmarks (`Tools/CFITS.Benchmarks`):
 
 ```shell
