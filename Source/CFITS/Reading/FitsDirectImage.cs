@@ -1,4 +1,6 @@
 using System.Buffers;
+using System.Numerics;
+using System.Runtime.InteropServices;
 using CFITS.Compression;
 
 namespace CFITS;
@@ -195,6 +197,328 @@ public static class FitsDirectImage
 
         compressed = FitsHduStream.TrySelect(stream, hduIndex, extensionName, image: false, out opened, compressedImage: true);
         return compressed;
+    }
+
+    internal static FitsImageLayout Describe(Stream stream, int hduIndex, string? extensionName, FitsOpenOptions options)
+    {
+        ArgumentNullException.ThrowIfNull(stream);
+        ArgumentNullException.ThrowIfNull(options);
+        RequireDirect(stream, options, hduIndex);
+        long origin = stream.Position;
+        try
+        {
+            if (!TrySelectImage(stream, hduIndex, extensionName, out FitsHduStream.Opened opened, out bool compressed))
+            {
+                throw new FitsException("The HDU is not an image.", new FitsLocation(hduIndex));
+            }
+
+            try
+            {
+                return LayoutOf(opened, compressed);
+            }
+            finally
+            {
+                opened.Dispose();
+            }
+        }
+        finally
+        {
+            stream.Position = origin;
+        }
+    }
+
+    internal static FitsImageLayout Read<T>(Stream stream, Span<T> destination, int hduIndex, string? extensionName, FitsOpenOptions options)
+        where T : unmanaged
+    {
+        ArgumentNullException.ThrowIfNull(stream);
+        ArgumentNullException.ThrowIfNull(options);
+        EnsureElement<T>();
+        RequireDirect(stream, options, hduIndex);
+        long origin = stream.Position;
+        if (!TrySelectImage(stream, hduIndex, extensionName, out FitsHduStream.Opened opened, out bool compressed))
+        {
+            throw new FitsException("The HDU is not an image.", new FitsLocation(hduIndex));
+        }
+
+        try
+        {
+            FitsImageLayout layout = LayoutOf(opened, compressed);
+            if (destination.Length < layout.PixelCount)
+            {
+                throw new FitsException(
+                    $"The destination has {destination.Length} elements; the image requires {layout.PixelCount}.",
+                    new FitsLocation(opened.Index));
+            }
+
+            Span<T> pixels = destination[..layout.PixelCount];
+            if (compressed)
+            {
+                FitsHeader header = FitsHduStream.CreateHeader(opened.DetachBuffer(), opened.HeaderLength, opened.Index);
+                FillCompressed(stream, opened, header, options, pixels);
+            }
+            else
+            {
+                if (opened.Shape.Groups)
+                {
+                    throw new FitsException("Random groups cannot be read into an image buffer.", new FitsLocation(opened.Index));
+                }
+
+                FillPlain(stream, opened, options, pixels);
+            }
+
+            FitsHduStream.SkipPadding(stream, opened.Shape);
+            FitsHduStream.ValidateRemainder(stream);
+            return layout;
+        }
+        catch
+        {
+            stream.Position = origin;
+            throw;
+        }
+        finally
+        {
+            opened.Dispose();
+        }
+    }
+
+    private static bool TrySelectImage(
+        Stream stream,
+        int hduIndex,
+        string? extensionName,
+        out FitsHduStream.Opened opened,
+        out bool compressed) =>
+        hduIndex >= 0
+            ? FitsHduStream.TrySelectImage(stream, hduIndex, extensionName, out opened, out compressed)
+            : TrySelectEitherImage(stream, hduIndex, extensionName, out opened, out compressed);
+
+    private static FitsImageLayout LayoutOf(FitsHduStream.Opened opened, bool compressed)
+    {
+        if (!compressed)
+        {
+            int[] axes = opened.Shape.Axes ?? [];
+            var copy = new int[axes.Length];
+            axes.CopyTo(copy);
+            return new FitsImageLayout(copy, opened.Shape.Bitpix, compressed: false);
+        }
+
+        ReadOnlySpan<byte> cards = opened.Header;
+        int bitpix = checked((int)(HeaderValues.Integer(cards, "ZBITPIX"u8)
+            ?? throw new FitsException("A compressed image is missing ZBITPIX.", new FitsLocation(opened.Index, "ZBITPIX"))));
+        int rank = checked((int)(HeaderValues.Integer(cards, "ZNAXIS"u8)
+            ?? throw new FitsException("A compressed image is missing ZNAXIS.", new FitsLocation(opened.Index, "ZNAXIS"))));
+        if (rank < 0)
+        {
+            throw new FitsException("ZNAXIS must be from 0 through 999.", new FitsLocation(opened.Index, "ZNAXIS"));
+        }
+
+        var imageAxes = new int[rank];
+        Span<byte> keyword = stackalloc byte[8];
+        for (int axis = 0; axis < rank; axis++)
+        {
+            int keywordLength = WriteAxisKeyword(keyword, axis + 1);
+            imageAxes[axis] = checked((int)(HeaderValues.Integer(cards, keyword[..keywordLength])
+                ?? throw new FitsException($"A compressed image is missing ZNAXIS{axis + 1}.", new FitsLocation(opened.Index, $"ZNAXIS{axis + 1}"))));
+        }
+
+        return new FitsImageLayout(imageAxes, bitpix, compressed: true);
+    }
+
+    private static int WriteAxisKeyword(Span<byte> keyword, int axisNumber)
+    {
+        "ZNAXIS"u8.CopyTo(keyword);
+        int length = 6;
+        int count = 0;
+        int value = axisNumber;
+        Span<char> digits = stackalloc char[3];
+        do
+        {
+            digits[count++] = (char)('0' + (value % 10));
+            value /= 10;
+        }
+        while (value > 0);
+
+        if (length + count > keyword.Length)
+        {
+            throw new FitsException($"ZNAXIS{axisNumber} does not fit in a FITS keyword.", new FitsLocation(Keyword: $"ZNAXIS{axisNumber}"));
+        }
+
+        for (int index = count - 1; index >= 0; index--)
+        {
+            keyword[length++] = (byte)digits[index];
+        }
+
+        return length;
+    }
+
+    private static void FillPlain<T>(Stream stream, FitsHduStream.Opened opened, FitsOpenOptions options, Span<T> destination)
+        where T : unmanaged
+    {
+        ReadOnlySpan<byte> cards = opened.Header;
+        double scale = HeaderValues.Real(cards, "BSCALE"u8, 1);
+        double zero = HeaderValues.Real(cards, "BZERO"u8, 0);
+        long? blank = HeaderValues.Integer(cards, "BLANK"u8);
+        bool identity = opened.Shape.Bitpix == Bitpix<T>()
+            && (options.ScaleMode == FitsScaleMode.Stored || (scale == 1 && zero == 0 && blank is null));
+        if (identity)
+        {
+            if (destination.Length > 0)
+            {
+                ReadIdentity<T>(stream, destination, destination.Length, opened.Shape.Bitpix);
+            }
+
+            return;
+        }
+
+        int dataBytes = checked((int)opened.Shape.DataBytes);
+        byte[] raw = ArrayPool<byte>.Shared.Rent(Math.Max(dataBytes, 1));
+        try
+        {
+            if (dataBytes > 0)
+            {
+                stream.ReadExactly(raw.AsSpan(0, dataBytes));
+            }
+
+            FitsImage image = FitsImage.Create(raw.AsMemory(0, dataBytes), opened.Shape, scale, zero, blank, options.ScaleMode);
+            CopyInto(image, destination, options);
+        }
+        finally
+        {
+            ArrayPool<byte>.Shared.Return(raw);
+        }
+    }
+
+    private static void FillCompressed<T>(
+        Stream stream,
+        FitsHduStream.Opened opened,
+        FitsHeader header,
+        FitsOpenOptions options,
+        Span<T> destination)
+        where T : unmanaged
+    {
+        int dataBytes = checked((int)opened.Shape.DataBytes);
+        byte[] rentedData = ArrayPool<byte>.Shared.Rent(Math.Max(dataBytes, 1));
+        byte[]? rentedImage = null;
+        try
+        {
+            if (dataBytes > 0)
+            {
+                stream.ReadExactly(rentedData.AsSpan(0, dataBytes));
+            }
+
+            FitsTable table = FitsTable.Create(header, rentedData.AsMemory(0, dataBytes), ascii: false, opened.Shape, options.ScaleMode);
+            int imageBytes = TileCompression.UncompressedBytes(header);
+            rentedImage = ArrayPool<byte>.Shared.Rent(Math.Max(imageBytes, 1));
+            FitsImage image = TileCompression.Decompress(header, table, options.ScaleMode, rentedImage);
+            CopyInto(image, destination, options);
+        }
+        finally
+        {
+            ArrayPool<byte>.Shared.Return(rentedData);
+            if (rentedImage is not null)
+            {
+                ArrayPool<byte>.Shared.Return(rentedImage);
+            }
+        }
+    }
+
+    private static void CopyInto<T>(FitsImage image, Span<T> destination, FitsOpenOptions options)
+        where T : unmanaged
+    {
+        if (typeof(T) == typeof(float))
+        {
+            image.CopyPhysical(MemoryMarshal.Cast<T, float>(destination));
+            return;
+        }
+
+        if (typeof(T) == typeof(double))
+        {
+            image.CopyPhysical(MemoryMarshal.Cast<T, double>(destination));
+            return;
+        }
+
+        bool identity = options.ScaleMode == FitsScaleMode.Stored || (image.Scale == 1 && image.Zero == 0 && image.Blank is null);
+        if (typeof(T) == typeof(byte))
+        {
+            CopyInteger(image, MemoryMarshal.Cast<T, byte>(destination), identity, 8);
+            return;
+        }
+
+        if (typeof(T) == typeof(short))
+        {
+            CopyInteger(image, MemoryMarshal.Cast<T, short>(destination), identity, 16);
+            return;
+        }
+
+        if (typeof(T) == typeof(int))
+        {
+            CopyInteger(image, MemoryMarshal.Cast<T, int>(destination), identity, 32);
+            return;
+        }
+
+        if (typeof(T) == typeof(long))
+        {
+            CopyInteger(image, MemoryMarshal.Cast<T, long>(destination), identity, 64);
+            return;
+        }
+
+        throw new FitsException("The image element type is not supported.", new FitsLocation());
+    }
+
+    private static void CopyInteger<TNumber>(FitsImage image, Span<TNumber> destination, bool identity, int storedBits)
+        where TNumber : unmanaged, INumber<TNumber>
+    {
+        if (identity && image.Bitpix == storedBits)
+        {
+            if (typeof(TNumber) == typeof(byte))
+            {
+                image.CopyInteger(MemoryMarshal.Cast<TNumber, byte>(destination));
+                return;
+            }
+
+            if (typeof(TNumber) == typeof(short))
+            {
+                image.CopyInteger(MemoryMarshal.Cast<TNumber, short>(destination));
+                return;
+            }
+
+            if (typeof(TNumber) == typeof(int))
+            {
+                image.CopyInteger(MemoryMarshal.Cast<TNumber, int>(destination));
+                return;
+            }
+
+            image.CopyInteger(MemoryMarshal.Cast<TNumber, long>(destination));
+            return;
+        }
+
+        for (int index = 0; index < image.Length; index++)
+        {
+            destination[index] = TNumber.CreateTruncating(image.ReadInteger(index));
+        }
+    }
+
+    private static void EnsureElement<T>()
+        where T : unmanaged
+    {
+        if (typeof(T) != typeof(byte)
+            && typeof(T) != typeof(short)
+            && typeof(T) != typeof(int)
+            && typeof(T) != typeof(long)
+            && typeof(T) != typeof(float)
+            && typeof(T) != typeof(double))
+        {
+            throw new FitsException("The image element type is not supported.", new FitsLocation());
+        }
+    }
+
+    private static void RequireDirect(Stream stream, FitsOpenOptions options, int hduIndex)
+    {
+        if (options.VerifyChecksum || !stream.CanSeek)
+        {
+            throw new FitsException(
+                "Reading into a caller buffer requires a seekable stream and does not verify checksums.",
+                new FitsLocation(hduIndex));
+        }
     }
 
     private static bool ReadCompressed<T>(

@@ -4,7 +4,7 @@ using System.Runtime.InteropServices;
 namespace CFITS;
 
 /// <summary>An image array in FITS axis order: the first axis varies fastest.</summary>
-public sealed class FitsImage
+public sealed partial class FitsImage
 {
     private readonly ReadOnlyMemory<byte> _raw;
     private readonly FitsScaleMode _mode;
