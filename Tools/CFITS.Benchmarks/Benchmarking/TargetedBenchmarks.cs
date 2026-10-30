@@ -40,7 +40,7 @@ internal static class TargetedBenchmarks
         int iterations = ReadPositiveInt("CFITS_TARGETED_ITERATIONS", DefaultIterations);
         int minimumIterationMilliseconds = ReadPositiveInt("CFITS_TARGETED_MIN_MS", DefaultMinimumIterationMilliseconds);
         var scenarios = CreateScenarios(data)
-            .Where(scenario => scenario.Family is "pixels" or "compression" or "parse-open-header" or "wcs" or "clock" or "checksum" or "micro-arithmetic" or "tables" or "source-generator-variable" or "runtime-mapping-variable")
+            .Where(scenario => scenario.Family is "pixels" or "compression" or "parse-open-header" or "wcs" or "clock" or "checksum" or "micro-arithmetic" or "tables" or "source-generator-variable" or "runtime-mapping-variable" or "boyb")
             .ToArray();
         string? selected = Environment.GetEnvironmentVariable("CFITS_TARGETED_SCENARIO");
         if (!string.IsNullOrWhiteSpace(selected))
@@ -138,6 +138,7 @@ internal static class TargetedBenchmarks
         ];
         return scenarios
         .Concat(GeneratedSerializationBenchmarks.CreateScenarios())
+        .Concat(BoybBenchmarks.CreateScenarios(data))
         .ToArray();
     }
 

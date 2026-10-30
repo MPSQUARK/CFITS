@@ -23,6 +23,9 @@ public class FitsScenarios
     private FitsWorld _world = null!;
     private readonly double[] _pixel = new double[2];
     private readonly double[] _worldPixel = new double[2];
+    private float[] _boyb1024Buffer = null!;
+    private short[] _boyb256Buffer = null!;
+    private short[] _boybRiceBuffer = null!;
 
     [GlobalSetup]
     public void Prepare()
@@ -134,6 +137,14 @@ public class FitsScenarios
             .Real("CDELT2", 0.01)
             .Build();
         _world = FitsWorld.FromHeader(header);
+
+        _boyb1024Buffer = new float[1024 * 1024];
+        _boyb256Buffer = new short[256 * 256];
+        using (var riceStream = File.OpenRead(_rice))
+        {
+            FitsImageLayout riceLayout = FitsImage.Describe(riceStream, hduIndex: 1);
+            _boybRiceBuffer = new short[riceLayout.PixelCount];
+        }
     }
 
     [Benchmark(Description = "Open a 4×4 image")]
@@ -148,6 +159,15 @@ public class FitsScenarios
 
     [Benchmark(Description = "Read a 1024² float32 image")]
     public double ReadImage1024() => SumImage(_image1024);
+
+    [Benchmark(Description = "BOYB: read 256² int16 into caller buffer")]
+    public double BoybReadImage256() => SumBoybShort(_image256, _boyb256Buffer);
+
+    [Benchmark(Description = "BOYB: read 1024² float32 into caller buffer")]
+    public double BoybReadImage1024() => SumBoybFloat(_image1024, _boyb1024Buffer);
+
+    [Benchmark(Description = "BOYB: read Rice image into caller buffer")]
+    public double BoybReadRice() => SumBoybShort(_rice, _boybRiceBuffer, hduIndex: 1);
 
     [Benchmark(Description = "Scan 20,000 binary-table rows")]
     public double ScanBinaryColumn()
@@ -268,6 +288,32 @@ public class FitsScenarios
         return sum;
     }
 
+    private static double SumBoybFloat(string path, Span<float> destination, int hduIndex = 0)
+    {
+        using var stream = File.OpenRead(path);
+        FitsImage.Read(stream, destination, hduIndex);
+        double sum = 0;
+        for (int index = 0; index < destination.Length; index++)
+        {
+            sum += destination[index];
+        }
+
+        return sum;
+    }
+
+    private static double SumBoybShort(string path, Span<short> destination, int hduIndex = 0)
+    {
+        using var stream = File.OpenRead(path);
+        FitsImage.Read(stream, destination, hduIndex);
+        double sum = 0;
+        for (int index = 0; index < destination.Length; index++)
+        {
+            sum += destination[index];
+        }
+
+        return sum;
+    }
+
     private static void WriteCompressedFixtures(string root, string rice, string hcompress)
     {
         string python = PythonRuntime.Find(root);
@@ -312,6 +358,9 @@ public class FitsScenarios
         nameof(OpenTiny) => "Open a 4×4 image",
         nameof(ReadImage256) => "Read a 256² int16 image",
         nameof(ReadImage1024) => "Read a 1024² float32 image",
+        nameof(BoybReadImage256) => "BOYB: read 256² int16 into caller buffer",
+        nameof(BoybReadImage1024) => "BOYB: read 1024² float32 into caller buffer",
+        nameof(BoybReadRice) => "BOYB: read Rice image into caller buffer",
         nameof(ScanBinaryColumn) => "Scan 20,000 binary-table rows",
         nameof(ReadAsciiTable) => "Read a 4,000-row ASCII table",
         nameof(ReadVariableColumn) => "Read 1,000 variable-length rows",
